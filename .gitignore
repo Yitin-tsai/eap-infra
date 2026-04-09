@@ -1,0 +1,17 @@
+# Module repos (each is its own git repo)
+eap-common/
+eap-order/
+eap-wallet/
+eap-matchEngine/
+eap-mcp/
+eap-ai-client/
+
+# Blackboard (gs workspace)
+.blackboard/
+
+# Worktree (gs workspace)
+worktree/
+
+# OS
+.DS_Store
+*.log

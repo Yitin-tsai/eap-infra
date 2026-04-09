@@ -1,0 +1,223 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "OpenAPI definition",
+        "version": "v0"
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8082/match-engine",
+            "description": "Generated server url"
+        }
+    ],
+    "paths": {
+        "/v1/order/query/{userId}": {
+            "get": {
+                "tags": [
+                    "order-controller"
+                ],
+                "operationId": "queryOrder",
+                "parameters": [
+                    {
+                        "name": "userId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/components/schemas/OrderConfirmedEvent"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/order/orderbook": {
+            "get": {
+                "tags": [
+                    "order-controller"
+                ],
+                "operationId": "getOrderBook",
+                "parameters": [
+                    {
+                        "name": "depth",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "default": 10
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrderBookResponseDto"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/order/market/summary": {
+            "get": {
+                "tags": [
+                    "order-controller"
+                ],
+                "operationId": "getMarketSummary",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MarketSummaryDto"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/order/cancel": {
+            "delete": {
+                "tags": [
+                    "order-controller"
+                ],
+                "operationId": "cancelOrder",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/OrderCancelEvent"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "boolean"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "OrderConfirmedEvent": {
+                "type": "object",
+                "properties": {
+                    "orderId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "userId": {
+                        "type": "string",
+                        "format": "uuid"
+                    },
+                    "price": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "orderType": {
+                        "type": "string"
+                    },
+                    "createdAt": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            },
+            "OrderBookLevel": {
+                "type": "object",
+                "properties": {
+                    "price": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "orderCount": {
+                        "type": "integer",
+                        "format": "int32"
+                    }
+                }
+            },
+            "OrderBookResponseDto": {
+                "type": "object",
+                "properties": {
+                    "bids": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderBookLevel"
+                        }
+                    },
+                    "asks": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderBookLevel"
+                        }
+                    }
+                }
+            },
+            "MarketSummaryDto": {
+                "type": "object",
+                "properties": {
+                    "bestBidPrice": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "bestAskPrice": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "spread": {
+                        "type": "integer",
+                        "format": "int32"
+                    }
+                }
+            },
+            "OrderCancelEvent": {
+                "type": "object",
+                "properties": {
+                    "orderId": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                }
+            }
+        }
+    }
+}

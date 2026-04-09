@@ -1,0 +1,93 @@
+# EAP (Electricity Auction Platform) — LLM Context
+
+> Cross-service overview. For per-service details, see `{module}/llm.txt`.
+> For precise API schemas, see `docs/api/*.json`.
+
+## 1. Project Overview
+
+EAP is an event-driven electricity trading platform built with Spring Boot microservices.
+Users place buy/sell orders, the system validates wallet balances, matches orders via a
+Redis-based engine, and broadcasts results in real-time via WebSocket.
+
+Tech: Java 17 / Spring Boot 3.5.3 / Gradle 8 / PostgreSQL 15 / Redis 7 / RabbitMQ 3
+
+## 2. Module Map
+
+| Module | Port | Context Path | Responsibility | Detail |
+|--------|------|-------------|----------------|--------|
+| eap-common | — | — | Shared library: events, constants, DTOs (not a runnable service) | [eap-common/llm.txt](eap-common/llm.txt) |
+| eap-order | 8080 | /eap-order | Order CRUD, WebSocket market data, SSE order status, MCP API | [eap-order/llm.txt](eap-order/llm.txt) |
+| eap-wallet | 8081 | /eap-wallet | Wallet management, balance check, Outbox event publishing | [eap-wallet/llm.txt](eap-wallet/llm.txt) |
+| eap-matchEngine | 8082 | /match-engine | Redis order book, Lua-script atomic matching, distributed locks | [eap-matchEngine/llm.txt](eap-matchEngine/llm.txt) |
+| eap-mcp | 8083 | / | MCP Server (Spring AI), exposes trading tools for LLM agents | [eap-mcp/llm.txt](eap-mcp/llm.txt) |
+| eap-ai-client | 8084 | / | AI chat frontend, connects to Ollama LLM via MCP | [eap-ai-client/llm.txt](eap-ai-client/llm.txt) |
+
+Dependency: all services depend on eap-common (compile-time library).
+
+## 3. Event Flow (Order Lifecycle)
+
+```
+[User] → POST /bid/buy or /bid/sell
+  → eap-order creates OrderSubmittedEvent
+  → RabbitMQ (order.submitted)
+  → eap-wallet: balance check + lock funds
+    → IF OK: write OrderConfirmedEvent to Outbox table (same DB transaction)
+      → OutboxPoller (@Scheduled 500ms) publishes to RabbitMQ (order.confirmed)
+      → eap-matchEngine: try match
+        → IF matched:
+          - matchEngine 同步清理 Redis 訂單簿（在 tryMatch() 內完成，非獨立 listener）
+          - 若 partial fill：Redisson 分散式鎖保護，剩餘數量重新加回訂單簿
+          - publish OrderMatchedEvent (order.matched)
+          → Fan-out to 2 queues:
+            - eap-order: save match_history, update orders status, push WebSocket
+            - eap-wallet: settle funds (unlock + transfer)
+        → IF no match: add to Redis order book (ZSet)
+    → IF FAIL: write OrderFailedEvent to Outbox → published to RabbitMQ (order.failed)
+      → eap-order: update order status via SSE
+```
+
+## 4. RabbitMQ Topology
+
+Exchange: `order.exchange` (Topic)
+Dead Letter: `order.dlx` (Fanout) → `order.dlq` (single DLQ for all failures)
+
+| Routing Key | Queue(s) | Consumer |
+|-------------|----------|----------|
+| order.submitted | wallet.orderSubmitted.queue | eap-wallet CreateOrderListener |
+| order.confirmed | matchEngine.orderConfirmed.queue | eap-matchEngine OrderConfirmedListener |
+| | order.orderConfirmed.queue | eap-order OrderStatusUpdateListener |
+| order.matched | order.orderMatched.queue | eap-order MatchEventListener |
+| | wallet.orderMatched.queue | eap-wallet MatchedOrderListener |
+
+Note: matchEngine **不消費** order.matched — 訂單簿清理在 tryMatch() 內同步完成。
+| order.failed | order.orderFailed.queue | eap-order OrderStatusUpdateListener |
+
+All queues bind to DLX. Spring Retry: 3 attempts, exponential backoff (1s → 2s → 4s), max 10s.
+
+## 5. Domain Glossary
+
+| Term | Meaning |
+|------|---------|
+| Order Book | Price-time priority queue of pending buy/sell orders |
+| Bid / Ask | Buy offer / Sell offer |
+| Match | A trade where buy price >= sell price |
+| Maker Price | Pricing model: resting (passive) order's price becomes deal price |
+| Outbox Pattern | Write events to DB table + poll to publish, avoiding dual-write |
+| DLX / DLQ | Dead Letter Exchange / Queue — captures failed messages for retry/inspection |
+| Spread | Difference between best ask and best bid |
+| Depth | Number of price levels shown in order book |
+| Partial Fill | Order matched for less than full quantity; remainder stays in book |
+
+## 6. Key File Locations
+
+| What | Path |
+|------|------|
+| Events & Constants | eap-common/src/main/java/com/eap/common/ |
+| RabbitMQ Config | {module}/src/main/java/.../configuration/config/RabbitMQConfig.java |
+| Lua Scripts | eap-matchEngine/src/main/resources/lua/*.lua |
+| Liquibase Changelogs | {module}/src/main/resources/db/changelog/ |
+| OpenAPI Specs (static) | docs/api/*.json |
+| OpenAPI Spec (hand-written) | eap-order/src/main/resources/openapi/orderService.yml |
+| Docker Compose | docker-compose.yml |
+| App Startup Script | app-services.sh |
+| Planning & Stories | _bmad-output/planning/ |

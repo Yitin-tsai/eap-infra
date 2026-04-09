@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine  # 使用 alpine 版本（體積小 50%）
+    container_name: eap-postgres
+    restart: unless-stopped  # 改為 unless-stopped，手動停止後不會自動重啟
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: eapdb
+      # 效能優化配置（降低資源使用）
+      POSTGRES_SHARED_BUFFERS: 128MB
+      POSTGRES_MAX_CONNECTIONS: 20
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 🔥 資源限制：防止過度使用 CPU/Memory
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'      # 最多使用 0.5 核心
+          memory: 512M     # 最多使用 512MB
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d eapdb"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine  # 使用 alpine 版本
+    container_name: eap-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    # 🔥 資源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine  # 使用 alpine 版本
+    container_name: eap-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    # 🔥 資源限制 + Redis 記憶體限制
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'     # Redis 通常不需要太多 CPU
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 200mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pgdata:
+  redisdata:
+  rabbitmq-data:
+
+networks:
+  default:
+    name: eap-network

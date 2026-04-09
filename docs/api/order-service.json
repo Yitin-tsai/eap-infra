@@ -1,0 +1,955 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "OpenAPI definition",
+        "version": "v0"
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8080/eap-order",
+            "description": "Generated server url"
+        }
+    ],
+    "tags": [
+        {
+            "name": "MCP API",
+            "description": "Model Context Protocol API for LLM Integration"
+        },
+        {
+            "name": "bid",
+            "description": "\u7af6\u50f9\u7cfb\u7d71 API"
+        }
+    ],
+    "paths": {
+        "/mcp/v1/orders": {
+            "get": {
+                "tags": [
+                    "MCP API"
+                ],
+                "summary": "\u67e5\u8a62\u7528\u6236\u8a02\u55ae",
+                "description": "\u6839\u64da\u7528\u6236ID\u67e5\u8a62\u8a02\u55ae\u5217\u8868",
+                "operationId": "getUserOrders",
+                "parameters": [
+                    {
+                        "name": "userId",
+                        "in": "query",
+                        "description": "\u7528\u6236ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "description": "\u8a02\u55ae\u72c0\u614b",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u67e5\u8a62\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/UserOrdersResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "tags": [
+                    "MCP API"
+                ],
+                "summary": "\u7d71\u4e00\u4e0b\u55ae",
+                "description": "\u652f\u63f4\u8cb7\u8ce3\u96d9\u5411\u7684\u7d71\u4e00\u4e0b\u55ae\u63a5\u53e3",
+                "operationId": "placeOrder",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PlaceOrderRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "\u4e0b\u55ae\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PlaceOrderResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/bid/user-orders/cancel": {
+            "post": {
+                "tags": [
+                    "bid"
+                ],
+                "summary": "\u53d6\u6d88\u8a02\u55ae",
+                "description": "\u7528\u6236\u53d6\u6d88\u672a\u5b8c\u6210\u7684\u8a02\u55ae",
+                "operationId": "cancel-order",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CancelOrderReq"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "\u53d6\u6d88\u6210\u529f"
+                    },
+                    "400": {
+                        "description": "\u8acb\u6c42\u932f\u8aa4"
+                    }
+                }
+            }
+        },
+        "/bid/sell": {
+            "post": {
+                "tags": [
+                    "bid"
+                ],
+                "summary": "\u639b\u8ce3\u55ae",
+                "description": "\u639b\u55ae\u529f\u80fd - \u8ce3\u51fa\u8a02\u55ae",
+                "operationId": "post-bid-sell",
+                "parameters": [
+                    {
+                        "name": "ID_TOKEN",
+                        "in": "header",
+                        "description": "\u9a57\u8b49\u7528\u6236\u767b\u5165",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "txnSEq",
+                        "in": "header",
+                        "description": "\u4ea4\u6613\u7de8\u865f",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PlaceSellOrderReq"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "\u639b\u55ae\u6210\u529f"
+                    },
+                    "400": {
+                        "description": "\u8acb\u6c42\u932f\u8aa4"
+                    }
+                }
+            }
+        },
+        "/bid/buy": {
+            "post": {
+                "tags": [
+                    "bid"
+                ],
+                "summary": "\u639b\u8cb7\u55ae",
+                "description": "\u639b\u55ae\u529f\u80fd - \u8cb7\u5165\u8a02\u55ae",
+                "operationId": "post-bid-add",
+                "parameters": [
+                    {
+                        "name": "ID_TOKEN",
+                        "in": "header",
+                        "description": "\u9a57\u8b49\u7528\u6236\u767b\u5165",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "txnSEq",
+                        "in": "header",
+                        "description": "\u4ea4\u6613\u7de8\u865f",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PlaceBuyOrderReq"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "description": "\u639b\u55ae\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "\u8acb\u6c42\u932f\u8aa4",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/orders/order/{orderId}/status": {
+            "get": {
+                "tags": [
+                    "order-status-controller"
+                ],
+                "operationId": "getOrderStatus",
+                "parameters": [
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/orders/order/{orderId}/status/stream": {
+            "get": {
+                "tags": [
+                    "order-status-controller"
+                ],
+                "operationId": "streamOrderStatus",
+                "parameters": [
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "format": "uuid"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "text/event-stream": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SseEmitter"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/v1/orderbook": {
+            "get": {
+                "tags": [
+                    "MCP API"
+                ],
+                "summary": "\u7372\u53d6\u8a02\u55ae\u7c3f",
+                "description": "\u7372\u53d6\u7576\u524d\u5e02\u5834\u8a02\u55ae\u7c3f\u6578\u64da",
+                "operationId": "getOrderBook",
+                "parameters": [
+                    {
+                        "name": "depth",
+                        "in": "query",
+                        "description": "\u6df1\u5ea6",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "default": 10
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u7372\u53d6\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OrderBookResponseDto"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/v1/metrics": {
+            "get": {
+                "tags": [
+                    "MCP API"
+                ],
+                "summary": "\u7372\u53d6\u5e02\u5834\u6307\u6a19",
+                "description": "\u7372\u53d6\u8a73\u7d30\u7684\u5e02\u5834\u5206\u6790\u6307\u6a19",
+                "operationId": "getMarketMetrics",
+                "parameters": [
+                    {
+                        "name": "depth",
+                        "in": "query",
+                        "description": "\u8a02\u55ae\u7c3f\u6df1\u5ea6",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "format": "int32",
+                            "default": 10
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u7372\u53d6\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/MarketMetricsResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/v1/health": {
+            "get": {
+                "tags": [
+                    "MCP API"
+                ],
+                "summary": "\u5065\u5eb7\u6aa2\u67e5",
+                "description": "\u6aa2\u67e5 MCP API \u670d\u52d9\u72c0\u614b",
+                "operationId": "health",
+                "responses": {
+                    "200": {
+                        "description": "\u670d\u52d9\u6b63\u5e38",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HealthResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/debug/beans": {
+            "get": {
+                "tags": [
+                    "debug-controller"
+                ],
+                "operationId": "getBeans",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/bid/user-orders/pending": {
+            "get": {
+                "tags": [
+                    "bid"
+                ],
+                "summary": "\u67e5\u8a62\u5e73\u53f0\u4e0a\u7684\u8a02\u55ae",
+                "description": "\u53d6\u5f97\u7528\u6236\u5728\u5e73\u53f0\u4e0a\u5f85\u8655\u7406\u7684\u8a02\u55ae",
+                "operationId": "get-user-orders-pending",
+                "parameters": [
+                    {
+                        "name": "ID_TOKEN",
+                        "in": "header",
+                        "description": "\u9a57\u8b49\u7528\u6236\u767b\u5165",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "txnSeq",
+                        "in": "header",
+                        "description": "\u4ea4\u6613\u7de8\u865f",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u67e5\u8a62\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListUserOrderRes"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "\u8acb\u6c42\u932f\u8aa4",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListUserOrderRes"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/bid/user-orders/matched": {
+            "get": {
+                "tags": [
+                    "bid"
+                ],
+                "summary": "\u67e5\u8a62\u5df2\u6210\u4ea4\u8a02\u55ae",
+                "description": "\u53d6\u5f97\u7528\u6236\u5df2\u6210\u4ea4\u7684\u8a02\u55ae",
+                "operationId": "get-user-orders-matched",
+                "parameters": [
+                    {
+                        "name": "ID_TOKEN",
+                        "in": "header",
+                        "description": "\u9a57\u8b49\u7528\u6236\u767b\u5165",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "txnSeq",
+                        "in": "header",
+                        "description": "\u4ea4\u6613\u7de8\u865f",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u67e5\u8a62\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListUserOrderRes"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "\u8acb\u6c42\u932f\u8aa4",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListUserOrderRes"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/bid/user-orders/all": {
+            "get": {
+                "tags": [
+                    "bid"
+                ],
+                "summary": "\u67e5\u8a62\u7528\u6236\u5168\u90e8\u8a02\u55ae",
+                "description": "\u53d6\u5f97\u7528\u6236\u6240\u6709\u8a02\u55ae\uff08\u5f85\u8655\u7406 + \u5df2\u6210\u4ea4\uff09",
+                "operationId": "get-user-orders-all",
+                "parameters": [
+                    {
+                        "name": "ID_TOKEN",
+                        "in": "header",
+                        "description": "\u9a57\u8b49\u7528\u6236\u767b\u5165",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "name": "txnSeq",
+                        "in": "header",
+                        "description": "\u4ea4\u6613\u7de8\u865f",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u67e5\u8a62\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListUserOrderRes"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "\u8acb\u6c42\u932f\u8aa4",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListUserOrderRes"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/mcp/v1/orders/{orderId}": {
+            "delete": {
+                "tags": [
+                    "MCP API"
+                ],
+                "summary": "\u53d6\u6d88\u8a02\u55ae",
+                "description": "\u6839\u64da\u8a02\u55aeID\u53d6\u6d88\u8a02\u55ae",
+                "operationId": "cancelOrder",
+                "parameters": [
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "description": "\u8a02\u55aeID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "\u53d6\u6d88\u6210\u529f",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CancelOrderResponse"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "PlaceOrderRequest": {
+                "type": "object",
+                "properties": {
+                    "validationError": {
+                        "type": "string"
+                    },
+                    "buy": {
+                        "type": "boolean"
+                    },
+                    "priceAsInt": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "qtyAsInt": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "sell": {
+                        "type": "boolean"
+                    },
+                    "valid": {
+                        "type": "boolean"
+                    },
+                    "userId": {
+                        "type": "string"
+                    },
+                    "side": {
+                        "type": "string"
+                    },
+                    "price": {
+                        "type": "number"
+                    },
+                    "qty": {
+                        "type": "number"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "symbol": {
+                        "type": "string"
+                    }
+                }
+            },
+            "PlaceOrderResponse": {
+                "type": "object",
+                "properties": {
+                    "orderId": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "acceptedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "side": {
+                        "type": "string"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "price": {
+                        "type": "number"
+                    },
+                    "qty": {
+                        "type": "number"
+                    },
+                    "symbol": {
+                        "type": "string"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CancelOrderReq": {
+                "type": "object",
+                "description": "\u53d6\u6d88\u8a02\u55ae\u8acb\u6c42",
+                "properties": {
+                    "orderId": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                }
+            },
+            "PlaceSellOrderReq": {
+                "type": "object",
+                "description": "\u639b\u8ce3\u55ae\u8acb\u6c42",
+                "properties": {
+                    "sellPrice": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "seller": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "required": [
+                    "amount",
+                    "sellPrice",
+                    "seller"
+                ]
+            },
+            "PlaceBuyOrderReq": {
+                "type": "object",
+                "description": "\u639b\u8cb7\u55ae\u8acb\u6c42",
+                "properties": {
+                    "bidPrice": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "bidder": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "required": [
+                    "amount",
+                    "bidPrice",
+                    "bidder"
+                ]
+            },
+            "SseEmitter": {
+                "type": "object",
+                "properties": {
+                    "timeout": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                }
+            },
+            "UserOrdersResponse": {
+                "type": "object",
+                "properties": {
+                    "userId": {
+                        "type": "string"
+                    },
+                    "orders": {
+                        "type": "array",
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "totalCount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "OrderBookLevel": {
+                "type": "object",
+                "properties": {
+                    "price": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "orderCount": {
+                        "type": "integer",
+                        "format": "int32"
+                    }
+                }
+            },
+            "OrderBookResponseDto": {
+                "type": "object",
+                "properties": {
+                    "bids": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderBookLevel"
+                        }
+                    },
+                    "asks": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderBookLevel"
+                        }
+                    }
+                }
+            },
+            "MarketMetricsResponse": {
+                "type": "object",
+                "properties": {
+                    "marketSummary": {
+                        "$ref": "#/components/schemas/MarketSummaryDto"
+                    },
+                    "orderBook": {
+                        "$ref": "#/components/schemas/OrderBookResponseDto"
+                    },
+                    "metrics": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object"
+                        }
+                    },
+                    "orderBookDepth": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            },
+            "MarketSummaryDto": {
+                "type": "object",
+                "properties": {
+                    "bestBidPrice": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "bestAskPrice": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "spread": {
+                        "type": "integer",
+                        "format": "int32"
+                    }
+                }
+            },
+            "HealthResponse": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string"
+                    },
+                    "timestamp": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "service": {
+                        "type": "string"
+                    },
+                    "version": {
+                        "type": "string"
+                    },
+                    "dependencies": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "string"
+                        }
+                    },
+                    "uptime": {
+                        "type": "string"
+                    }
+                }
+            },
+            "ListUserOrderRes": {
+                "type": "object",
+                "properties": {
+                    "userOrders": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/UserOrder"
+                        }
+                    }
+                }
+            },
+            "UserOrder": {
+                "type": "object",
+                "properties": {
+                    "price": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "format": "int32"
+                    },
+                    "type": {
+                        "type": "string"
+                    },
+                    "updateTime": {
+                        "type": "string"
+                    },
+                    "orderId": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    }
+                }
+            },
+            "CancelOrderResponse": {
+                "type": "object",
+                "properties": {
+                    "orderId": {
+                        "type": "string"
+                    },
+                    "status": {
+                        "type": "string"
+                    },
+                    "cancelledAt": {
+                        "type": "string",
+                        "format": "date-time"
+                    },
+                    "success": {
+                        "type": "boolean"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                }
+            }
+        }
+    }
+}
