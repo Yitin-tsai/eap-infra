@@ -12,6 +12,13 @@ eap-ai-client/
 # Worktree (gs workspace)
 worktree/
 
+# Claude Code config
+.claude/
+
+# Project artifacts
+user_guide.md
+project-ghostwriter-*.tgz
+
 # OS
 .DS_Store
 *.log
