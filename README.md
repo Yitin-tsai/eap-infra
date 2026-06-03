@@ -2,6 +2,8 @@
 
 # EAP — Electricity Auction Platform
 
+> 專案文件與 Claude/BMAD 歷史脈絡整理請先看 [PROJECT_STATE.md](PROJECT_STATE.md)。
+
 > Event-driven electricity auction platform built with Spring Boot microservices.
 > Simulates high-frequency order placement, asset reservation, and order matching
 > with Redis-based order books and asynchronous event workflows.
