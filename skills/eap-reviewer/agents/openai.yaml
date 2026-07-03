@@ -1,0 +1,3 @@
+display_name: EAP Reviewer
+short_description: Strict production-style review for correctness, performance, and maintainability.
+default_prompt: 使用 eap-reviewer 嚴格 review 這個 EAP change，找 blocker、race condition、DB bottleneck 與測試缺口。

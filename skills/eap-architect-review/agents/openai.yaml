@@ -1,0 +1,3 @@
+display_name: EAP Architect Review
+short_description: Review EAP boundaries, ownership, event flow, and consistency before coding.
+default_prompt: 使用 eap-architect-review 審查這個 EAP feature 的 DDD boundary、service ownership、event flow 與一致性風險，不要寫 code。

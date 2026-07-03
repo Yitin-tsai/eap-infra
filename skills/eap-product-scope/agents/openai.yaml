@@ -1,0 +1,3 @@
+display_name: EAP Product Scope
+short_description: Challenge MVP scope and career value for EAP features.
+default_prompt: 使用 eap-product-scope 評估這個 EAP feature 是否值得做、MVP 應該多小、以及履歷/面試價值。

@@ -1,0 +1,3 @@
+display_name: EAP Implementation Lead
+short_description: Implement accepted EAP specs without redefining architecture.
+default_prompt: 使用 eap-implementation-lead 根據已通過的 spec 實作這個 EAP ticket，不要重新設計架構。

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+LOG_DIR="${TMPDIR:-/tmp}/eap-loadtest-logs"
+GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
+
+mkdir -p "$LOG_DIR" "$GRADLE_USER_HOME_DIR"
+
+start_service() {
+  local repo="$1"
+  local port="$2"
+  local log_file="${LOG_DIR}/${repo}.log"
+  local pid_file="${LOG_DIR}/${repo}.pid"
+
+  if lsof -Pi ":${port}" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo "[WARN] port ${port} is already in use; stop the existing process before starting ${repo}" >&2
+    return 1
+  fi
+
+  echo "[INFO] starting ${repo} on port ${port}; log=${log_file}"
+  nohup bash -lc "cd '${ROOT_DIR}/${repo}' && GRADLE_USER_HOME='${GRADLE_USER_HOME_DIR}' ./gradlew --no-daemon bootRun --args='--spring.profiles.active=loadtest'" >"${log_file}" 2>&1 &
+  echo "$!" >"${pid_file}"
+}
+
+start_service eap-wallet 8081
+start_service eap-order 8080
+start_service eap-matchEngine 8082
+
+echo "[INFO] loadtest services starting"
+echo "[INFO] logs:"
+echo "  tail -f ${LOG_DIR}/eap-wallet.log"
+echo "  tail -f ${LOG_DIR}/eap-order.log"
+echo "  tail -f ${LOG_DIR}/eap-matchEngine.log"

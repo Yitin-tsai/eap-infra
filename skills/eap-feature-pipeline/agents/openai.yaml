@@ -1,0 +1,3 @@
+display_name: EAP Feature Pipeline
+short_description: Orchestrate Product, Architect, Performance, Implementation, QA, Reviewer, and resume output.
+default_prompt: 使用 eap-feature-pipeline 將這個 EAP ticket 跑過角色化 review pipeline，拆成 scrum tasks，並產出履歷證據。

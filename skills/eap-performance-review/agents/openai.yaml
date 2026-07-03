@@ -1,0 +1,3 @@
+display_name: EAP Performance Review
+short_description: Analyze TPS, DB, RabbitMQ, JVM, and load-test bottlenecks.
+default_prompt: 使用 eap-performance-review 分析這個 EAP ticket 的 TPS 定義、DB/MQ/JVM 瓶頸、metrics 與 tuning plan。

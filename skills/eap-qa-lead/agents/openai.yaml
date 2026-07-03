@@ -1,0 +1,3 @@
+display_name: EAP QA Lead
+short_description: Design integration, reliability, failure-injection, and load-test validation.
+default_prompt: 使用 eap-qa-lead 為這個 EAP ticket 設計 integration test、edge case、failure injection 與 load-test acceptance criteria。

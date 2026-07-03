@@ -1,0 +1,128 @@
+services:
+  order-postgres:
+    image: postgres:14.6
+    container_name: eap-order-postgres-loadtest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: eap_order_db
+    ports:
+      - "15432:5432"
+    volumes:
+      - order-pgdata-loadtest:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c max_connections=120
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c maintenance_work_mem=128MB
+      -c checkpoint_timeout=15min
+      -c max_wal_size=4GB
+      -c synchronous_commit=off
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d eap_order_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  wallet-postgres:
+    image: postgres:14.6
+    container_name: eap-wallet-postgres-loadtest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: eap_wallet_db
+    ports:
+      - "15433:5432"
+    volumes:
+      - wallet-pgdata-loadtest:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c max_connections=120
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c maintenance_work_mem=128MB
+      -c checkpoint_timeout=15min
+      -c max_wal_size=4GB
+      -c synchronous_commit=off
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d eap_wallet_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  match-postgres:
+    image: postgres:14.6
+    container_name: eap-match-postgres-loadtest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: eap_match_db
+    ports:
+      - "15434:5432"
+    volumes:
+      - match-pgdata-loadtest:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c max_connections=120
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c maintenance_work_mem=128MB
+      -c checkpoint_timeout=15min
+      -c max_wal_size=4GB
+      -c synchronous_commit=off
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d eap_match_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: eap-rabbitmq-loadtest
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data-loadtest:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: eap-redis-loadtest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata-loadtest:/data
+    command: >
+      redis-server
+      --appendonly no
+      --save ""
+      --maxmemory 1024mb
+      --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  order-pgdata-loadtest:
+  wallet-pgdata-loadtest:
+  match-pgdata-loadtest:
+  redisdata-loadtest:
+  rabbitmq-data-loadtest:
+
+networks:
+  default:
+    name: eap-loadtest-network
