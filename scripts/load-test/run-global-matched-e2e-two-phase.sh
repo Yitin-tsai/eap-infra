@@ -3,13 +3,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
-LOCK_DIR="${ROOT_DIR}/.loadtest-lock/global-matched-e2e-two-phase.lock"
+LOCK_DIR="${ROOT_DIR}/.loadtest-lock/global-matched-e2e-two-phase-driver.lock"
+LOCK_INFO_FILE="${LOCK_DIR}/owner.env"
 LOG_DIR="${TMPDIR:-/tmp}/eap-loadtest-logs"
 
 EVENTS="${EVENTS:-500}"
 PUBLISHERS="${PUBLISHERS:-64}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
 MARKET_ID="${MARKET_ID:-GLOBAL_LOADTEST_$(date +%Y%m%d_%H%M%S)}"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-90}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-false}"
 RUN_REPORT_LOG="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-run.log"
@@ -18,12 +20,26 @@ RUN_REPORT_META="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-meta.txt"
 
 mkdir -p "${REPORT_DIR}" "$(dirname "${LOCK_DIR}")"
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-  echo "[ERROR] another two-phase global matched E2E load test appears to be running: ${LOCK_DIR}" >&2
+  echo "[ERROR] another two-phase global matched E2E load-test driver appears to be running: ${LOCK_DIR}" >&2
+  if [[ -f "${LOCK_INFO_FILE}" ]]; then
+    echo "[ERROR] current lock owner:" >&2
+    sed 's/^/[ERROR]   /' "${LOCK_INFO_FILE}" >&2 || true
+  fi
   echo "[ERROR] remove the lock only after confirming no seed/run/loadtest process is active." >&2
   exit 2
 fi
+{
+  echo "pid=$$"
+  echo "MARKET_ID=${MARKET_ID}"
+  echo "events=${EVENTS}"
+  echo "publishers=${PUBLISHERS}"
+  echo "timeoutSeconds=${TIMEOUT_SECONDS}"
+  echo "startedAt=${STARTED_AT}"
+  echo "script=${BASH_SOURCE[0]}"
+} > "${LOCK_INFO_FILE}"
 
 cleanup() {
+  rm -f "${LOCK_INFO_FILE}" 2>/dev/null || true
   rmdir "${LOCK_DIR}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -87,16 +103,25 @@ append_rabbitmq_metadata() {
 
 write_run_metadata() {
   {
+    echo "MARKET_ID=${MARKET_ID}"
     echo "marketId=${MARKET_ID}"
     echo "events=${EVENTS}"
     echo "publishers=${PUBLISHERS}"
+    echo "timeout=${TIMEOUT_SECONDS}"
     echo "timeoutSeconds=${TIMEOUT_SECONDS}"
     echo "resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
-    echo "startedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "startedAt=${STARTED_AT}"
+    echo "orderDbEndpoint=localhost:15432/eap_order_db"
+    echo "walletDbEndpoint=localhost:15433/eap_wallet_db"
+    echo "matchDbEndpoint=localhost:15434/eap_match_db"
+    echo "rabbitMqEndpoint=localhost:5672"
     echo "orderJdbc=localhost:15432/eap_order_db"
     echo "walletJdbc=localhost:15433/eap_wallet_db"
     echo "matchJdbc=localhost:15434/eap_match_db"
     echo "rabbitmq=localhost:5672"
+    echo "runReportLog=${RUN_REPORT_LOG}"
+    echo "runReportJson=${RUN_REPORT_JSON}"
+    echo "runReportMeta=${RUN_REPORT_META}"
   } > "${RUN_REPORT_META}"
 }
 

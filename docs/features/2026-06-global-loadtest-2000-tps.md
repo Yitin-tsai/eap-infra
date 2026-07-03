@@ -559,6 +559,8 @@ Environment-lifecycle fix after split DB:
 - `docker-compose.loadtest.yml` now sets `restart: unless-stopped` for the three split DB containers.
 - `scripts/load-test/assert-loadtest-environment.sh` now validates Docker, RabbitMQ, Redis, Order DB, Wallet DB, MatchEngine DB, required ports, and RabbitMQ queryability.
 - `scripts/load-test/run-global-matched-e2e-two-phase.sh` now runs this validation before seed, before queue purge, after seed, before service startup, before run, and before final queue verification.
+- `scripts/load-test/run-global-matched-e2e-two-phase.sh` now has a driver-level single lock at `.loadtest-lock/global-matched-e2e-two-phase-driver.lock`; the lock records PID, `MARKET_ID`, events, publishers, timeout, and `startedAt` so a second two-phase driver run refuses to start with enough owner context to diagnose safely.
+- `scripts/load-test/run-global-matched-e2e-two-phase.sh` persists a per-run report bundle under `build/load-test-reports/`: run log, extracted JSON result, and metadata manifest. The metadata includes `MARKET_ID`, events, publishers, timeout, `startedAt`, Order/Wallet/MatchEngine DB endpoints, RabbitMQ endpoint, and report file paths.
 - `scripts/load-test/stop-loadtest-services.sh` now only force-kills processes that match the loadtest service/Gradle/bootRun whitelist and explicitly skips Docker/Colima/OrbStack-style processes.
 - Benchmark rule: if environment validation fails at any point, the result must be marked as rejected due to environment instability, even if the in-generator business counters look correct.
 
@@ -566,10 +568,10 @@ Next Scrum tasks:
 
 | ID | Task | Owner | Definition of Done |
 | --- | --- | --- | --- |
-| TPS-06-01 | Add a single-driver lock for global load tests | Implementation Lead | A run refuses to start if another global load test is active; prevents concurrent truncate/purge/publish interference. |
+| TPS-06-01 | DONE - Add a single-driver lock for two-phase global load tests | Implementation Lead | The two-phase driver refuses to start if another two-phase global load-test driver is active; prevents concurrent truncate/purge/publish interference for accepted guarded runs. Direct single-phase runs still use their existing phase-local lock. |
 | TPS-06-02 | Capture service process identity and profiles before each run | QA + Performance | Output includes Order/Wallet/MatchEngine PID, DB port, active profile, and RabbitMQ consumer count. |
 | TPS-06-03 | Add SELL-book stage diagnostics | Performance | If `waitForRedisSellBook` times out, output queue depth, Redis zset size, MatchEngine consumer count, and recent MatchEngine error clue. |
-| TPS-06-04 | Persist load-test JSON results to file | Implementation Lead | Every run writes a timestamped JSON result under a load-test report directory for comparison and documentation. |
+| TPS-06-04 | DONE - Persist load-test JSON results, log, and metadata to files | Implementation Lead | Every two-phase run writes a `MARKET_ID`-scoped report bundle under `build/load-test-reports/` for comparison and documentation. |
 | TPS-06-05 | Re-run accepted matrix after isolation | Performance + QA | Run 500/1000/1500 only after TPS-06-01~04 pass; reject any run with stale queue backlog, DLQ messages, or service restart during execution. |
 
 ## TPS-08 Order Event Sourcing Hot Path
