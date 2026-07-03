@@ -1338,3 +1338,77 @@ Testing-layer distinction:
 - `matched-sustained` measures confirmed-order matching and trade settlement throughput.
 - `full-system-sustained` should separately measure user order submission through Order, Wallet reservation, MatchEngine, and settlement.
 - These two layers cannot fully share the same prepared data because full-system testing must create orders through the normal service path, while matched-sustained starts from already confirmed orders.
+
+### Sustained Hotspot Probe: 10000 Trades at 2000 Offered TPS
+
+Run:
+
+```text
+MARKET_ID=GLT_20260703_SUSTAINED_HOTSPOT_10K
+EVENTS=10000
+TARGET_TPS=2000
+DURATION_SECONDS=5
+PUBLISHERS=128
+RUN_MODE=prepare-run
+RESET_PG_STATS_BEFORE_RUN=true
+```
+
+Result:
+
+- `actualBuyPublishTps=1999.03`
+- `buyPublishSeconds=5.00`
+- `drainSecondsAfterBuyPublish=21.89`
+- `elapsedSeconds=26.89`
+- `matchedE2eTps=371.83`
+- `tradeExecutions=10000`
+- `orderMatchedEvents=20000`
+- `walletTradeSettlements=10000`
+- `completedTrades=10000`
+- final queues and DLQ were `0`
+
+Interpretation:
+
+- The generator successfully offered roughly `2000 TPS` for the BUY leg.
+- The system completed correctly, but it could not sustain that offered load.
+- The backlog drained after publishing stopped, so this is a throughput bottleneck rather than correctness failure.
+
+Hot table stats after resetting PostgreSQL stats before the run:
+
+Order DB:
+
+- `order_stream_heads`: `idx_scan=60000`, `n_tup_upd=20000`
+- `orders_current`: `idx_scan=40000`, `n_tup_upd=20000`
+- `order_execution_links`: `idx_scan=20000`, `n_tup_ins=20000`
+- `order_event_store`: `idx_scan=10129`, `n_tup_ins=20000`
+- `order_event_outbox`: `idx_scan=9785`, `n_tup_ins=10000`, `n_tup_upd=10000`
+
+Wallet DB:
+
+- `wallets`: `idx_scan=20000`, `n_tup_upd=20000`
+- `trade_settlements`: `idx_scan=10000`, `n_tup_ins=10000`
+- `outbox`: `n_tup_ins=10000`, `n_tup_upd=10000`
+
+MatchEngine DB:
+
+- `trade_completion_view`: `idx_scan=30191`, `n_tup_ins=10000`, `n_tup_upd=20000`
+- `trade_outbox`: `idx_scan=7382`, `n_tup_ins=10000`, `n_tup_upd=10000`
+- `trade_executions`: `idx_scan=10000`, `n_tup_ins=10000`
+
+Hotspot ranking:
+
+1. Order DB matched-apply path:
+   - `order_stream_heads_pkey idx_scan=60000`
+   - `orders_current_pkey idx_scan=40000`
+   - buyer and seller orders still create large per-trade DB round trips.
+2. MatchEngine completion tracking:
+   - `trade_completion_view_pkey idx_scan=30168`
+   - completion view still has mutable update pressure.
+3. Wallet settlement:
+   - `wallets_user_id_key idx_scan=20000`
+   - expected because every trade updates buyer and seller wallets.
+
+Next optimization target:
+
+- Inspect Order `TradeExecuted` consumer / matched-apply path first.
+- The immediate question is whether buyer and seller matched application still performs avoidable repeated head lookup, projection lookup, idempotency check, or event append work.
+- Do not start by optimizing Wallet; its write volume is more business-essential and currently lower-ranked than Order.
