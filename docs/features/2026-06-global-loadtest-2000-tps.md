@@ -1542,3 +1542,49 @@ Expected impact in the next sustained probe:
 - `orders_current n_tup_upd` may still exist because the projector updates the read model after events are appended.
 - `order_stream_heads` remains hot because it is now the explicit command-side aggregate state and concurrency guard.
 - The next profiling question becomes whether command-side head writes are acceptable, or whether the state table needs further batching/partitioning.
+
+Verification run:
+
+```text
+MARKET_ID=GLT_20260703_COMMAND_STATE_HOTSPOT_10K_R2
+EVENTS=10000
+TARGET_TPS=2000
+DURATION_SECONDS=5
+PUBLISHERS=128
+RUN_MODE=prepare-run
+RESET_PG_STATS_BEFORE_RUN=true
+```
+
+Result:
+
+- `actualBuyPublishTps=1999.45`
+- `buyPublishSeconds=5.00`
+- `drainSecondsAfterBuyPublish=19.70`
+- `elapsedSeconds=24.70`
+- `matchedE2eTps=404.82`
+- `tradeExecutions=10000`
+- `orderMatchedEvents=20000`
+- `walletTradeSettlements=10000`
+- `completedTrades=10000`
+- final queues and DLQ were `0`
+
+Comparison with previous sustained hotspot probe:
+
+| Metric | Before command state | After command state |
+|---|---:|---:|
+| `matchedE2eTps` | `371.83` | `404.82` |
+| `elapsedSeconds` | `26.89` | `24.70` |
+| `drainSecondsAfterBuyPublish` | `21.89` | `19.70` |
+| `orders_current idx_scan` | `40000` | `20000` |
+| `orders_current n_tup_upd` | `20000` | `20000` |
+| `order_stream_heads idx_scan` | `60000` | `60000` |
+
+Interpretation:
+
+- The command path no longer reads `orders_current`; its index scans dropped by half.
+- The remaining `orders_current` scans/updates come from the read-model projector catching up after `OrderMatchedV1`.
+- `matchedE2eTps` improved by roughly `8.9%`.
+- `order_stream_heads` is still the hottest Order table because it is now the explicit command-side aggregate state and lock point.
+- The next optimization should either:
+  - remove projection catch-up from the measured business-completion path; or
+  - further reduce command-side round trips around stream head update/event append/outbox insert.
