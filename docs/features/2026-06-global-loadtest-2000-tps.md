@@ -1021,6 +1021,359 @@ Benchmark rule added:
 - Database correctness is mandatory, but it should be verified after the measured throughput window unless the test is explicitly measuring query-side load.
 - Monitoring overhead is a real production concern, but benchmark monitoring must be proportional to production-style metrics, not repeated ad-hoc full-table SQL checks.
 
+## Cross-Service Projection Boundary Audit
+
+Problem statement:
+
+- The original design goal was that projections/read models should not slow down the main business chain.
+- The 2000 TPS work exposed that the word "projection" had become too loose in discussion:
+  - some tables are business-critical state;
+  - some tables are reliability/idempotency markers;
+  - some tables are query/read projections that can safely lag.
+- Treating all of them as removable projections would create wrong architecture decisions.
+
+Decision rule:
+
+- A table can be moved out of the hot path only if all three are true:
+  1. it is not the source of business truth;
+  2. it is not required to safely process or deduplicate the current command;
+  3. it can be rebuilt or caught up later from canonical facts/events.
+- If a write is required to make money, inventory, order execution, or trade fact correct, it is not a projection even if it looks like a derived table.
+
+Service audit:
+
+| Service | Table / flow | Classification | Hot-path decision |
+|---|---|---|---|
+| Order | `order_event_store` | Canonical order facts | Must stay in hot path. |
+| Order | `order_stream_heads` | Command-side aggregate head / lock state | Must stay in hot path; used to validate remaining amount and status without reading projection. |
+| Order | `order_execution_links` | Idempotency / trade-to-order application link | Must stay in hot path to prevent duplicate `TradeExecuted` application. |
+| Order | `order_event_outbox` | Reliable publish marker | Must stay in hot path if Order must publish `OrderTradeApplied` reliably. |
+| Order | `orders_current` | Query projection | Should not be command hot path. It can lag and be rebuilt from `order_event_store`. |
+| Wallet | `wallets` | Business state: balances and locked assets | Must stay in hot path. User-visible money/asset correctness depends on it. |
+| Wallet | `trade_settlements` | Idempotency / settlement fact | Must stay in hot path to avoid double settlement. |
+| Wallet | `outbox` | Reliable publish marker | Must stay in hot path if Wallet must publish `WalletTradeSettled` reliably. |
+| MatchEngine | `trade_executions` | Canonical trade fact | Must stay in hot path. This is the durable fact that a match happened. |
+| MatchEngine | `trade_outbox` | Reliable publish marker | Must stay in hot path if MatchEngine must publish `TradeExecuted` reliably. |
+| MatchEngine | `trade_completion_view` | Cross-service completion read view | Candidate to move out of hot path or replace with append-only markers + async projector. |
+
+Current state after the Order command-state change:
+
+- Order no longer uses `orders_current` to decide whether a `TradeExecuted` can be applied.
+- The hot path now locks `order_stream_heads`, validates command-side remaining amount/status, appends `OrderMatchedV1`, updates the head, inserts idempotency links, and writes outbox.
+- `orders_current` remains a projection updated by `OrdersCurrentProjector`.
+- The benchmark still verifies `orders_current` after the run, which is correct for end-to-end acceptance, but it should not be interpreted as business hot-path completion.
+
+Important distinction for load testing:
+
+- Business completion should mean:
+  - MatchEngine persisted `TradeExecuted`;
+  - Order applied buyer/seller matched events;
+  - Wallet settled balances;
+  - required completion markers were accepted.
+- Read-model catch-up should mean:
+  - `orders_current` reflects the matched status;
+  - any completion/status view has converged.
+- These two timings should be reported separately.
+- Otherwise, a delayed projection can make the business chain look slower than it really is, and a fast projection can hide business write amplification.
+
+Next design target:
+
+- MatchEngine `trade_completion_view` is the remaining projection-like table still receiving high-frequency mutable updates from completion events.
+- Safer direction:
+  - keep `trade_executions` as the canonical trade fact;
+  - keep Order and Wallet completion events for distributed consistency visibility;
+  - change completion tracking from mutable view updates to append-only completion markers, for example `(trade_id, marker_type, occurred_at, source_event_id)`;
+  - build `trade_completion_view` asynchronously from those markers;
+  - make the load test report both marker acceptance and view convergence.
+- This preserves correctness while moving the read/convenience view away from the critical business chain.
+
+## Order Write-Amplification Review After Projection Isolation
+
+Clarification:
+
+- The earlier statement that projection could affect throughput was only true for benchmark acceptance timing and read-model catch-up.
+- After the command-state change, Order command handling no longer reads `orders_current` to decide whether a `TradeExecuted` can be applied.
+- Therefore, the remaining Order-side bottleneck should not be described as "projection lookup cost".
+- It is now mostly event-sourcing write amplification.
+
+Current Order `TradeExecuted` hot path:
+
+```text
+TradeExecutedEvent
+  -> lock buyer/seller order_stream_heads
+  -> validate status/remaining amount from command-side head state
+  -> insert buyer/seller order_execution_links in one multi-row statement
+  -> append buyer OrderMatchedV1 to order_event_store
+  -> update buyer order_stream_heads
+  -> append seller OrderMatchedV1 to order_event_store
+  -> update seller order_stream_heads
+  -> insert one shared OrderTradeApplied outbox row
+  -> scheduled outbox relay publishes marker and later updates outbox to SENT
+  -> scheduled projector eventually updates orders_current
+```
+
+What improved already:
+
+- `orders_current` is no longer used by the command path.
+- Buyer/seller stream heads are locked in one stable-order query.
+- Buyer/seller idempotency links are inserted in one multi-row statement.
+- `OrderTradeApplied` outbox is trade-level, not per-order marker; this avoids one extra outbox row per trade.
+- Idempotency marker and event append now commit/rollback in the same consumer transaction.
+
+Remaining write cost per completed trade:
+
+| Component | Writes per trade | Why it exists |
+|---|---:|---|
+| `order_execution_links` | 2 inserts | Idempotency marker for buyer/seller order application. |
+| `order_event_store` | 2 inserts | Canonical buyer/seller `OrderMatchedV1` facts. |
+| `order_stream_heads` | 2 updates | Command-side aggregate version/hash/status/remaining state. |
+| `order_event_outbox` | 1 insert + 1 update | Reliable publish of one `OrderTradeApplied` marker. |
+| `orders_current` | 2 async updates | Query projection; should be measured as read-model catch-up, not command completion. |
+
+Important non-goals:
+
+- Do not move Wallet balance correctness or Order event-store correctness into projection.
+- Do not remove `order_stream_heads`; it is now the explicit command-side concurrency guard.
+- Do not push matching business rules into SQL stored procedures only to reduce Java round trips; that would make the system harder to reason about and less portable.
+
+Viable next optimizations:
+
+1. Batch buyer/seller event-store append and head update inside `OrderEventAppender`.
+   - Current code calls the locked-head append helper twice.
+   - Both events are already in the same transaction and both previous hashes are known after the head lock.
+   - A specialized trade append method could:
+     - compute both hashes in Java;
+     - insert both `OrderMatchedV1` rows using one multi-row SQL statement;
+     - update both stream heads using one multi-row or `CASE` update;
+     - keep one shared outbox row.
+   - Expected benefit: fewer JDBC round trips and fewer repeated statement executions.
+   - Correctness constraint: event version/hash chain must remain per-order and deterministic.
+
+2. Re-evaluate whether `order_execution_links` can become a projection from `order_event_store`.
+   - The deterministic `event_id(orderId, MATCHED:matchId)` already gives one idempotency key per order/trade append.
+   - In theory, duplicate `TradeExecuted` could be detected from existing `OrderMatchedV1` events instead of a separate link table.
+   - Risk: the link table is currently a clear first-line idempotency gate and gives a simple consistency check `links == matched events`.
+   - Decision pending: only remove it if focused tests prove duplicate delivery, partial failure, and redelivery behavior stay safe without it.
+
+3. Separate benchmark timing:
+   - business completion: event-store append + Wallet settlement + required completion markers;
+   - read-model catch-up: `orders_current` projector convergence.
+   - This does not reduce real writes, but prevents projection lag from being mislabeled as command-chain TPS loss.
+
+Current assessment:
+
+- Order projection lookup is no longer the main issue.
+- Order write amplification is real and mostly intentional because each trade affects two independent order aggregates.
+- The safest next implementation target is buyer/seller append batching inside `OrderEventAppender`, not removing correctness tables first.
+
+Implemented action: specialized buyer/seller trade append batching.
+
+- Scope:
+  - Only changed the `TradeExecuted -> Order trade application` path.
+  - User order submission path remains a single-order append path.
+  - Fallback full-replay append path remains unchanged.
+- Before:
+
+  ```text
+  lock buyer/seller heads once
+  insert buyer/seller links once
+  append buyer OrderMatchedV1
+  update buyer head
+  append seller OrderMatchedV1
+  update seller head
+  insert one shared OrderTradeApplied outbox
+  ```
+
+- After:
+
+  ```text
+  lock buyer/seller heads once
+  insert buyer/seller links once
+  compute buyer/seller next versions and hash chain in Java
+  multi-row insert buyer/seller OrderMatchedV1 events
+  multi-row update buyer/seller stream heads
+  insert one shared OrderTradeApplied outbox
+  ```
+
+- What this optimizes:
+  - Reduces JDBC/SQL round trips on the successful trade-application path.
+  - Keeps two canonical Order events because buyer and seller are still two independent order aggregates.
+  - Keeps two stream-head updates because each order has its own version, hash chain, remaining amount, and status.
+  - Keeps one shared outbox marker per trade.
+- What this does not optimize:
+  - It does not remove event-store writes.
+  - It does not move business correctness into projection.
+  - It does not merge buyer/seller into one aggregate.
+- Verification:
+  - `OrderEventAppenderPostgresIT`: PASS.
+  - `TradeExecutedListenerTest`: PASS.
+
+Follow-up: fix benchmark observer effect in matched E2E.
+
+- Problem:
+  - The first 2000-run after batch append was functionally correct but reported only `182.74 TPS`.
+  - PostgreSQL stats showed the generator was still repeatedly scanning hot tables during the measured window:
+    - `order_event_store seq_scan=40`, `seq_tup_read=472696`;
+    - `orders_current seq_scan=40`, `seq_tup_read=160000`;
+    - `wallets seq_scan=160`, `seq_tup_read=640000`;
+    - `trade_completion_view seq_scan=40`, `seq_tup_read=79496`.
+  - This was a benchmark observer effect, not an accepted performance baseline.
+- Implemented action:
+  - Changed `MatchedE2eLoadGenerator.waitForDownstream(...)` so the hot wait loop polls RabbitMQ queue depth only.
+  - It now requires three consecutive queue-drained samples before leaving the timed hot window.
+  - Database invariant checks still run, but only after queue drain; they validate correctness without defining the TPS window.
+- Verification run:
+  - Run: `GLT_20260703_QUEUE_ONLY_ORDER_BATCH_2000`.
+  - Result: PASS.
+  - `matchedE2eTps=827.76`.
+  - `elapsedSeconds=2.42`.
+  - `drainSecondsAfterBuyPublish=1.88`.
+  - `tradeExecutions=2000`.
+  - `orderMatchedEvents=4000`.
+  - `orderCurrentMatchedRows=4000`.
+  - `walletTradeSettlements=2000`.
+  - `completedTrades=2000`.
+  - final queues and DLQ were `0`.
+- Post-run DB stats:
+  - `order_event_store seq_scan=0`, down from `40`.
+  - `orders_current seq_scan=12`, down from `40`.
+  - `wallets seq_scan=48`, down from `160`.
+  - `trade_completion_view seq_scan=12`, down from `40`.
+- Interpretation:
+  - The batch append change preserved full E2E correctness.
+  - The previous low TPS run is rejected as a polluted benchmark.
+  - The current clean 2000-run baseline is `827.76 TPS` for queue-drain business completion with post-drain DB correctness verification.
+
+Sustained verification:
+
+- Run: `GLT_20260703_ORDER_BATCH_SUSTAINED_10K`.
+- Load shape:
+  - `EVENTS=10000`
+  - `TARGET_TPS=2000`
+  - `DURATION_SECONDS=5`
+  - `PUBLISHERS=128`
+- Result: PASS.
+  - `actualBuyPublishTps=1996.31`.
+  - `buyPublishSeconds=5.01`.
+  - `drainSecondsAfterBuyPublish=7.21`.
+  - `elapsedSeconds=12.22`.
+  - `matchedE2eTps=818.39`.
+  - `tradeExecutions=10000`.
+  - `orderMatchedEvents=20000`.
+  - `orderCurrentMatchedRows=20000`.
+  - `walletTradeSettlements=10000`.
+  - `completedTrades=10000`.
+  - `remainingSellOrders=0`.
+  - `remainingBuyOrders=0`.
+  - final queues and DLQ were `0`.
+- Queue signal:
+  - `maxMatchEngineQueueReady=3406`.
+  - downstream TradeExecuted / OrderTradeApplied / WalletTradeSettled queues did not build meaningful backlog.
+- Interpretation:
+  - The publisher can feed the system at ~2000 TPS.
+  - The full system drains at about `818 TPS` on this local environment.
+  - The largest backlog appears at `matchEngine.orderConfirmed.queue`, so the next investigation should focus on MatchEngine ingestion/matching throughput before further Order-side micro-optimizations.
+- Post-run DB stats:
+  - Order:
+    - `order_event_store n_tup_ins=20000`.
+    - `order_execution_links n_tup_ins=20000`.
+    - `order_stream_heads n_tup_upd=20000`, `idx_scan=60000`.
+    - `order_event_outbox n_tup_ins=10000`, `n_tup_upd=10000`.
+    - `orders_current n_tup_upd=20000`.
+  - MatchEngine:
+    - `trade_executions n_tup_ins=10000`.
+    - `trade_outbox n_tup_ins=10000`, `n_tup_upd=10000`.
+    - `trade_completion_view n_tup_ins=10000`, `n_tup_upd=20000`.
+  - Wallet:
+    - `wallets n_tup_upd=20000`.
+    - `trade_settlements n_tup_ins=10000`.
+    - `outbox n_tup_ins=10000`, `n_tup_upd=10000`.
+
+## Friday Wrap-Up / Monday Resume Plan
+
+Date: 2026-07-03 Friday.
+
+Current accepted state:
+
+- Order `TradeExecuted -> Order trade application` path now uses a specialized buyer/seller batch append path:
+  - one lock query for buyer/seller stream heads;
+  - one multi-row insert for buyer/seller idempotency links;
+  - one multi-row insert for buyer/seller `OrderMatchedV1` events;
+  - one multi-row update for buyer/seller stream heads;
+  - one shared `OrderTradeApplied` outbox row.
+- User order submission path was not changed.
+- `order_event_store` remains canonical Order fact storage.
+- `order_stream_heads` remains command-side lock/state/hash/version guard.
+- `orders_current` remains async read projection.
+- The load-test observer effect was fixed:
+  - hot window now polls RabbitMQ queues only;
+  - DB invariants run after queue drain;
+  - the old `182.74 TPS` result is rejected as polluted.
+
+Accepted verification:
+
+- `OrderEventAppenderPostgresIT`: PASS.
+- `TradeExecutedListenerTest`: PASS.
+- `eap-order test`: PASS.
+- Clean 2000 matched E2E:
+  - Run `GLT_20260703_QUEUE_ONLY_ORDER_BATCH_2000`.
+  - `matchedE2eTps=827.76`.
+  - correctness gates all passed.
+- Sustained 10k matched E2E:
+  - Run `GLT_20260703_ORDER_BATCH_SUSTAINED_10K`.
+  - `actualBuyPublishTps=1996.31`.
+  - `matchedE2eTps=818.39`.
+  - `tradeExecutions=10000`.
+  - `orderMatchedEvents=20000`.
+  - `walletTradeSettlements=10000`.
+  - `completedTrades=10000`.
+  - final queues and DLQ were `0`.
+
+Monday first investigation:
+
+1. Focus on MatchEngine ingestion/matching path.
+   - Evidence:
+     - Sustained 10k run reached publish rate `~1996 TPS`.
+     - Full-system drain throughput was `~818 TPS`.
+     - `maxMatchEngineQueueReady=3406`.
+     - downstream queues did not build meaningful backlog.
+   - Initial hypothesis:
+     - Bottleneck is before/inside MatchEngine consuming `matchEngine.orderConfirmed.queue` and producing `TradeExecuted`.
+     - Order trade application and Wallet settlement are currently not the first backlog point in this run shape.
+
+2. Inspect MatchEngine code path:
+   - `OrderConfirmedEvent` listener concurrency and prefetch.
+   - Redis ZSET / Lua matching cost.
+   - Trade persistence path:
+     - `trade_executions`;
+     - `trade_outbox`;
+     - `trade_completion_view` initial marker.
+   - Outbox relay polling cost.
+   - Any synchronous logging or per-event serialization overhead.
+
+3. Add/collect focused metrics before changing design:
+   - consumed `OrderConfirmedEvent` rate;
+   - `TradeExecuted` created rate;
+   - Redis matching latency;
+   - DB trade persistence latency;
+   - MatchEngine listener active/concurrency count;
+   - queue ready/unacked split for `matchEngine.orderConfirmed.queue`.
+
+4. Next candidate implementation areas:
+   - normalize/increase MatchEngine order-confirmed listener concurrency only if DB/Redis can absorb it;
+   - batch or streamline trade persistence/outbox insert if per-trade DB round trips dominate;
+   - isolate MatchEngine completion tracking from trade execution hot path if `trade_completion_view` still competes;
+   - avoid changing Order or Wallet again until MatchEngine ingestion evidence is clear.
+
+Do not forget:
+
+- Use queue-only timing for TPS numbers.
+- Treat DB correctness checks as post-drain invariants, not hot-window polling.
+- Do not accept runs with repeated hot-table DB polling as performance baselines.
+- Before major code changes, run or preserve:
+  - `GLT_20260703_QUEUE_ONLY_ORDER_BATCH_2000` as smoke baseline;
+  - `GLT_20260703_ORDER_BATCH_SUSTAINED_10K` as sustained baseline.
+
 ## Resume Notes
 
 - Built a role-based AI engineering workflow using reusable Codex skills for architecture review, performance budgeting, implementation, QA, and production-style review.
