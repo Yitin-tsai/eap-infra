@@ -1503,3 +1503,42 @@ Recommended next step:
 - If TPS improves materially, the projector was competing with the command hot path.
 - Then implement option 2 to reduce transaction round trips.
 - Keep option 3 as the architectural cleanup if Order remains the dominant bottleneck.
+
+### Order Command-Side State Fix
+
+Decision:
+
+- Do not solve the main bottleneck by only changing the load test.
+- The actual architecture issue is that `TradeExecuted` command handling reads `orders_current`, which is supposed to be a read projection.
+- Move hot-path validation state into the command-side stream head instead.
+
+Change:
+
+- Extended `order_service.order_stream_heads` with command-side state:
+  - `user_id`
+  - `remaining_amount`
+  - `status`
+- `OrderEventAppender` now updates this state whenever it appends an Order event:
+  - `OrderSubmissionRequestedV1` -> `PENDING_ASSET_CHECK`, initial remaining amount.
+  - `OrderAssetReservationConfirmedV1` -> `OPEN`.
+  - `OrderAssetReservationFailedV1` -> `REJECTED`.
+  - `OrderMatchedV1` -> decrement remaining amount, set `MATCHED` or `PARTIALLY_MATCHED`.
+  - `OrderCancelledV1` -> `CANCELLED`.
+- `TradeExecuted` fast path now locks and validates `order_stream_heads` only.
+- It no longer joins `orders_current`.
+- Buyer/seller stream heads are locked in one stable-order SQL query.
+- Buyer/seller `order_execution_links` are inserted with one multi-row insert.
+
+Why this is better:
+
+- `orders_current` returns to being a rebuildable read model.
+- Command correctness no longer depends on projection freshness.
+- A stale read projection no longer forces fallback to event replay or blocks trade application.
+- The write hot path now depends on command-side state owned by the aggregate stream.
+
+Expected impact in the next sustained probe:
+
+- `orders_current idx_scan` caused by Order command handling should drop.
+- `orders_current n_tup_upd` may still exist because the projector updates the read model after events are appended.
+- `order_stream_heads` remains hot because it is now the explicit command-side aggregate state and concurrency guard.
+- The next profiling question becomes whether command-side head writes are acceptable, or whether the state table needs further batching/partitioning.
