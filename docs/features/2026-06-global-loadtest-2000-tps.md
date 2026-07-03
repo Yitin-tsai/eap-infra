@@ -1412,3 +1412,94 @@ Next optimization target:
 - Inspect Order `TradeExecuted` consumer / matched-apply path first.
 - The immediate question is whether buyer and seller matched application still performs avoidable repeated head lookup, projection lookup, idempotency check, or event append work.
 - Do not start by optimizing Wallet; its write volume is more business-essential and currently lower-ranked than Order.
+
+### Order CQRS/Event-Sourcing Hot Path Review
+
+Context:
+
+- Order was refactored to event sourcing + CQRS first for correctness.
+- The first CQRS version prioritized correctness and replayability, not sustained hot-path write efficiency.
+- The sustained hotspot probe showed Order DB as the largest pressure source.
+
+Current `TradeExecuted` flow in Order:
+
+```text
+TradeExecutedListener
+  -> OrderEventSourcingService.applyTrade
+  -> OrderEventAppender.appendTradeMatchedFromCaughtUpProjectionIfTradeLinksAbsent
+```
+
+Fast path behavior:
+
+1. Lock buyer and seller rows through `lockCaughtUpProjection`.
+2. `lockCaughtUpProjection` joins:
+   - `order_stream_heads`
+   - `orders_current`
+3. It requires:
+   - `orders_current.aggregate_version = order_stream_heads.current_version`
+   - status is matchable
+   - remaining amount is sufficient
+4. Insert buyer/seller `order_execution_links`.
+5. Insert buyer/seller `OrderMatchedV1` events.
+6. Update buyer/seller `order_stream_heads`.
+7. Insert one shared `OrderTradeApplied` outbox message.
+8. The scheduled projector later consumes `OrderMatchedV1` and updates `orders_current`.
+
+Observed write/read amplification for `10000` trades:
+
+- `order_stream_heads idx_scan=60000`
+  - about `20000` from projection/head locking;
+  - about `20000` from head updates;
+  - about `20000` from FK checks when inserting event-store rows.
+- `orders_current idx_scan=40000`
+  - about `20000` from fast-path validation;
+  - about `20000` from projection updates.
+- `orders_current n_tup_upd=20000`
+  - caused by the read-model projector catching up during the measured run.
+- `order_event_store n_tup_ins=20000`
+  - expected: buyer and seller each append one matched event.
+- `order_execution_links n_tup_ins=20000`
+  - expected: buyer and seller each record idempotency/application link.
+
+Architecture issue:
+
+- `orders_current` is a read projection, but the current fast path uses it for synchronous command-side validation.
+- This makes the read model part of the write hot path.
+- It helped avoid full event-stream replay, but it also reintroduced `orders_current` as a hot table during matching.
+- This weakens the CQRS separation: projection is no longer purely eventually consistent read state.
+
+Immediate optimization options:
+
+1. Split business completion from read-model catch-up in the load test.
+   - During measured run, keep projection prewarmed but stop scheduled projection catch-up.
+   - Measure business completion from:
+     - `OrderMatchedV1` appended;
+     - Wallet settled;
+     - MatchEngine completion marker received.
+   - Measure `orders_current` catch-up as a separate read-model lag metric.
+   - Expected impact: removes `orders_current n_tup_upd=20000` from the measured hot path.
+
+2. Batch buyer/seller SQL inside the existing transaction.
+   - Replace two separate projection-lock queries with one stable-order `IN (...) FOR UPDATE` query.
+   - Replace two separate execution-link inserts with one multi-row insert.
+   - Replace two separate event inserts with one multi-row insert if ordering/hash handling remains clear.
+   - Replace two separate head updates with one `UPDATE ... FROM (VALUES ...)`.
+   - This reduces DB round trips even if row-level write count remains similar.
+
+3. Move command-side matchability state out of `orders_current`.
+   - Add or extend a write-side aggregate state/head table with:
+     - current version;
+     - last hash;
+     - user id;
+     - status;
+     - remaining amount.
+   - Use this as the authoritative command-side snapshot.
+   - Keep `orders_current` as rebuildable read projection only.
+   - This is a larger but cleaner CQRS design.
+
+Recommended next step:
+
+- First implement option 1 in the load test and profile again.
+- If TPS improves materially, the projector was competing with the command hot path.
+- Then implement option 2 to reduce transaction round trips.
+- Keep option 3 as the architectural cleanup if Order remains the dominant bottleneck.
