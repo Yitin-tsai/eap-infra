@@ -18,6 +18,24 @@ worktree/
 # Project artifacts
 user_guide.md
 project-ghostwriter-*.tgz
+.cache/
+build/
+
+# Private career / resume / interview artifacts
+_bmad-output/
+_bmad/
+resume/
+tmp_resume/
+Yinting_Tsai_Resume_*.pdf
+*.doc
+*.docx
+docs/tsmc-interview-prep.md
+docs/workflow/resume-ai-workflow-notes.md
+scripts/fill_yueqing_resume.applescript
+
+# Local editor / scratch files
+.vscode/
+Solution.java
 
 # OS
 .DS_Store
