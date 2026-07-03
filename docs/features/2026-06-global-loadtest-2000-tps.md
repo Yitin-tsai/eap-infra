@@ -870,12 +870,43 @@ Verification:
   - `trade_completion_view_pkey idx_scan=6159`
   - `idx_trade_completion_incomplete idx_scan=0`
 
+Scale-up verification:
+
+- Guarded 2000 matched E2E run `GLT_20260703_MATCH_COMPLETION_OPT_2000`: PASS.
+  - `matchedE2eTps=385.87`
+  - `tradeExecutions=2000`
+  - `orderMatchedEvents=4000`
+  - `orderCurrentMatchedRows=4000`
+  - `walletTradeSettlements=2000`
+  - `completedTrades=2000`
+  - final queues and DLQ were `0`
+- Completion view consistency:
+  - `total=2000`
+  - `completed=2000`
+  - `missing_buyer=0`
+  - `missing_seller=0`
+  - `missing_wallet=0`
+- Post-run MatchEngine DB stats:
+  - `trade_completion_view n_tup_ins=2000`
+  - `trade_completion_view n_tup_upd=6000`
+  - `trade_completion_view idx_scan=8174`
+  - `trade_completion_view seq_scan=21`
+  - `trade_completion_view seq_tup_read=34948`
+  - `trade_completion_view_pkey idx_scan=8174`
+  - `idx_trade_completion_incomplete idx_scan=0`
+- Post-run Order DB stats:
+  - `order_event_store n_tup_ins=4000`
+  - `order_execution_links n_tup_ins=4000`
+  - `order_stream_heads idx_scan=12000`
+  - `orders_current idx_scan=8000`
+
 Result:
 
 - TPS improved from `205.11` to `388.91` on the comparable guarded 1500-run.
 - `trade_completion_view` index scans dropped from `18987` to `6159`.
 - The incomplete-row index was not touched during the hot-path run after disabling the reconciler.
 - Correctness gates remained green.
+- The 2000-run sustained the same throughput class (`385.87 TPS`) while preserving all completion and queue-drain correctness gates.
 
 Design decision:
 
