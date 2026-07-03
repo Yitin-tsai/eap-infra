@@ -1279,3 +1279,62 @@ Interpretation rule:
   - queue peaks and drain time are bounded;
   - `drainSecondsAfterBuyPublish` does not grow unbounded relative to the publish window.
 - If `TARGET_TPS=2000` creates growing backlog and long drain time, the test is still useful: it proves the current system cannot yet sustain that offered load.
+
+### Prepare vs Run-Only Mode
+
+Problem found during the first `80000`-event sustained attempt:
+
+- The sustained script originally always executed the full two-phase harness:
+  - stop services;
+  - purge queues;
+  - seed Order Event Store and Wallet rows;
+  - prewarm `orders_current`;
+  - start services;
+  - run the paced load;
+  - collect final queue state.
+- For `EVENTS=80000`, the prepare phase creates `160000` orders and `160000` wallet rows before the actual sustained run starts.
+- This makes the test reproducible, but it mixes dataset preparation cost with the real TPS experiment.
+
+Script change:
+
+- `RUN_MODE=prepare-run` remains the default and preserves the old reproducible behavior.
+- `RUN_MODE=prepare` prepares the dataset and exits before starting the load.
+- `RUN_MODE=run-only` skips seed/projection and runs against an already prepared, unused dataset.
+
+Examples:
+
+```bash
+MARKET_ID=GLT_2000TPS_DATASET_001 \
+TARGET_TPS=2000 \
+DURATION_SECONDS=40 \
+RUN_MODE=prepare \
+bash scripts/load-test/run-global-matched-e2e-sustained.sh
+```
+
+```bash
+MARKET_ID=GLT_2000TPS_DATASET_001 \
+TARGET_TPS=2000 \
+DURATION_SECONDS=40 \
+RUN_MODE=run-only \
+bash scripts/load-test/run-global-matched-e2e-sustained.sh
+```
+
+Dataset reuse rule:
+
+- The same prepared dataset can be used for one clean `run-only` attempt.
+- It is not safely reusable after a successful run because the run mutates:
+  - Order Event Store;
+  - `orders_current`;
+  - Wallet balances;
+  - MatchEngine trade tables;
+  - Redis order book state.
+- Repeated runs should use either:
+  - a new `MARKET_ID`;
+  - a prebuilt pool of datasets;
+  - or a database snapshot/restore taken immediately after `RUN_MODE=prepare`.
+
+Testing-layer distinction:
+
+- `matched-sustained` measures confirmed-order matching and trade settlement throughput.
+- `full-system-sustained` should separately measure user order submission through Order, Wallet reservation, MatchEngine, and settlement.
+- These two layers cannot fully share the same prepared data because full-system testing must create orders through the normal service path, while matched-sustained starts from already confirmed orders.

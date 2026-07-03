@@ -16,9 +16,18 @@ MARKET_ID="${MARKET_ID:-GLOBAL_LOADTEST_$(date +%Y%m%d_%H%M%S)}"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-90}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-false}"
+RUN_MODE="${RUN_MODE:-prepare-run}"
 RUN_REPORT_LOG="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-run.log"
 RUN_REPORT_JSON="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-result.json"
 RUN_REPORT_META="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-meta.txt"
+
+case "${RUN_MODE}" in
+  prepare|run-only|prepare-run) ;;
+  *)
+    echo "[ERROR] RUN_MODE must be one of: prepare, run-only, prepare-run" >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "${REPORT_DIR}" "$(dirname "${LOCK_DIR}")"
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
@@ -38,6 +47,7 @@ fi
   echo "timeoutSeconds=${TIMEOUT_SECONDS}"
   echo "targetTps=${TARGET_TPS}"
   echo "durationSeconds=${DURATION_SECONDS}"
+  echo "runMode=${RUN_MODE}"
   echo "startedAt=${STARTED_AT}"
   echo "script=${BASH_SOURCE[0]}"
 } > "${LOCK_INFO_FILE}"
@@ -115,6 +125,7 @@ write_run_metadata() {
     echo "timeoutSeconds=${TIMEOUT_SECONDS}"
     echo "targetTps=${TARGET_TPS}"
     echo "durationSeconds=${DURATION_SECONDS}"
+    echo "runMode=${RUN_MODE}"
     echo "resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
     echo "startedAt=${STARTED_AT}"
     echo "orderDbEndpoint=localhost:15432/eap_order_db"
@@ -160,31 +171,42 @@ extract_last_json_object() {
 
 echo "[INFO] marketId=${MARKET_ID}"
 echo "[INFO] events=${EVENTS}, publishers=${PUBLISHERS}, timeout=${TIMEOUT_SECONDS}s"
+echo "[INFO] runMode=${RUN_MODE}"
 echo "[INFO] run report log=${RUN_REPORT_LOG}"
 echo "[INFO] run report json=${RUN_REPORT_JSON}"
 echo "[INFO] run report meta=${RUN_REPORT_META}"
 write_run_metadata
 
-assert_environment "before seed"
+if [[ "${RUN_MODE}" == "prepare" || "${RUN_MODE}" == "prepare-run" ]]; then
+  assert_environment "before seed"
 
-echo "[INFO] stopping services before seed"
-bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
+  echo "[INFO] stopping services before seed"
+  bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
 
-echo "[INFO] purging queues before seed"
-assert_environment "before queue purge"
-bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+  echo "[INFO] purging queues before seed"
+  assert_environment "before queue purge"
+  bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
-echo "[INFO] seeding test data"
-MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=seed \
-  bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh"
+  echo "[INFO] seeding test data"
+  MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=seed \
+    bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh"
 
-echo "[INFO] purging queues after seed"
-assert_environment "after seed"
-bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+  echo "[INFO] purging queues after seed"
+  assert_environment "after seed"
+  bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
-echo "[INFO] prewarming Order projection before run"
-MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=project \
-  bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh"
+  echo "[INFO] prewarming Order projection before run"
+  MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=project \
+    bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh"
+
+  if [[ "${RUN_MODE}" == "prepare" ]]; then
+    echo "[INFO] prepare complete; rerun with RUN_MODE=run-only and the same MARKET_ID/EVENTS to execute the sustained load."
+    exit 0
+  fi
+else
+  echo "[INFO] skipping seed/projection because RUN_MODE=run-only"
+  echo "[INFO] expecting prepared, unused dataset: marketId=${MARKET_ID}, events=${EVENTS}"
+fi
 
 if [[ "${RESET_PG_STATS_BEFORE_RUN}" == "true" ]]; then
   reset_pg_stats
