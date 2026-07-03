@@ -923,6 +923,104 @@ Next checks:
   - completion should be set exactly once when all markers exist.
 - Compare 1500 and 2000 runs after this change to decide whether the next bottleneck is MatchEngine order-confirmed ingestion, RabbitMQ consumer concurrency, or database write amplification.
 
+## Load-Test Observer Effect: DB Polling Interference
+
+Problem statement:
+
+- During the 2000 TPS investigation, a run with the same business logic unexpectedly dropped from the `~385-389 TPS` class to `220.79 TPS`.
+- The run was still functionally correct:
+  - `GLT_20260703_LIGHT_POLLING_2000`
+  - `tradeExecutions=2000`
+  - `orderMatchedEvents=4000`
+  - `orderCurrentMatchedRows=4000`
+  - `walletTradeSettlements=2000`
+  - `completedTrades=2000`
+  - final queues and DLQ were `0`
+- The drop was caused by the load-test verifier, not by a regression in the trading flow.
+
+Root cause:
+
+- The generator waited for completion by polling database aggregate counts every `100ms`.
+- Even after removing some expensive wallet balance checks from the polling loop, the progress loop still executed repeated `count(*)` queries against hot tables:
+  - `match_engine.trade_executions`
+  - `match_engine.trade_completion_view`
+  - `wallet_service.trade_settlements`
+  - `order_service.order_event_store`
+- These queries competed with the actual hot path for database CPU, buffer cache, and connection time.
+- This is a benchmark observer effect: the measurement tool changed the system behavior being measured.
+
+Evidence from the polluted run:
+
+- `GLT_20260703_LIGHT_POLLING_2000`: PASS but slow.
+  - `matchedE2eTps=220.79`
+  - `elapsedSeconds=9.06`
+  - `maxMatchEngineQueueReady=512`
+- Run-only PostgreSQL stats showed verifier-driven scans:
+  - `match_engine.trade_executions seq_tup_read=105844`
+  - `match_engine.trade_completion_view seq_tup_read=105911`
+  - `wallet_service.trade_settlements seq_tup_read=97325`
+  - `wallet_service.wallets seq_tup_read=272000`
+
+Implemented action:
+
+- Changed `MatchedE2eLoadGenerator.waitForDownstream(...)` to use queue-only polling during the hot run.
+- During the hot run, the generator now checks only RabbitMQ queue depth:
+  - `matchEngine.orderConfirmed.queue`
+  - `order.orderMatched.queue`
+  - `wallet.orderMatched.queue`
+  - `order.tradeExecuted.queue`
+  - `wallet.tradeExecuted.queue`
+  - `matchEngine.orderTradeApplied.queue`
+  - `matchEngine.walletTradeSettled.queue`
+- Full database invariants are checked only after queues drain.
+- This preserves correctness checks while avoiding repeated database scans during the throughput window.
+
+Verification:
+
+- `eap-order testClasses`: PASS.
+- Guarded 2000 matched E2E run `GLT_20260703_QUEUE_ONLY_POLLING_2000`: PASS.
+  - `matchedE2eTps=389.14`
+  - `elapsedSeconds=5.14`
+  - `tradeExecutions=2000`
+  - `orderMatchedEvents=4000`
+  - `orderCurrentMatchedRows=4000`
+  - `walletTradeSettlements=2000`
+  - `completedTrades=2000`
+  - final queues and DLQ were `0`
+  - `maxMatchEngineQueueReady=943`
+- The reported intermediate milestone times are now conservative upper bounds because the generator no longer polls DB counts during the run.
+
+DB stats after queue-only polling:
+
+- MatchEngine:
+  - `trade_executions seq_tup_read=25280`, down from `105844`
+  - `trade_completion_view seq_tup_read=25305`, down from `105911`
+  - `trade_completion_view idx_scan=8183`
+- Wallet:
+  - `trade_settlements seq_tup_read=20504`, down from `97325`
+  - `wallets seq_tup_read=208000`
+- Order:
+  - `order_event_store seq_tup_read=94480`
+  - `orders_current seq_tup_read=52000`
+  - `order_event_outbox seq_tup_read=137829`
+
+Interpretation:
+
+- Queue-only polling restored throughput to the previous accepted 2000-run class (`~386-389 TPS`).
+- The `220.79 TPS` run should be rejected as a polluted benchmark.
+- A later experiment requiring several consecutive zero-ready queue samples before verification was also rejected as an over-conservative timing boundary because it counted broker/consumer tail fluctuation into elapsed time and reported `197.14 TPS` without showing a business correctness regression.
+- Remaining `seq_tup_read` is mostly from post-drain correctness checks and outbox polling, not from verifier queries inside the hot completion loop.
+- The next benchmark improvement should separate "hot-path timing" and "post-run invariant verification" even more clearly:
+  - measure hot-path completion with low-cost queue/metrics signals;
+  - run heavy SQL consistency checks after the timed window;
+  - keep PostgreSQL stats reset immediately before the timed run.
+
+Benchmark rule added:
+
+- A TPS number is not accepted if the verifier repeatedly scans hot service tables during the measured window.
+- Database correctness is mandatory, but it should be verified after the measured throughput window unless the test is explicitly measuring query-side load.
+- Monitoring overhead is a real production concern, but benchmark monitoring must be proportional to production-style metrics, not repeated ad-hoc full-table SQL checks.
+
 ## Resume Notes
 
 - Built a role-based AI engineering workflow using reusable Codex skills for architecture review, performance budgeting, implementation, QA, and production-style review.
