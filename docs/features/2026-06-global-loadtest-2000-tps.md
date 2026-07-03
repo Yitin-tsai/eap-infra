@@ -1026,3 +1026,83 @@ Benchmark rule added:
 - Built a role-based AI engineering workflow using reusable Codex skills for architecture review, performance budgeting, implementation, QA, and production-style review.
 - Applied the workflow to a 2000 TPS event-driven trading-system load-test initiative with per-service database isolation, transactional outbox, idempotent consumers, and completion reconciliation.
 - Converted performance work into a Scrum-style backlog with explicit Definition of Done, queue-drain correctness, and production-review gates.
+
+## Hot-Path Amplification Experiments: Rejected Optimizations
+
+Context:
+
+- After the accepted `GLT_20260703_QUEUE_ONLY_POLLING_2000` baseline (`389.14 completed trades/s`), the next investigation focused on business hot-path amplification rather than listener-count tuning.
+- The stable bottleneck shape is fixed per completed trade:
+  - MatchEngine persists `TradeExecuted`, publishes outbox, and updates `trade_completion_view`.
+  - Order applies buyer and seller `OrderMatchedV1` events and publishes two `OrderTradeApplied` markers.
+  - Wallet updates buyer and seller balances, writes settlement marker, and publishes `WalletTradeSettled`.
+  - MatchEngine consumes three completion markers and converges `completed_at`.
+
+### Experiment 1: Wallet native idempotency claim
+
+Hypothesis:
+
+- Replace Wallet's `existsByTradeId(...)` pre-read plus `save(...)` with native:
+  - `INSERT INTO wallet_service.trade_settlements ... ON CONFLICT (trade_id) DO NOTHING`
+- Expected benefit: remove one read-before-write from the `TradeExecuted -> Wallet settlement` path.
+
+Result:
+
+- Run `GLT_20260703_WALLET_NATIVE_CLAIM_2000`: PASS for correctness, rejected for throughput.
+  - `matchedE2eTps=326.95`
+  - `tradeExecutions=2000`
+  - `orderMatchedEvents=4000`
+  - `walletTradeSettlements=2000`
+  - `completedTrades=2000`
+  - final queues and DLQ were `0`
+- Compared with accepted baseline `389.14 TPS`, this was a regression.
+- Post-run stats still showed the core Wallet cost remained:
+  - `wallets n_tup_upd=4000`
+  - `trade_settlements n_tup_ins=2000`
+  - `outbox n_tup_ins=2000`, `outbox n_tup_upd=2000`
+
+Decision:
+
+- Rejected and reverted.
+- Reason: the removed pre-read was not the dominant cost. Wallet settlement remains dominated by two wallet row updates, settlement ledger insert, outbox insert/update, and transaction/WAL cost.
+- Interview point: fewer SQL statements is not automatically faster; the measured bottleneck must match the optimized operation.
+
+### Experiment 2: Completion marker duplicate-write guard
+
+Hypothesis:
+
+- Make `trade_completion_view` marker upserts skip duplicate writes by adding `WHERE` guards and `COALESCE(...)`.
+- Expected benefit: reduce write amplification under duplicate MQ delivery or replay.
+
+Result:
+
+- Unit tests passed, but global run `GLT_20260703_COMPLETION_DUP_GUARD_2000` was rejected:
+  - `matchedE2eTps=191.10`
+  - `tradeExecutions=2000`
+  - `orderMatchedEvents=4000`
+  - `walletTradeSettlements=2000`
+  - `completedTrades=2000`
+  - final queues and DLQ were `0`
+- `trade_completion_view` still had:
+  - `n_tup_ins=2000`
+  - `n_tup_upd=6000`
+- The guard did not reduce clean-path updates because the normal path has no duplicate markers.
+- The SQL became heavier while preserving the same number of clean-path writes.
+
+Decision:
+
+- Rejected and reverted.
+- Reason: this protects a duplicate/replay scenario but penalizes the primary clean path, and it does not reduce the fixed `3 marker updates per trade` design cost.
+
+### Current conclusion
+
+- The remaining throughput problem is not a small SQL micro-optimization problem.
+- To materially improve completed-trade TPS, the next design-level options are:
+  1. reduce completion-marker count or combine marker semantics safely;
+  2. move completion convergence to a lower-priority/batched worker if "completed TPS" does not need to include reconciliation latency;
+  3. redesign completion tracking from row mutation per marker into append + batch compaction;
+  4. keep current consistency model and accept the current `~385-389 completed trades/s` class as the reliable baseline until a larger architecture change is justified.
+
+Interview story:
+
+> I tested two plausible hot-path optimizations and rejected both based on evidence. A Wallet `ON CONFLICT DO NOTHING` claim looked cleaner than pre-read idempotency, but it regressed the 2000-trade E2E run from the accepted `389 TPS` class to `327 TPS` because the dominant cost was still wallet row updates, settlement insert, outbox writes, and WAL. I also tried guarding duplicate completion marker updates, but clean-path traffic still required the same `6000` completion-view updates for `2000` trades and throughput dropped to `191 TPS`. The lesson was that this bottleneck is architectural write amplification, not a missing index or one inefficient query.
