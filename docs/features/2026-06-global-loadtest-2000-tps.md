@@ -1205,3 +1205,77 @@ Result:
 Interview story:
 
 > I found that the completed-trade path was not just slow because of PostgreSQL tuning; it was doing unnecessary cross-service completion work. A single `TradeExecuted` caused Order to emit separate buyer and seller completion markers even though MatchEngine only needed to know whether the Order side as a whole had applied the trade. I changed the Order consumer to append buyer and seller `OrderMatchedV1` events in one transaction, with deterministic lock ordering and idempotent link inserts, then emit one trade-level `OrderTradeApplied` marker. That reduced Order outbox writes from the `4000` class to `2000` for a 2000-trade run, reduced MatchEngine completion-view updates from `6000` to `4000`, and improved full completed-trade throughput from `389.14 TPS` to `422.12 TPS` while keeping final queues and DLQ at zero.
+
+## Sustained Fixed-Rate Load Test
+
+Problem:
+
+- The guarded 2000-trade runs are useful regression benchmarks, but they are burst-drain tests:
+  - the generator publishes the BUY leg as fast as possible;
+  - the system drains the broker and downstream services;
+  - TPS is calculated as `matches / elapsedSeconds`.
+- This does not prove that the system can sustain a target rate for a longer interval.
+
+Added test mode:
+
+- Added `scripts/load-test/run-global-matched-e2e-sustained.sh`.
+- Added fixed-rate BUY publishing to `MatchedE2eLoadGenerator`.
+- The SELL leg is still published first without pacing to preload the resting order book.
+- The BUY leg is paced by `TARGET_TPS`.
+
+Default sustained test:
+
+```bash
+bash scripts/load-test/run-global-matched-e2e-sustained.sh
+```
+
+Defaults:
+
+```text
+TARGET_TPS=2000
+DURATION_SECONDS=40
+EVENTS=TARGET_TPS * DURATION_SECONDS = 80000
+PUBLISHERS=128
+RESET_PG_STATS_BEFORE_RUN=true
+```
+
+Important parameter meaning:
+
+- `TARGET_TPS` is the offered load, not a claim that the system can sustain that TPS.
+- `EVENTS` controls total trades.
+- `DURATION_SECONDS` controls the intended publish window only when `EVENTS` is not explicitly set.
+- If `EVENTS=20000 TARGET_TPS=2000 DURATION_SECONDS=40`, the expected publish window is `10s`, not `40s`.
+- To truly test `2000 TPS for 40s`, use `EVENTS=80000 TARGET_TPS=2000 DURATION_SECONDS=40`.
+
+New result fields:
+
+- `targetTps`
+- `durationSeconds`
+- `expectedBuyPublishSeconds`
+- `actualBuyPublishTps`
+- `drainSecondsAfterBuyPublish`
+
+Smoke verification:
+
+- Run `GLT_20260703_SUSTAINED_SMOKE_20`: PASS.
+  - `EVENTS=20`
+  - `TARGET_TPS=10`
+  - `DURATION_SECONDS=2`
+  - `buyPublishSeconds=1.90`
+  - `actualBuyPublishTps=10.52`
+  - `drainSecondsAfterBuyPublish=4.90`
+  - `tradeExecutions=20`
+  - `orderMatchedEvents=40`
+  - `walletTradeSettlements=20`
+  - `completedTrades=20`
+  - final queues and DLQ were `0`
+
+Interpretation rule:
+
+- A sustained run passes capacity only if:
+  - `actualBuyPublishTps` is close to `TARGET_TPS`;
+  - `completedTrades == EVENTS`;
+  - final queues and DLQ are `0`;
+  - queue peaks and drain time are bounded;
+  - `drainSecondsAfterBuyPublish` does not grow unbounded relative to the publish window.
+- If `TARGET_TPS=2000` creates growing backlog and long drain time, the test is still useful: it proves the current system cannot yet sustain that offered load.

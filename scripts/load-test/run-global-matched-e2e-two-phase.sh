@@ -10,6 +10,8 @@ LOG_DIR="${TMPDIR:-/tmp}/eap-loadtest-logs"
 EVENTS="${EVENTS:-500}"
 PUBLISHERS="${PUBLISHERS:-64}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
+TARGET_TPS="${TARGET_TPS:-0}"
+DURATION_SECONDS="${DURATION_SECONDS:-0}"
 MARKET_ID="${MARKET_ID:-GLOBAL_LOADTEST_$(date +%Y%m%d_%H%M%S)}"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-90}"
@@ -34,6 +36,8 @@ fi
   echo "events=${EVENTS}"
   echo "publishers=${PUBLISHERS}"
   echo "timeoutSeconds=${TIMEOUT_SECONDS}"
+  echo "targetTps=${TARGET_TPS}"
+  echo "durationSeconds=${DURATION_SECONDS}"
   echo "startedAt=${STARTED_AT}"
   echo "script=${BASH_SOURCE[0]}"
 } > "${LOCK_INFO_FILE}"
@@ -109,6 +113,8 @@ write_run_metadata() {
     echo "publishers=${PUBLISHERS}"
     echo "timeout=${TIMEOUT_SECONDS}"
     echo "timeoutSeconds=${TIMEOUT_SECONDS}"
+    echo "targetTps=${TARGET_TPS}"
+    echo "durationSeconds=${DURATION_SECONDS}"
     echo "resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
     echo "startedAt=${STARTED_AT}"
     echo "orderDbEndpoint=localhost:15432/eap_order_db"
@@ -169,7 +175,7 @@ assert_environment "before queue purge"
 bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
 echo "[INFO] seeding test data"
-MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" PHASE=seed \
+MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=seed \
   bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh"
 
 echo "[INFO] purging queues after seed"
@@ -177,7 +183,7 @@ assert_environment "after seed"
 bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
 echo "[INFO] prewarming Order projection before run"
-MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" PHASE=project \
+MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=project \
   bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh"
 
 if [[ "${RESET_PG_STATS_BEFORE_RUN}" == "true" ]]; then
@@ -196,7 +202,7 @@ append_rabbitmq_metadata
 
 echo "[INFO] running load test"
 assert_environment "before run"
-MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" PHASE=run \
+MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS="${TARGET_TPS}" DURATION_SECONDS="${DURATION_SECONDS}" PHASE=run \
   bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh" | tee "${RUN_REPORT_LOG}"
 append_rabbitmq_metadata
 
