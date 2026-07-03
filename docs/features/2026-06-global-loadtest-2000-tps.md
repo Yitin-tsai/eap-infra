@@ -1106,3 +1106,102 @@ Decision:
 Interview story:
 
 > I tested two plausible hot-path optimizations and rejected both based on evidence. A Wallet `ON CONFLICT DO NOTHING` claim looked cleaner than pre-read idempotency, but it regressed the 2000-trade E2E run from the accepted `389 TPS` class to `327 TPS` because the dominant cost was still wallet row updates, settlement insert, outbox writes, and WAL. I also tried guarding duplicate completion marker updates, but clean-path traffic still required the same `6000` completion-view updates for `2000` trades and throughput dropped to `191 TPS`. The lesson was that this bottleneck is architectural write amplification, not a missing index or one inefficient query.
+
+## Order Per-Trade Completion Marker
+
+Problem:
+
+- The previous `TradeExecuted -> Order` flow applied buyer and seller orders independently:
+  - buyer order append transaction;
+  - buyer `OrderTradeApplied` outbox marker;
+  - seller order append transaction;
+  - seller `OrderTradeApplied` outbox marker.
+- This preserved correctness but amplified the completed-trade path:
+  - `2` Order marker outbox rows per trade;
+  - `2` Order marker MQ messages per trade;
+  - `2` MatchEngine order-marker updates per trade.
+- Since a trade is only Order-complete when both buyer and seller order streams have been updated, the two external markers were more granular than the completion model needed.
+
+Design change:
+
+- Keep Order's internal event sourcing model:
+  - buyer order stream still receives `OrderMatchedV1`;
+  - seller order stream still receives `OrderMatchedV1`.
+- Change the external completion marker from per-order to per-trade:
+  - one `OrderTradeAppliedEvent` now represents "Order service applied this trade to both buyer and seller order streams."
+- The Order listener now handles a `TradeExecutedEvent` through one `applyTrade(...)` call.
+- The appender writes both order events and both `order_execution_links` in the same consumer transaction, then writes one shared outbox marker.
+- Lock ordering is deterministic by `orderId` to reduce deadlock risk.
+- Duplicate redelivery is handled by the existing link uniqueness model:
+  - both links already exist -> duplicate skip;
+  - only one link exists -> treated as inconsistent partial application and rolled back.
+
+Schema / event impact:
+
+- `OrderTradeAppliedEvent` is now trade-level:
+  - `tradeId`
+  - `buyerOrderId`
+  - `sellerOrderId`
+  - `legacyMatchId`
+  - `dealPrice`
+  - `quantity`
+  - `buyerAppliedAt`
+  - `sellerAppliedAt`
+  - `appliedAt`
+- MatchEngine `trade_completion_view` now tracks:
+  - `trade_executed_at`
+  - `order_applied_at`
+  - `wallet_settled_at`
+  - `completed_at`
+- The old `buyer_order_applied_at` / `seller_order_applied_at` columns were collapsed into `order_applied_at` through Liquibase changeSet `match-trade-006`.
+
+Verification:
+
+- Unit tests:
+  - `eap-order test`: PASS.
+  - `eap-matchEngine test`: PASS.
+- Smoke E2E run `GLT_20260703_ORDER_TRADE_MARKER_SMOKE_10`: PASS.
+  - `tradeExecutions=10`
+  - `orderMatchedEvents=20`
+  - `OrderTradeAppliedEvent outbox=10`
+  - `walletTradeSettlements=10`
+  - `completedTrades=10`
+  - final queues and DLQ were `0`
+- Guarded 2000 matched E2E run `GLT_20260703_ORDER_TRADE_MARKER_2000`: PASS.
+  - `matchedE2eTps=422.12`
+  - `elapsedSeconds=4.74`
+  - `tradeExecutions=2000`
+  - `orderMatchedEvents=4000`
+  - `orderCurrentMatchedRows=4000`
+  - `walletTradeSettlements=2000`
+  - `completedTrades=2000`
+  - final queues and DLQ were `0`
+
+Run-only DB stats after the 2000-trade run:
+
+- Order:
+  - `order_event_store n_tup_ins=4000`
+  - `order_execution_links n_tup_ins=4000`
+  - `order_event_outbox n_tup_ins=2000`, down from the previous per-order-marker `4000` class.
+  - `order_event_outbox n_tup_upd=2000`, down from the previous `4000` class.
+- MatchEngine:
+  - `trade_completion_view n_tup_ins=2000`
+  - `trade_completion_view n_tup_upd=4000`, down from the previous `6000` class.
+- Completion invariant:
+  - `total=2000`
+  - `order_applied=2000`
+  - `wallet_settled=2000`
+  - `completed=2000`
+
+Result:
+
+- The accepted completed-trade baseline improved from `389.14 TPS` to `422.12 TPS`.
+- This is a real clean-path write-amplification reduction:
+  - one fewer Order outbox insert per trade;
+  - one fewer Order outbox SENT update per trade;
+  - one fewer MQ marker per trade;
+  - one fewer MatchEngine completion-view update per trade.
+
+Interview story:
+
+> I found that the completed-trade path was not just slow because of PostgreSQL tuning; it was doing unnecessary cross-service completion work. A single `TradeExecuted` caused Order to emit separate buyer and seller completion markers even though MatchEngine only needed to know whether the Order side as a whole had applied the trade. I changed the Order consumer to append buyer and seller `OrderMatchedV1` events in one transaction, with deterministic lock ordering and idempotent link inserts, then emit one trade-level `OrderTradeApplied` marker. That reduced Order outbox writes from the `4000` class to `2000` for a 2000-trade run, reduced MatchEngine completion-view updates from `6000` to `4000`, and improved full completed-trade throughput from `389.14 TPS` to `422.12 TPS` while keeping final queues and DLQ at zero.
