@@ -5,6 +5,7 @@ eap-wallet/
 eap-matchEngine/
 eap-mcp/
 eap-ai-client/
+eap-career-notes/
 
 # Blackboard (gs workspace)
 .blackboard/
