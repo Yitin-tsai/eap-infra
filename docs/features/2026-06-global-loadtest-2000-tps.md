@@ -786,6 +786,112 @@ Interview framing:
 - The important engineering decision was not "reduce DB calls at any cost"; it was "preserve canonical event integrity, then optimize transaction boundaries."
 - This is a good example of production-style performance work: measure, reject unsafe wins, document the failure mode, then design a safer next iteration.
 
+## TPS-09 MatchEngine Completion View Hot Path
+
+Problem statement:
+
+- After Order-side matched append optimization, a guarded 1500 matched E2E run still showed large MatchEngine DB work around `trade_completion_view`.
+- Run `GLT_20260703_DIAG_LOCK_1500` was functionally correct but slow:
+  - `matchedE2eTps=205.11`
+  - `tradeExecutions=1500`
+  - `completedTrades=1500`
+  - final queues and DLQ were `0`
+- PostgreSQL stats showed the hot table:
+  - `trade_completion_view n_tup_ins=1500`
+  - `trade_completion_view n_tup_upd=4500`
+  - `trade_completion_view idx_scan=18987`
+  - `trade_completion_view seq_scan=33`
+  - `trade_completion_view seq_tup_read=47321`
+- Index-level stats showed most index work came from the primary key:
+  - `trade_completion_view_pkey idx_scan=18941`
+  - `idx_trade_completion_incomplete idx_scan=46`
+
+Root cause:
+
+- `trade_completion_view` is a correctness view, not the canonical trade fact.
+- It tracks whether downstream Order and Wallet consumers have applied a `TradeExecuted` fact.
+- The previous implementation carried technical debt from multiple reliability iterations:
+  - `markTradeExecuted(...)` inserted or updated the completion row.
+  - `markOrderApplied(...)` first executed `INSERT ... ON CONFLICT DO NOTHING`.
+  - `markOrderApplied(...)` then executed a separate `UPDATE ... WHERE trade_id = ?`.
+  - `markWalletSettled(...)` used an upsert and completed the row if ready.
+  - The load-test profile also kept the completion reconciler enabled, so delayed-repair scans ran beside the hot path.
+- In the normal event order, `TradeExecuted` already creates the completion row before Order markers arrive.
+- Therefore the `INSERT ... DO NOTHING` inside `markOrderApplied(...)` was usually a redundant primary-key probe.
+- Because every trade has buyer and seller Order markers, this added roughly two extra primary-key probes per trade.
+
+Implemented action:
+
+- Changed `markOrderApplied(...)` from two DB statements to one upsert:
+
+  ```text
+  before:
+    INSERT trade_completion_view ... ON CONFLICT DO NOTHING
+    UPDATE trade_completion_view SET buyer/seller_order_applied_at = ? WHERE trade_id = ?
+
+  after:
+    INSERT trade_completion_view(trade_id, trade_executed_at, buyer/seller_order_applied_at, updated_at)
+    ON CONFLICT (trade_id) DO UPDATE
+      SET buyer/seller_order_applied_at = EXCLUDED.buyer/seller_order_applied_at,
+          completed_at = CASE WHEN the other order marker and wallet marker already exist THEN now ELSE completed_at END,
+          updated_at = now
+  ```
+
+- Kept out-of-order tolerance:
+  - If an Order marker arrives before `TradeExecuted`, the upsert can still create the row.
+  - If `TradeExecuted` already exists, the conflict update handles the normal path with one round trip.
+- Disabled `trade-completion-reconciler` in the load-test profile:
+  - The reconciler is a repair mechanism.
+  - It should not compete with the benchmark hot path unless the test is specifically measuring repair behavior.
+
+Verification:
+
+- `eap-matchEngine testClasses`: PASS.
+- Guarded 1500 matched E2E run `GLT_20260703_MATCH_COMPLETION_OPT_1500`: PASS.
+  - `matchedE2eTps=388.91`
+  - `tradeExecutions=1500`
+  - `orderMatchedEvents=3000`
+  - `orderCurrentMatchedRows=3000`
+  - `walletTradeSettlements=1500`
+  - `completedTrades=1500`
+  - final queues and DLQ were `0`
+- Completion view consistency:
+  - `total=1500`
+  - `completed=1500`
+  - `missing_buyer=0`
+  - `missing_seller=0`
+  - `missing_wallet=0`
+- Post-run MatchEngine DB stats:
+  - `trade_completion_view n_tup_ins=1500`
+  - `trade_completion_view n_tup_upd=4500`
+  - `trade_completion_view idx_scan=6159`
+  - `trade_completion_view seq_scan=15`
+  - `trade_completion_view seq_tup_read=17672`
+  - `trade_completion_view_pkey idx_scan=6159`
+  - `idx_trade_completion_incomplete idx_scan=0`
+
+Result:
+
+- TPS improved from `205.11` to `388.91` on the comparable guarded 1500-run.
+- `trade_completion_view` index scans dropped from `18987` to `6159`.
+- The incomplete-row index was not touched during the hot-path run after disabling the reconciler.
+- Correctness gates remained green.
+
+Design decision:
+
+- Keep `trade_completion_view` because it provides cross-service completion visibility.
+- Do not treat it as the canonical trade fact; `trade_executions` remains the canonical MatchEngine fact.
+- Keep repair/reconciliation behavior, but isolate it from load-test hot path and eventually from production hot partitions through lower frequency, batch windows, or separate worker capacity.
+
+Next checks:
+
+- Add focused tests around out-of-order completion marker arrival:
+  - Order marker before `TradeExecuted`;
+  - Wallet marker before both Order markers;
+  - duplicate Order marker should remain idempotent;
+  - completion should be set exactly once when all markers exist.
+- Compare 1500 and 2000 runs after this change to decide whether the next bottleneck is MatchEngine order-confirmed ingestion, RabbitMQ consumer concurrency, or database write amplification.
+
 ## Resume Notes
 
 - Built a role-based AI engineering workflow using reusable Codex skills for architecture review, performance budgeting, implementation, QA, and production-style review.
