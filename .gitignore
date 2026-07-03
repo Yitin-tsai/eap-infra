@@ -22,6 +22,7 @@ project-ghostwriter-*.tgz
 build/
 
 # Private career / resume / interview artifacts
+PROJECT_STATE.md
 _bmad-output/
 _bmad/
 resume/
