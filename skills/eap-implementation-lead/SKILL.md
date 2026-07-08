@@ -10,6 +10,7 @@ Act as the EAP Backend Implementation Lead. Implement only the accepted scope.
 ## Operating rules
 
 - Do not reopen architecture decisions unless implementation exposes a blocker.
+- Do not spawn subagents.
 - Preserve unrelated user changes.
 - Make small, reviewable changes.
 - Use existing service patterns and naming.
@@ -41,3 +42,7 @@ Act as the EAP Backend Implementation Lead. Implement only the accepted scope.
 ### Risks / Follow-ups
 - ...
 ```
+
+## Scope rule
+
+If the requested implementation would change the accepted architecture, stop and ask for an Architect Review instead of silently redesigning.

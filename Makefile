@@ -1,4 +1,12 @@
-.PHONY: help dev-up dev-down dev-restart dev-status dev-logs dev-clean build test run-all quick-test api-docs
+.PHONY: help dev-env dev-up dev-down dev-restart dev-status dev-logs dev-clean build test run-all quick-test api-docs
+
+EAP_ROOT := $(CURDIR)
+EAP_CACHE := $(EAP_ROOT)/.cache
+export GRADLE_USER_HOME := $(EAP_CACHE)/gradle
+export GOCACHE := $(EAP_CACHE)/go-build
+export GOMODCACHE := $(EAP_CACHE)/go-mod
+export GOPATH := $(EAP_CACHE)/go
+export PATH := $(GOPATH)/bin:$(PATH)
 
 SERVICES = eap-order eap-wallet eap-matchEngine eap-mcp eap-ai-client
 
@@ -20,14 +28,24 @@ help:
 	@echo "  make run-match     - 啟動 MatchEngine Service (8082)"
 	@echo "  make run-mcp       - 啟動 MCP Server (8083)"
 	@echo "  make run-ai        - 啟動 AI Client (8084)"
+	@echo "  make run-trigger   - 啟動 Trigger Service (8085, Go)"
 	@echo ""
 	@echo "AI 服務："
 	@echo "  make ai-start      - 啟動 AI 相關服務 (MCP + AI Client)"
 	@echo "  make ai-test       - 測試 AI 聊天功能"
 	@echo ""
 	@echo "建置與測試："
+	@echo "  make dev-env      - 建立/檢查本地 cache 路徑"
 	@echo "  make build         - 構建所有服務"
+	@echo "  make build-common  - 構建 Common Library"
+	@echo "  make build-order   - 構建 Order Service"
+	@echo "  make build-wallet  - 構建 Wallet Service"
+	@echo "  make build-match   - 構建 MatchEngine Service"
+	@echo "  make build-mcp     - 構建 MCP Server"
+	@echo "  make build-ai      - 構建 AI Client"
+	@echo "  make build-trigger - 構建 Trigger Service"
 	@echo "  make test          - 運行所有測試"
+	@echo "  make test-trigger  - 運行 Trigger Service 測試"
 	@echo "  make quick-test    - 快速測試交易流程"
 	@echo ""
 	@echo "文件："
@@ -37,6 +55,15 @@ help:
 	@echo "  1. make dev-up     # 啟動開發服務"
 	@echo "  2. make run-all    # 啟動應用"
 	@echo "  3. make ai-start   # 啟動 AI 服務 (需要 Ollama)"
+
+# 建立本地開發環境 cache
+dev-env:
+	@mkdir -p "$(GRADLE_USER_HOME)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)/bin"
+	@echo "✅ 開發環境 cache 已準備"
+	@echo "   GRADLE_USER_HOME=$(GRADLE_USER_HOME)"
+	@echo "   GOCACHE=$(GOCACHE)"
+	@echo "   GOMODCACHE=$(GOMODCACHE)"
+	@echo "   GOPATH=$(GOPATH)"
 
 # 啟動開發服務
 dev-up:
@@ -75,22 +102,62 @@ dev-clean:
 	@read -p "確定繼續嗎？(y/N): " confirm && [ "$$confirm" = "y" ] && docker-compose down -v || echo "已取消"
 
 # 構建所有服務
-build:
+build: dev-env
 	@echo "🔨 構建所有服務..."
 	@for svc in $(SERVICES); do \
 		echo "  Building $$svc..." && \
-		(cd $$svc && ./gradlew build -x test) || exit 1; \
+		(cd $$svc && ./gradlew --no-daemon assemble) || exit 1; \
 	done
 	@echo "✅ 全部構建完成"
 
+build-trigger: dev-env
+	@echo "🔨 構建 Trigger Service..."
+	@cd eap-trigger && go build ./...
+	@echo "✅ Trigger Service 構建完成"
+
+build-common: dev-env
+	@echo "🔨 構建 Common Library..."
+	@cd eap-common && ./gradlew --no-daemon assemble
+	@echo "✅ Common Library 構建完成"
+
+build-order: dev-env
+	@echo "🔨 構建 Order Service..."
+	@cd eap-order && ./gradlew --no-daemon assemble
+	@echo "✅ Order Service 構建完成"
+
+build-wallet: dev-env
+	@echo "🔨 構建 Wallet Service..."
+	@cd eap-wallet && ./gradlew --no-daemon assemble
+	@echo "✅ Wallet Service 構建完成"
+
+build-match: dev-env
+	@echo "🔨 構建 MatchEngine Service..."
+	@cd eap-matchEngine && ./gradlew --no-daemon assemble
+	@echo "✅ MatchEngine Service 構建完成"
+
+build-mcp: dev-env
+	@echo "🔨 構建 MCP Server..."
+	@cd eap-mcp && ./gradlew --no-daemon assemble
+	@echo "✅ MCP Server 構建完成"
+
+build-ai: dev-env
+	@echo "🔨 構建 AI Client..."
+	@cd eap-ai-client && ./gradlew --no-daemon assemble
+	@echo "✅ AI Client 構建完成"
+
 # 運行所有測試
-test:
+test: dev-env
 	@echo "🧪 運行所有測試..."
 	@for svc in $(SERVICES); do \
 		echo "  Testing $$svc..." && \
-		(cd $$svc && ./gradlew test) || exit 1; \
+		(cd $$svc && ./gradlew --no-daemon test) || exit 1; \
 	done
 	@echo "✅ 全部測試完成"
+
+test-trigger: dev-env
+	@echo "🧪 運行 Trigger Service 測試..."
+	@cd eap-trigger && go test ./...
+	@echo "✅ Trigger Service 測試完成"
 
 # 啟動所有應用服務（背景模式）
 run-all:
@@ -100,25 +167,29 @@ run-all:
 	@echo "📝 查看日誌: make logs-order, make logs-wallet, make logs-match, make logs-mcp, make logs-ai"
 
 # 啟動單個服務
-run-order:
+run-order: dev-env
 	@echo "🚀 啟動 Order Service..."
-	@cd eap-order && ./gradlew bootRun
+	@cd eap-order && ./gradlew --no-daemon bootRun
 
-run-wallet:
+run-wallet: dev-env
 	@echo "🚀 啟動 Wallet Service..."
-	@cd eap-wallet && ./gradlew bootRun
+	@cd eap-wallet && ./gradlew --no-daemon bootRun
 
-run-match:
+run-match: dev-env
 	@echo "🚀 啟動 MatchEngine..."
-	@cd eap-matchEngine && ./gradlew bootRun
+	@cd eap-matchEngine && ./gradlew --no-daemon bootRun
 
-run-mcp:
+run-mcp: dev-env
 	@echo "🚀 啟動 MCP Server..."
-	@cd eap-mcp && ./gradlew bootRun
+	@cd eap-mcp && ./gradlew --no-daemon bootRun
 
-run-ai:
+run-ai: dev-env
 	@echo "🚀 啟動 AI Client..."
-	@cd eap-ai-client && ./gradlew bootRun
+	@cd eap-ai-client && ./gradlew --no-daemon bootRun
+
+run-trigger: dev-env
+	@echo "🚀 啟動 Trigger Service (Go)..."
+	@cd eap-trigger && go run ./cmd/server
 
 # 應用服務管理
 app-start:

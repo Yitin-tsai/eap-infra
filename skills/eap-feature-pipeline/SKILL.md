@@ -24,6 +24,9 @@ Run EAP features through a repeatable role-separated workflow.
 - For new product features, run Product Scope before architecture.
 - Do not code until architecture/performance blockers are resolved unless the user explicitly asks for a spike.
 - When subagents are available and the user asks for parallel work, assign independent read-only reviews first.
+- Never pass the full conversation to a subagent by default. Pass a compact brief, target files, constraints, and expected output.
+- Subagents must not spawn further subagents unless the user explicitly requests nested delegation.
+- If a subagent does not respond within one wait cycle, send one concise finalize message. If it still does not respond, continue locally and record the subagent as failed.
 
 ## Scrum output
 
@@ -61,3 +64,15 @@ Break the ticket into:
 ### Resume Evidence
 - ...
 ```
+
+## Subagent prompt contract
+
+Every subagent task should include:
+
+- Role and forbidden actions.
+- Exact question to answer.
+- Maximum output length.
+- Files or docs it may inspect.
+- Deadline behavior: return best effort with assumptions.
+
+Default fork setting: use minimal context, not full history.

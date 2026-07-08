@@ -20,11 +20,37 @@ RUN_MODE="${RUN_MODE:-prepare-run}"
 RUN_REPORT_LOG="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-run.log"
 RUN_REPORT_JSON="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-result.json"
 RUN_REPORT_META="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-meta.txt"
+RUN_DIAG_DIR="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-diagnostics"
+DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-}"
+if [[ -z "${DIAGNOSTICS_LEVEL}" ]]; then
+  case "${DIAGNOSTICS_ENABLED:-}" in
+    true) DIAGNOSTICS_LEVEL="deep" ;;
+    false) DIAGNOSTICS_LEVEL="baseline" ;;
+    "") DIAGNOSTICS_LEVEL="baseline" ;;
+    *)
+      echo "[ERROR] DIAGNOSTICS_ENABLED must be true or false when DIAGNOSTICS_LEVEL is not set." >&2
+      exit 2
+      ;;
+  esac
+fi
+DIAG_SAMPLER_PID=""
 
 case "${RUN_MODE}" in
   prepare|run-only|prepare-run) ;;
   *)
     echo "[ERROR] RUN_MODE must be one of: prepare, run-only, prepare-run" >&2
+    exit 2
+    ;;
+esac
+
+case "${DIAGNOSTICS_LEVEL}" in
+  baseline|off|none)
+    DIAGNOSTICS_LEVEL="baseline"
+    ;;
+  light|deep)
+    ;;
+  *)
+    echo "[ERROR] DIAGNOSTICS_LEVEL must be one of: baseline, light, deep" >&2
     exit 2
     ;;
 esac
@@ -52,7 +78,17 @@ fi
   echo "script=${BASH_SOURCE[0]}"
 } > "${LOCK_INFO_FILE}"
 
+stop_diagnostic_sampler() {
+  if [[ -n "${DIAG_SAMPLER_PID}" ]]; then
+    DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" \
+      bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" stop-sample >/dev/null 2>&1 || true
+    wait "${DIAG_SAMPLER_PID}" >/dev/null 2>&1 || true
+    DIAG_SAMPLER_PID=""
+  fi
+}
+
 cleanup() {
+  stop_diagnostic_sampler
   rm -f "${LOCK_INFO_FILE}" 2>/dev/null || true
   rmdir "${LOCK_DIR}" 2>/dev/null || true
 }
@@ -82,6 +118,38 @@ reset_pg_stats() {
   docker exec eap-order-postgres-loadtest psql -U admin -d eap_order_db -v ON_ERROR_STOP=1 -c "select pg_stat_reset();" >/dev/null
   docker exec eap-wallet-postgres-loadtest psql -U admin -d eap_wallet_db -v ON_ERROR_STOP=1 -c "select pg_stat_reset();" >/dev/null
   docker exec eap-match-postgres-loadtest psql -U admin -d eap_match_db -v ON_ERROR_STOP=1 -c "select pg_stat_reset();" >/dev/null
+  if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
+    DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" \
+      bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" reset || true
+  fi
+}
+
+collect_diagnostics() {
+  local phase="$1"
+  case "${DIAGNOSTICS_LEVEL}" in
+    baseline)
+      return 0
+      ;;
+    light)
+      DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+        bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" "${phase}-light" || true
+      ;;
+    deep)
+      DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+        bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" "${phase}" || true
+      ;;
+  esac
+}
+
+start_diagnostic_sampler() {
+  if [[ "${DIAGNOSTICS_LEVEL}" == "baseline" ]]; then
+    return 0
+  fi
+  rm -f "${RUN_DIAG_DIR}/sampler.stop" 2>/dev/null || true
+  DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+    bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" sample &
+  DIAG_SAMPLER_PID="$!"
+  echo "[INFO] diagnostics sampler pid=${DIAG_SAMPLER_PID}, level=${DIAGNOSTICS_LEVEL}, dir=${RUN_DIAG_DIR}"
 }
 
 append_service_metadata() {
@@ -139,6 +207,8 @@ write_run_metadata() {
     echo "runReportLog=${RUN_REPORT_LOG}"
     echo "runReportJson=${RUN_REPORT_JSON}"
     echo "runReportMeta=${RUN_REPORT_META}"
+    echo "runDiagnosticDir=${RUN_DIAG_DIR}"
+    echo "diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
   } > "${RUN_REPORT_META}"
 }
 
@@ -172,6 +242,7 @@ extract_last_json_object() {
 echo "[INFO] marketId=${MARKET_ID}"
 echo "[INFO] events=${EVENTS}, publishers=${PUBLISHERS}, timeout=${TIMEOUT_SECONDS}s"
 echo "[INFO] runMode=${RUN_MODE}"
+echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
 echo "[INFO] run report log=${RUN_REPORT_LOG}"
 echo "[INFO] run report json=${RUN_REPORT_JSON}"
 echo "[INFO] run report meta=${RUN_REPORT_META}"
@@ -221,12 +292,16 @@ wait_http "order" "http://localhost:8080/eap-order/actuator/health"
 wait_http "matchEngine" "http://localhost:8082/match-engine/actuator/health"
 append_service_metadata
 append_rabbitmq_metadata
+collect_diagnostics before-run
 
 echo "[INFO] running load test"
 assert_environment "before run"
+start_diagnostic_sampler
 MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS="${TARGET_TPS}" DURATION_SECONDS="${DURATION_SECONDS}" PHASE=run \
   bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh" | tee "${RUN_REPORT_LOG}"
+stop_diagnostic_sampler
 append_rabbitmq_metadata
+collect_diagnostics after-run
 
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
