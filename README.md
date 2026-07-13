@@ -126,8 +126,9 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 - The latest global E2E report does not yet include API p95/p99 or end-to-end p95/p99 latency.
 - The latest 10k result is a short benchmark run, not a 30-minute soak claim.
 - The latest 10k repeat has 4 valid public samples out of 5; one run was excluded because the local driver did not maintain the required offered TPS.
+- A first 15-minute `500` offered TPS steady-state attempt was run and rejected: the driver maintained `500.00` BUY confirmations/s, but MatchEngine completed only `25379 / 450000` intended trades and left `424621` BUY orders in Redis.
 - The benchmark result artifact is local under `build/load-test-reports/`; it still needs to be published or attached to a release for third-party reproduction.
-- A 10-15 minute steady-state benchmark is still pending.
+- A valid 10-15 minute steady-state throughput claim is still pending until the MatchEngine order-book state issue is resolved.
 - Failure-injection coverage should be summarized separately for duplicate delivery, consumer restart, outbox retry, DLQ, and projection replay.
 
 The public benchmark runbook is tracked in [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md).

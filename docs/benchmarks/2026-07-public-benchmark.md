@@ -1,6 +1,6 @@
 # EAP Public Benchmark Plan - 2026-07
 
-Status: 10k repeat completed on 2026-07-13. Steady-state validation is still pending.
+Status: 10k repeat completed on 2026-07-13. First steady-state validation attempt was rejected on 2026-07-13 due to MatchEngine order-book correctness failure at 450k scale.
 
 ## Goal
 
@@ -180,6 +180,16 @@ The steady-state result should report:
 - p50/p95/p99 if available;
 - whether backlog trends upward, downward, or stays bounded.
 
+2026-07-13 first pass:
+
+- Run ID: `EAP_STEADY_500TPS_15M_20260713_R1`.
+- Target: `500` offered BUY confirmations/s for `900s`, `450000` intended matched trades.
+- Offered load: `450000` BUY confirmations published in `900.00s`, failures `0`.
+- Result: rejected. Only `25379` trades completed; Order command matched rows reached `50758`; Wallet settlements reached `25379`.
+- Final broker state: measured ready/unacked queues drained to zero and DLQ was zero.
+- Redis order-book state: `remainingSellOrders=0`, `remainingBuyOrders=424621`.
+- Interpretation: not a valid steady-state throughput claim. The next work is to explain why most incoming BUY orders did not see the preloaded SELL liquidity before repeating this benchmark.
+
 ## Publication Criteria
 
 Do not update README with a stronger public claim until:
@@ -189,4 +199,4 @@ Do not update README with a stronger public claim until:
 3. Five 10k repeat runs complete.
 4. Public table uses median plus min/max range.
 5. Invalid run rules are documented before interpreting results.
-6. At least one steady-state run is completed or explicitly listed as a remaining gap.
+6. At least one steady-state run is completed, or the rejected result and remaining gap are explicitly listed.

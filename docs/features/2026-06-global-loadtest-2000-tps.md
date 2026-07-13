@@ -5947,3 +5947,46 @@ bash scripts/load-test/run-global-matched-e2e-sustained.sh
 ```
 
 Do not update the README headline with stronger claims until TPS-55 has a committed exact SHA and TPS-56 either has a completed result or remains clearly marked as a gap.
+
+2026-07-13 execution result:
+
+- Run ID: `EAP_STEADY_500TPS_15M_20260713_R1`.
+- Snapshot: `build/load-test-reports/EAP_STEADY_500TPS_15M_20260713_R1-snapshot.json`.
+- Run log: `build/load-test-reports/matched-e2e-two-phase-EAP_STEADY_500TPS_15M_20260713_R1-run.log`.
+- Diagnostics: `build/load-test-reports/matched-e2e-two-phase-EAP_STEADY_500TPS_15M_20260713_R1-diagnostics/`.
+- Benchmark infra commit captured before the run: `8346b346146ae885c60b718a9c6b614d73ba19a5`.
+- Service commits: Order `5f7f6e18a0b07adfbfba9ec36a0275ea0232b40e`, Wallet `f5ac291670c98e939dcc6566dd77d8a99086ee0d`, MatchEngine `012a5c487e8a38417566e957cb9f7292a446d7c2`, Common `8cce7cd20e9a1f54b01feb31f41ff403688948c4`.
+
+Result: **REJECTED_STEADY_STATE_CORRECTNESS**.
+
+Key metrics:
+
+- Target offered BUY rate: `500` order confirmations/s for `900s`.
+- Published SELL confirmations: `450000`, failures `0`, publish seconds `58.52`.
+- Published BUY confirmations: `450000`, failures `0`, publish seconds `900.00`, actual offered TPS `500.00`.
+- Final elapsed/business window: `2700.66s` including post-publish drain wait.
+- Reported business matched E2E TPS: `166.63`, but this is not an accepted steady-state claim because the correctness gate failed.
+- Completed trades / trade executions / wallet settlements: `25379 / 450000`.
+- Order command matched rows: `50758 / 900000`.
+- Remaining Redis order book: `remainingSellOrders=0`, `remainingBuyOrders=424621`.
+- Final measured queue ready/unacked backlog: `0`; DLQ `0`.
+- Runtime sampler peak for `matchEngine.orderConfirmed.queue`: ready `183593`, unacked `182643`, total `1100`, consumers `12`.
+- MatchEngine log contained `23930` warnings of `Order ... was not linked in user open orders`.
+
+Interpretation:
+
+- This run proves the load generator can maintain the conservative `500` offered BUY confirmations/s for `15` minutes without publish failures.
+- It does **not** prove steady-state completed throughput. Only `25379` of `450000` intended matches reached TradeExecuted/Order/Wallet completion.
+- Because final RabbitMQ queues drained to zero and DLQ stayed zero, the immediate failure shape is not a downstream Order/Wallet queue-drain bottleneck.
+- The decisive correctness signal is `remainingSellOrders=0` with `remainingBuyOrders=424621`: most BUY orders were accepted into the MatchEngine input queue but did not find resting SELL liquidity.
+- The next investigation should focus on MatchEngine order-book state at large scale: resting SELL insertion, opposite-side keying/market-id consistency, Redis cleanup, user-open-order linking, and whether the steady-state load-test data model differs from the successful 10k burst benchmark.
+
+Follow-up ticket:
+
+| Task | Priority | Acceptance |
+| --- | --- | --- |
+| TPS-57-01 Reproduce order-book loss at smaller scale | P0 | Find the smallest `EVENTS`/duration where `remainingBuyOrders > 0` with zero final queues. |
+| TPS-57-02 Add MatchEngine order-book accounting metrics | P0 | During the run, capture per-side Redis ZSET sizes, add-order count, match count, and get-and-remove miss count by market. |
+| TPS-57-03 Audit steady-state generator keying | P0 | Verify SELL and BUY events use the same market/product/price semantics and unique order/user IDs for all generated pairs. |
+| TPS-57-04 Review `unlinkUserOrder` warning meaning | P1 | Determine whether the warning is benign after the hot-path cleanup or indicates missing user-open-order links under concurrency. |
+| TPS-57-05 Re-run TPS-56 after root cause fix | P1 | Accepted only when `completedTrades == EVENTS`, Order/Wallet completion counts match, remaining BUY/SELL orders are zero, and queues/DLQ are zero. |
