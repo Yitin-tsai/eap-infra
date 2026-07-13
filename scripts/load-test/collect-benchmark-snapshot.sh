@@ -14,25 +14,29 @@ repo_json() {
 
   local commit
   local branch
-  local dirty_count
+  local tracked_dirty_count
+  local untracked_count
   commit="$(git -C "${abs_path}" rev-parse HEAD)"
   branch="$(git -C "${abs_path}" branch --show-current || true)"
-  dirty_count="$(git -C "${abs_path}" status --porcelain | wc -l | tr -d ' ')"
+  tracked_dirty_count="$(git -C "${abs_path}" status --porcelain --untracked-files=no | wc -l | tr -d ' ')"
+  untracked_count="$(git -C "${abs_path}" ls-files --others --exclude-standard | wc -l | tr -d ' ')"
 
   jq -n \
     --arg name "${name}" \
     --arg path "${path}" \
     --arg commit "${commit}" \
     --arg branch "${branch}" \
-    --argjson dirtyCount "${dirty_count}" \
+    --argjson trackedDirtyCount "${tracked_dirty_count}" \
+    --argjson untrackedCount "${untracked_count}" \
     '{
       name: $name,
       path: $path,
       present: true,
       branch: $branch,
       commit: $commit,
-      dirty: ($dirtyCount > 0),
-      dirtyCount: $dirtyCount
+      dirty: ($trackedDirtyCount > 0),
+      trackedDirtyCount: $trackedDirtyCount,
+      untrackedCount: $untrackedCount
     }'
 }
 
@@ -102,5 +106,6 @@ jq -n \
     rootDir: $rootDir,
     repos: $repos,
     images: $images,
-    clean: (([$repos[].dirty] | any) | not)
+    clean: (([$repos[].dirty] | any) | not),
+    hasUntrackedFiles: (([$repos[].untrackedCount] | add) > 0)
   }'
