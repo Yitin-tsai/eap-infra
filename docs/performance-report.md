@@ -142,6 +142,35 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - Result artifacts are still local and should be attached to a release or otherwise published.
 - Failure-injection results should be split into a reliability report: duplicate messages, consumer restart, outbox retry, DLQ, and projection replay.
 
+## Steady-State Stability Evidence
+
+Run `EAP_STEADY_500TPS_15M_20260713_R2` is the current best stability signal.
+
+| Signal | Result |
+| --- | --- |
+| Intended trades | `450000` |
+| Completed trades | `450000` |
+| Trade executions | `450000` |
+| Wallet settlements | `450000` |
+| Order command matched rows | `900000` |
+| BUY publish failures | `0` |
+| SELL publish failures | `0` |
+| Actual offered BUY rate | `492.70/s` |
+| Fully gated completed throughput | `481.42 trades/s` |
+| Full drain after BUY publish ended | `21.40s` |
+| Final measured queues / DLQ | `0 / 0` |
+| Remaining Redis orderbook entries | `0 BUY`, `0 SELL` |
+| Redis eviction | `0` |
+| Redis peak memory | `270.77MB / 1GB` |
+
+Runtime sampler stability:
+
+- `102` samples covered the run phase from `2026-07-13T07:49:38Z` to `2026-07-13T08:08:12Z`.
+- `order.dlq` stayed `0` throughout the sampled window.
+- `matchEngine.orderConfirmed.queue` peaked at `215041` total messages during preload/run pressure and drained to `0`.
+- Downstream sampled peak unacked counts stayed bounded: Order trade-executed `262`, Wallet trade-executed `176`, Order-applied marker `464`, Wallet-settled marker `243`.
+- Redis stayed on `noeviction`, `evicted_keys=0`, and used only about `26.5%` of configured memory at peak.
+
 ## Next Measurement Plan
 
 Before pushing for higher completed TPS, the next public-quality benchmark should add:

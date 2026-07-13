@@ -6041,3 +6041,30 @@ Interpretation:
 - On clean `noeviction` Redis, the same 450k scenario completes correctly with no remaining orderbook entries.
 - The accepted steady-state claim should be worded as near-500 offered order confirmations/s and `481.42` fully gated completed trades/s, not exact 500 completed TPS.
 - The next performance work should return to actual service throughput: Order/Wallet/MatchEngine completion rates are clustered around `484-492/s`, so the current sustained ceiling is around this range on the local environment.
+
+Stability evidence from R2 sampler:
+
+- Runtime sampler covered `102` samples from `2026-07-13T07:49:38Z` to `2026-07-13T08:08:12Z`.
+- Completion ratio: `450000 / 450000` trades completed; no missing Order application or Wallet settlement.
+- Publish reliability: SELL failures `0`, BUY failures `0`.
+- Post-publish drain:
+  - BUY publish ended at `913.34s`;
+  - trade executions reached target at `914.02s`;
+  - Wallet settlements reached target at `924.00s`;
+  - completed-trade markers reached target at `929.57s`;
+  - fully drained queues at `934.74s`;
+  - extra full-drain time after BUY publish: `21.40s`.
+- Redis stability:
+  - `maxmemory-policy=noeviction`;
+  - `evicted_keys=0` throughout the run;
+  - peak used memory about `270.77MB` of `1GB` (`~26.5%`);
+  - post-run used memory about `1.75MB`.
+- RabbitMQ stability:
+  - `order.dlq` stayed `0`;
+  - final measured ready/unacked queues were all `0`;
+  - `matchEngine.orderConfirmed.queue` peak total backlog was `215041` during the preload/run window and drained to `0`;
+  - downstream peak unacked stayed bounded: `order.tradeExecuted.queue=262`, `wallet.tradeExecuted.queue=176`, `matchEngine.orderTradeApplied.queue=464`, `matchEngine.walletTradeSettled.queue=243`.
+- Orderbook stability:
+  - sampled mid-run SELL book decreased monotonically in spot checks (`424887 -> 384831 -> 323414 -> 246548 -> 170581 -> 103456 -> 36141`);
+  - BUY book stayed `0` in spot checks;
+  - final `remainingSellOrders=0`, `remainingBuyOrders=0`.
