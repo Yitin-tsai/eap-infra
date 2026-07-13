@@ -1,6 +1,6 @@
 # EAP Public Benchmark Plan - 2026-07
 
-Status: 10k repeat completed on 2026-07-13. First steady-state validation attempt was rejected on 2026-07-13 because the active Redis used an evicting development configuration.
+Status: 10k repeat completed on 2026-07-13. First steady-state validation attempt was rejected on 2026-07-13 because the active Redis used an evicting development configuration; the clean Redis rerun completed successfully.
 
 ## Goal
 
@@ -190,6 +190,17 @@ The steady-state result should report:
 - Redis order-book state: `remainingSellOrders=0`, `remainingBuyOrders=424621`.
 - Root cause: the active Redis container used `maxmemory=200mb` with `maxmemory-policy=allkeys-lru`; `INFO stats` showed `evicted_keys=1284406`. Eviction removed order detail keys while leaving orderbook ZSET members, creating false no-match behavior.
 - Interpretation: not a valid steady-state throughput claim. Repeat only after the environment gate confirms clean `noeviction` Redis with `evicted_keys=0`.
+
+2026-07-13 clean Redis rerun:
+
+- Run ID: `EAP_STEADY_500TPS_15M_20260713_R2`.
+- Target: `500` offered BUY confirmations/s for `900s`, `450000` intended matched trades.
+- Offered load: `450000` BUY confirmations published in `913.34s`, actual offered TPS `492.70`, failures `0`.
+- Result: accepted. `450000` completed trades; `450000` trade executions; `450000` Wallet settlements; `900000` Order command matched rows.
+- Business completion window: `934.74s`; fully gated completed throughput `481.42` completed trades/s.
+- Final broker and orderbook state: measured ready/unacked queues `0`, DLQ `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`.
+- Redis state: `maxmemory-policy=noeviction`, `evicted_keys=0`, peak memory about `270.77MB`.
+- Interpretation: valid near-500 offered-load steady-state result on the local environment. Do not describe it as 500 completed TPS or 2000 completed TPS.
 
 ## Publication Criteria
 

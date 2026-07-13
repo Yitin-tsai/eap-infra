@@ -5998,3 +5998,46 @@ Follow-up ticket:
 | TPS-57-02 Run a small guard scenario | P0 | A 10k or 30k matched E2E run completes with zero remaining BUY/SELL orders and Redis `evicted_keys=0`. |
 | TPS-57-03 Re-run TPS-56 after clean Redis | P0 | Accepted only when `completedTrades == EVENTS`, Order/Wallet completion counts match, remaining BUY/SELL orders are zero, queues/DLQ are zero, and Redis `evicted_keys=0`. |
 | TPS-57-04 Add MatchEngine order-book accounting metrics | P1 | During future runs, capture per-side Redis ZSET sizes, add-order count, match count, and missing-detail count by market. |
+
+2026-07-13 validation after Redis fix:
+
+- Redis was recreated with `maxmemory=1073741824`, `maxmemory-policy=noeviction`, and then cleared with `FLUSHDB`.
+- Environment gate passed after cleanup; Redis baseline `DBSIZE=0`, used memory about `1.49MB`.
+- 10k guard run `GLT_20260713_REDIS_NOEVICT_GUARD_10K` passed:
+  - `actualBuyPublishTps=1999.14`;
+  - `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`;
+  - `orderCommandMatchedRows=20000`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - final measured queues and DLQ `0`;
+  - Redis `evicted_keys=0`, peak memory about `201.28MB`.
+
+TPS-56 R2 result:
+
+- Run ID: `EAP_STEADY_500TPS_15M_20260713_R2`.
+- Snapshot: `build/load-test-reports/EAP_STEADY_500TPS_15M_20260713_R2-snapshot.json`.
+- Result JSON: `build/load-test-reports/matched-e2e-two-phase-EAP_STEADY_500TPS_15M_20260713_R2-result.json`.
+- Run log: `build/load-test-reports/matched-e2e-two-phase-EAP_STEADY_500TPS_15M_20260713_R2-run.log`.
+- Diagnostics: `build/load-test-reports/matched-e2e-two-phase-EAP_STEADY_500TPS_15M_20260713_R2-diagnostics/`.
+- Prepare timing: seed `24m33s`; projection prewarm `4m33s`; `openOrders=900000`.
+- Offered BUY load: `450000` BUY confirmations in `913.34s`, actual offered TPS `492.70`, publish failures `0`.
+- Business completion: `450000` completed trades in `934.74s`, `businessMatchedE2eTps=481.42`.
+- Reach rates:
+  - `tradeExecutionReachTps=492.33`;
+  - `orderCommandMatchReachTps=486.16`;
+  - `walletSettlementReachTps=487.01`;
+  - `completionMarkerReachTps=484.09`.
+- Correctness:
+  - `tradeExecutions=450000`;
+  - `completedTrades=450000`;
+  - `walletTradeSettlements=450000`;
+  - `orderCommandMatchedRows=900000`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - final measured queues and DLQ `0`;
+  - Redis `evicted_keys=0`, peak memory about `270.77MB`.
+
+Interpretation:
+
+- The R1 failure was caused by Redis eviction, not by MatchEngine losing most resting liquidity under valid memory settings.
+- On clean `noeviction` Redis, the same 450k scenario completes correctly with no remaining orderbook entries.
+- The accepted steady-state claim should be worded as near-500 offered order confirmations/s and `481.42` fully gated completed trades/s, not exact 500 completed TPS.
+- The next performance work should return to actual service throughput: Order/Wallet/MatchEngine completion rates are clustered around `484-492/s`, so the current sustained ceiling is around this range on the local environment.

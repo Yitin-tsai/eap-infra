@@ -138,7 +138,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest global E2E report does not yet publish API p95/p99 or end-to-end p95/p99 latency.
 - The strongest 10k runs are short benchmark scenarios, not 30-minute soak claims.
 - The latest 10k repeat has one invalid sample caused by local load-driver offered TPS, so the public summary uses valid-runs-only median/range.
-- The first 15-minute `500` offered TPS steady-state attempt was rejected: the driver maintained `500.00` BUY confirmations/s for `900s`, but the run used Redis with `maxmemory-policy=allkeys-lru` and `evicted_keys=1284406`, which evicted order detail keys and invalidated the order-book state.
+- The first 15-minute steady-state attempt was rejected because Redis eviction invalidated the order-book state. The clean Redis rerun completed `450000` trades with `492.70` offered BUY confirmations/s and `481.42` fully gated completed trades/s.
 - Result artifacts are still local and should be attached to a release or otherwise published.
 - Failure-injection results should be split into a reliability report: duplicate messages, consumer restart, outbox retry, DLQ, and projection replay.
 
@@ -148,7 +148,7 @@ Before pushing for higher completed TPS, the next public-quality benchmark shoul
 
 1. API and end-to-end p50/p95/p99 latency.
 2. Published result artifacts for the 10k repeat runs.
-3. Repeat the 10-15 minute steady-state run on clean `noeviction` loadtest Redis and keep Redis `evicted_keys=0` as an acceptance condition.
+3. Repeat steady-state at least two more times or with a longer duration before treating `481.42/s` as a stable public median.
 4. Queue backlog over time, not only final queue drain.
 5. Failure-injection results for retry and restart behavior.
 
@@ -158,7 +158,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Use this wording:
 
-> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. In a 5-run 10k local benchmark, 4 valid runs maintained about 1999 offered order confirmations/s and reached a median fully gated throughput of 582.73 completed trades/s, with final queues and DLQ at zero. The first long steady-state attempt was rejected because the environment used an evicting development Redis; the benchmark now treats Redis eviction as an invalid correctness condition.
+> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. In a 5-run 10k local benchmark, 4 valid runs maintained about 1999 offered order confirmations/s and reached a median fully gated throughput of 582.73 completed trades/s, with final queues and DLQ at zero. In a clean 15-minute steady-state run, the system accepted 492.70 BUY confirmations/s and completed 481.42 fully gated trades/s across 450000 trades, with Redis eviction, final queues, DLQ, and remaining orderbook entries all at zero.
 
 Avoid this wording:
 
