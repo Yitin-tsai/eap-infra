@@ -66,20 +66,22 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
-    # 🔥 資源限制 + Redis 記憶體限制
+    # Redis stores orderbook ZSET entries plus order detail keys. Eviction can
+    # split those structures and create false no-match results, so fail writes
+    # instead of deleting arbitrary keys.
     deploy:
       resources:
         limits:
           cpus: '0.25'     # Redis 通常不需要太多 CPU
-          memory: 256M
+          memory: 1280M
         reservations:
           cpus: '0.1'
           memory: 128M
     command: >
       redis-server
       --appendonly yes
-      --maxmemory 200mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory 1024mb
+      --maxmemory-policy noeviction
       --save 60 1
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

@@ -5979,14 +5979,22 @@ Interpretation:
 - It does **not** prove steady-state completed throughput. Only `25379` of `450000` intended matches reached TradeExecuted/Order/Wallet completion.
 - Because final RabbitMQ queues drained to zero and DLQ stayed zero, the immediate failure shape is not a downstream Order/Wallet queue-drain bottleneck.
 - The decisive correctness signal is `remainingSellOrders=0` with `remainingBuyOrders=424621`: most BUY orders were accepted into the MatchEngine input queue but did not find resting SELL liquidity.
-- The next investigation should focus on MatchEngine order-book state at large scale: resting SELL insertion, opposite-side keying/market-id consistency, Redis cleanup, user-open-order linking, and whether the steady-state load-test data model differs from the successful 10k burst benchmark.
+- Root cause found after the run: the active Redis container was `eap-redis` with `maxmemory=200mb` and `maxmemory-policy=allkeys-lru`. `INFO stats` showed `evicted_keys=1284406`. Redis evicted `order:<id>` detail keys and `user:<id>:orders` set entries while leaving some order IDs in the orderbook ZSET. When a BUY tried to match, the Lua script removed a SELL ZSET member but `GET order:<id>` returned nil, so the Java path treated it as a normal no-match and added the BUY to the buy book.
+- This explains the abnormal combination of `remainingSellOrders=0`, `remainingBuyOrders=424621`, `completedTrades=25379`, and thousands of `Order ... was not linked in user open orders` warnings.
+
+Fixes applied:
+
+- `scripts/load-test/assert-loadtest-environment.sh` now rejects Redis unless `maxmemory-policy=noeviction`, maxmemory is `0` or at least `1073741824` bytes, and `evicted_keys=0`.
+- `scripts/load-test/collect-loadtest-diagnostics.sh` and `scripts/load-test/run-global-matched-e2e-two-phase.sh` now record Redis memory, policy, and eviction stats.
+- MatchEngine matching Lua scripts now return a corruption sentinel when an orderbook ZSET entry points at a missing order detail key.
+- `RedisOrderBookService` now throws on missing or unreadable matched order details instead of silently returning null.
+- Development `docker-compose.yml` Redis now uses `noeviction`; loadtest Redis remains the required 1GB `noeviction` instance.
 
 Follow-up ticket:
 
 | Task | Priority | Acceptance |
 | --- | --- | --- |
-| TPS-57-01 Reproduce order-book loss at smaller scale | P0 | Find the smallest `EVENTS`/duration where `remainingBuyOrders > 0` with zero final queues. |
-| TPS-57-02 Add MatchEngine order-book accounting metrics | P0 | During the run, capture per-side Redis ZSET sizes, add-order count, match count, and get-and-remove miss count by market. |
-| TPS-57-03 Audit steady-state generator keying | P0 | Verify SELL and BUY events use the same market/product/price semantics and unique order/user IDs for all generated pairs. |
-| TPS-57-04 Review `unlinkUserOrder` warning meaning | P1 | Determine whether the warning is benign after the hot-path cleanup or indicates missing user-open-order links under concurrency. |
-| TPS-57-05 Re-run TPS-56 after root cause fix | P1 | Accepted only when `completedTrades == EVENTS`, Order/Wallet completion counts match, remaining BUY/SELL orders are zero, and queues/DLQ are zero. |
+| TPS-57-01 Restart loadtest Redis cleanly | P0 | `docker compose -f docker-compose.loadtest.yml up -d redis`; `assert-loadtest-environment.sh` reports `noeviction`, sufficient maxmemory, and `evicted_keys=0`. |
+| TPS-57-02 Run a small guard scenario | P0 | A 10k or 30k matched E2E run completes with zero remaining BUY/SELL orders and Redis `evicted_keys=0`. |
+| TPS-57-03 Re-run TPS-56 after clean Redis | P0 | Accepted only when `completedTrades == EVENTS`, Order/Wallet completion counts match, remaining BUY/SELL orders are zero, queues/DLQ are zero, and Redis `evicted_keys=0`. |
+| TPS-57-04 Add MatchEngine order-book accounting metrics | P1 | During future runs, capture per-side Redis ZSET sizes, add-order count, match count, and missing-detail count by market. |

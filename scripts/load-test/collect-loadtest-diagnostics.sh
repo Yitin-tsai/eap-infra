@@ -26,6 +26,7 @@ ORDER_DB_CONTAINER="${ORDER_DB_CONTAINER:-eap-order-postgres-loadtest}"
 WALLET_DB_CONTAINER="${WALLET_DB_CONTAINER:-eap-wallet-postgres-loadtest}"
 MATCH_DB_CONTAINER="${MATCH_DB_CONTAINER:-eap-match-postgres-loadtest}"
 RABBIT_CONTAINER="${RABBIT_CONTAINER:-eap-rabbitmq}"
+REDIS_CONTAINER="${REDIS_CONTAINER:-eap-redis}"
 RABBIT_MANAGEMENT_URL="${RABBIT_MANAGEMENT_URL:-http://localhost:15672}"
 RABBIT_MANAGEMENT_USER="${RABBIT_MANAGEMENT_USER:-admin}"
 RABBIT_MANAGEMENT_PASSWORD="${RABBIT_MANAGEMENT_PASSWORD:-admin123}"
@@ -222,6 +223,23 @@ snapshot_rabbitmq() {
   } > "${DIAG_DIR}/rabbitmq-channels.txt" 2>&1
 }
 
+snapshot_redis() {
+  {
+    echo "### redis config"
+    echo "capturedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    docker exec "${REDIS_CONTAINER}" redis-cli --raw CONFIG GET maxmemory || true
+    docker exec "${REDIS_CONTAINER}" redis-cli --raw CONFIG GET maxmemory-policy || true
+    echo
+    echo "### redis memory"
+    docker exec "${REDIS_CONTAINER}" redis-cli INFO memory \
+      | grep -E '^(used_memory:|used_memory_human:|used_memory_peak:|used_memory_peak_human:|maxmemory:|maxmemory_human:|maxmemory_policy:)' || true
+    echo
+    echo "### redis stats"
+    docker exec "${REDIS_CONTAINER}" redis-cli INFO stats \
+      | grep -E '^(evicted_keys:|expired_keys:|keyspace_hits:|keyspace_misses:|total_commands_processed:|instantaneous_ops_per_sec:)' || true
+  } > "${DIAG_DIR}/redis-state.txt" 2>&1
+}
+
 snapshot_processes() {
   {
     echo "### service processes"
@@ -257,6 +275,7 @@ snapshot_actuator() {
 
 snapshot_runtime() {
   snapshot_rabbitmq
+  snapshot_redis
   snapshot_processes
   snapshot_actuator wallet "http://localhost:8081/eap-wallet/actuator/prometheus"
   snapshot_actuator order "http://localhost:8080/eap-order/actuator/prometheus"
@@ -265,6 +284,7 @@ snapshot_runtime() {
 
 snapshot_runtime_light() {
   snapshot_rabbitmq
+  snapshot_redis
   snapshot_processes
   snapshot_actuator order "http://localhost:8080/eap-order/actuator/prometheus"
 }
@@ -285,6 +305,11 @@ sample_loop() {
       echo "## sample $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo "# rabbitmq"
       rabbitmq_queue_lines
+      echo "# redis"
+      docker exec "${REDIS_CONTAINER}" redis-cli INFO memory \
+        | grep -E '^(used_memory:|used_memory_peak:|maxmemory:|maxmemory_policy:)' || true
+      docker exec "${REDIS_CONTAINER}" redis-cli INFO stats \
+        | grep -E '^(evicted_keys:|keyspace_hits:|keyspace_misses:|instantaneous_ops_per_sec:)' || true
       if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
         echo "# rabbitmq connections"
         rabbitmq_connections_http || echo "[WARN] RabbitMQ management HTTP API connections unavailable"

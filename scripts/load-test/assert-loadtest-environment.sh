@@ -3,6 +3,7 @@ set -euo pipefail
 
 RABBIT_CONTAINER="${RABBIT_CONTAINER:-eap-rabbitmq}"
 REDIS_CONTAINER="${REDIS_CONTAINER:-eap-redis}"
+REDIS_MIN_MAXMEMORY_BYTES="${REDIS_MIN_MAXMEMORY_BYTES:-1073741824}"
 ORDER_DB_CONTAINER="${ORDER_DB_CONTAINER:-eap-order-postgres-loadtest}"
 WALLET_DB_CONTAINER="${WALLET_DB_CONTAINER:-eap-wallet-postgres-loadtest}"
 MATCH_DB_CONTAINER="${MATCH_DB_CONTAINER:-eap-match-postgres-loadtest}"
@@ -62,6 +63,46 @@ require_rabbitmq_queryable() {
   fi
 }
 
+redis_config_value() {
+  local name="$1"
+  docker exec "${REDIS_CONTAINER}" redis-cli --raw CONFIG GET "${name}" | awk 'NR == 2 { print }'
+}
+
+redis_info_value() {
+  local section="$1"
+  local name="$2"
+  docker exec "${REDIS_CONTAINER}" redis-cli --raw INFO "${section}" \
+    | awk -F: -v key="${name}" '$1 == key { gsub(/\r/, "", $2); print $2 }'
+}
+
+require_redis_loadtest_safety() {
+  local policy
+  local maxmemory
+  local evicted_keys
+  policy="$(redis_config_value maxmemory-policy)"
+  maxmemory="$(redis_config_value maxmemory)"
+  evicted_keys="$(redis_info_value stats evicted_keys)"
+
+  if [[ "${policy}" != "noeviction" ]]; then
+    echo "[ERROR] Redis ${REDIS_CONTAINER} uses maxmemory-policy=${policy}; load tests require noeviction." >&2
+    echo "[ERROR] Evicting order detail keys corrupts the Redis order book and can produce false no-match results." >&2
+    echo "[ERROR] Start the load-test Redis from docker-compose.loadtest.yml or set REDIS_CONTAINER to the correct container." >&2
+    exit 1
+  fi
+
+  if [[ "${maxmemory}" != "0" && "${maxmemory}" -lt "${REDIS_MIN_MAXMEMORY_BYTES}" ]]; then
+    echo "[ERROR] Redis ${REDIS_CONTAINER} maxmemory=${maxmemory}; load tests require 0 or at least ${REDIS_MIN_MAXMEMORY_BYTES} bytes." >&2
+    echo "[ERROR] The 450k steady-state scenario needs substantially more than the development 200MB Redis limit." >&2
+    exit 1
+  fi
+
+  if [[ "${evicted_keys:-0}" -gt 0 ]]; then
+    echo "[ERROR] Redis ${REDIS_CONTAINER} has evicted_keys=${evicted_keys}; this environment is already polluted for correctness benchmarks." >&2
+    echo "[ERROR] Restart Redis with noeviction and rerun from a clean state." >&2
+    exit 1
+  fi
+}
+
 print_environment() {
   echo "[INFO] loadtest infrastructure"
   docker ps --format '  {{.Names}} {{.Status}}' \
@@ -75,6 +116,7 @@ require_container_healthy "${REDIS_CONTAINER}"
 require_container_healthy "${ORDER_DB_CONTAINER}"
 require_container_healthy "${WALLET_DB_CONTAINER}"
 require_container_healthy "${MATCH_DB_CONTAINER}"
+require_redis_loadtest_safety
 
 require_port "RabbitMQ AMQP" 5672
 require_port "Redis" 6379

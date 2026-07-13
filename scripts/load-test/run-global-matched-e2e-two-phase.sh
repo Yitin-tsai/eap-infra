@@ -183,6 +183,21 @@ append_rabbitmq_metadata() {
   } >> "${RUN_REPORT_META}"
 }
 
+append_redis_metadata() {
+  local redis_container="${REDIS_CONTAINER:-eap-redis}"
+  {
+    echo
+    echo "[redis]"
+    echo "container=${redis_container}"
+    docker exec "${redis_container}" redis-cli --raw CONFIG GET maxmemory || true
+    docker exec "${redis_container}" redis-cli --raw CONFIG GET maxmemory-policy || true
+    docker exec "${redis_container}" redis-cli INFO stats \
+      | grep -E '^(evicted_keys:|expired_keys:|keyspace_hits:|keyspace_misses:)' || true
+    docker exec "${redis_container}" redis-cli INFO memory \
+      | grep -E '^(used_memory:|used_memory_peak:|maxmemory:|maxmemory_policy:)' || true
+  } >> "${RUN_REPORT_META}" 2>&1
+}
+
 write_run_metadata() {
   {
     echo "MARKET_ID=${MARKET_ID}"
@@ -292,6 +307,7 @@ wait_http "order" "http://localhost:8080/eap-order/actuator/health"
 wait_http "matchEngine" "http://localhost:8082/match-engine/actuator/health"
 append_service_metadata
 append_rabbitmq_metadata
+append_redis_metadata
 collect_diagnostics before-run
 
 echo "[INFO] running load test"
@@ -301,6 +317,7 @@ MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_S
   bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh" | tee "${RUN_REPORT_LOG}"
 stop_diagnostic_sampler
 append_rabbitmq_metadata
+append_redis_metadata
 collect_diagnostics after-run
 
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then

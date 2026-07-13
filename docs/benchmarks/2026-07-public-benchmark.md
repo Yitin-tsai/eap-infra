@@ -1,6 +1,6 @@
 # EAP Public Benchmark Plan - 2026-07
 
-Status: 10k repeat completed on 2026-07-13. First steady-state validation attempt was rejected on 2026-07-13 due to MatchEngine order-book correctness failure at 450k scale.
+Status: 10k repeat completed on 2026-07-13. First steady-state validation attempt was rejected on 2026-07-13 because the active Redis used an evicting development configuration.
 
 ## Goal
 
@@ -188,7 +188,8 @@ The steady-state result should report:
 - Result: rejected. Only `25379` trades completed; Order command matched rows reached `50758`; Wallet settlements reached `25379`.
 - Final broker state: measured ready/unacked queues drained to zero and DLQ was zero.
 - Redis order-book state: `remainingSellOrders=0`, `remainingBuyOrders=424621`.
-- Interpretation: not a valid steady-state throughput claim. The next work is to explain why most incoming BUY orders did not see the preloaded SELL liquidity before repeating this benchmark.
+- Root cause: the active Redis container used `maxmemory=200mb` with `maxmemory-policy=allkeys-lru`; `INFO stats` showed `evicted_keys=1284406`. Eviction removed order detail keys while leaving orderbook ZSET members, creating false no-match behavior.
+- Interpretation: not a valid steady-state throughput claim. Repeat only after the environment gate confirms clean `noeviction` Redis with `evicted_keys=0`.
 
 ## Publication Criteria
 
