@@ -5899,7 +5899,24 @@ Current implementation status:
 - Done: official 10k repeat wrapper.
 - Done: repeat summary now includes median and validity classification.
 - Done: snapshot script records multi-repo dirty state and pinned image digests.
-- Not run yet: five official repeats on a committed snapshot.
+- Done: five official repeats on benchmark infra commit `2252e54738d10683894b965c93d93bff32fd8c08`.
+
+2026-07-13 official repeat result:
+
+- Run prefix: `EAP_PUBLIC_10K_20260713`.
+- Valid public samples: `4/5`.
+- Invalid sample: `R3`, reason `driver_offered_tps_below_threshold` (`actualBuyPublishTps=733.79`).
+- Valid offered load median/range: `1998.94`, range `1998.54-1999.13` order confirmations/s.
+- Valid business matched E2E median/range: `582.73`, range `503.11-662.17` completed trades/s.
+- Valid business completion window median/range: `17.29s`, range `15.10-19.88s`.
+- Valid completion marker reach median/range: `745.60`, range `701.99-803.90` markers/s.
+- Final correctness: each valid run reached `10000` completed trades, `10000` trade executions, `10000` wallet settlements, `20000` Order command matched rows, zero remaining orders, and final measured queue backlog `0`.
+
+Interpretation:
+
+- TPS-55 changed the public claim from a single 10k result (`468.76` completed trades/s) to a repeat-based valid median (`582.73` completed trades/s).
+- The excluded run is not a business correctness failure; it is a load-driver offered-throughput failure and is kept in the artifact bundle for transparency.
+- This is still a short 10k burst-style benchmark, not a 10-15 minute steady-state result.
 
 ### TPS-56 Steady-State Benchmark
 

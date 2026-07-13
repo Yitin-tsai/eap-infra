@@ -11,7 +11,7 @@ EAP 是一個 production-style 電力交易後端系統，以 Java / Spring Boot
 | Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
 | --- | ---: | ---: | --- | --- |
 | Redis matching core | N/A | `18,388.25 ops/s` | Redis Lua atomic matching | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` |
-| Global 10k business-gated E2E, TPS54 | `1,998.55 order confirmations/s` | `468.76 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | final queues / DLQ `0` |
+| Global 10k business-gated E2E, TPS55 repeat | median `1,998.94 order confirmations/s` | median `582.73 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 4/5 valid runs，range `503.11-662.17`，final queues / DLQ `0` |
 | Current bottleneck | N/A | N/A | correctness preserved | DB write amplification and outbox relay cost in Match / Order / Wallet |
 
 完整報告請看 [docs/performance-report.md](docs/performance-report.md)。原始工作紀錄保留在 [docs/features/2026-06-global-loadtest-2000-tps.md](docs/features/2026-06-global-loadtest-2000-tps.md)。
@@ -32,7 +32,7 @@ businessMatchedE2eTps =
   (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
-`DURATION_SECONDS=5` 是 offered-load publishing window，不是完整 business completion timing window；例如 `10000 / 468.76 ~= 21.3s`。
+`DURATION_SECONDS=5` 是 offered-load publishing window，不是完整 business completion timing window；最新有效 repeat set 的 median completion window 是 `17.29s`，所以 `10000 / 17.29 ~= 582.73 completed trades/s`。
 
 ## Benchmark Environment
 
@@ -47,7 +47,7 @@ businessMatchedE2eTps =
 | Redis | `redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99`，load-test profile 關閉 append-only |
 | Load generator | 與服務和 containers 跑在同一台本機 |
 
-目前數字是 documented local benchmark results。若要對外宣稱 fully reproducible，應先 commit benchmark code/config，並在該 exact commit 上重跑 benchmark。
+最新 10k repeat 是在 benchmark code/config commit `2252e54738d10683894b965c93d93bff32fd8c08` 上執行，service commits 記錄在 `build/load-test-reports/EAP_PUBLIC_10K_20260713-snapshot.json`。但 result artifact 目前仍是本機檔案，若要讓第三方完整重現，還需要 push 並發布 artifact bundle。
 
 ## 系統做什麼
 
@@ -115,8 +115,8 @@ Focused load-test scripts live under [scripts/load-test/](scripts/load-test/). T
 
 ```bash
 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=128 \
-TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=deep \
-bash scripts/load-test/run-2000-ticket-marker-10k.sh
+TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline MIN_OFFERED_TPS_RATIO=0.95 \
+REPEATS=5 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
 ```
 
 See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
@@ -125,8 +125,9 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 
 - 最新 global E2E report 尚未提供 API p95/p99 或 end-to-end p95/p99 latency。
 - 最新 10k 結果是短場景 benchmark，不是 30 分鐘 soak claim。
-- 下一版公開 benchmark 應至少跑五輪，公開 median、min/max 與各 run link，而不是只放最好看的單次。
-- 下一版公開 benchmark 應固定 exact Git commit 與 container image tags/digests。
+- 最新 10k repeat 有 4/5 輪符合 public summary 條件；其中 1 輪因本機 driver 未維持足夠 offered TPS 被排除。
+- Benchmark result artifact 目前位於本機 `build/load-test-reports/`，仍需發布或附到 release 才能讓第三方直接驗證。
+- 10-15 分鐘 steady-state benchmark 尚未完成。
 - Failure injection 應另外整理 duplicate delivery、consumer restart、outbox retry、DLQ、projection replay。
 
 Public benchmark runbook 記錄在 [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md)。

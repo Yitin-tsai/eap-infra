@@ -30,24 +30,37 @@ The current global 10k benchmark is a controlled matched-trade workload.
 | timing end | max of completion-marker reach time and final measured queue drain |
 | projection | diagnostic read-model lag, not part of business completion |
 
-This means `1998.55 order confirmations/s` and `468.76 completed trades/s` are intentionally different units. The first is input pressure; the second is fully gated business completion.
+This means offered order confirmations/s and completed trades/s are intentionally different units. The first is input pressure; the second is fully gated business completion.
 
-## Latest Accepted 10k Result
+## Latest Accepted 10k Repeat Result
 
-Run: `GLT_20260713_TPS54_WALLET_OUTBOX_JDBC_10K_R1`
+Run set: `EAP_PUBLIC_10K_20260713`, 5 repeats, 4 valid public samples.
+
+Snapshot:
+
+| Repo | Commit |
+| --- | --- |
+| benchmark infra | `2252e54738d10683894b965c93d93bff32fd8c08` |
+| eap-order | `5f7f6e18bb40c1e17e565de6377ea1eef77ed165` |
+| eap-wallet | `f5ac2916a6443c7f7c577db379712b4df34df545` |
+| eap-matchEngine | `012a5c488aeb0da503eb6897abb6afcbafc5cc69` |
+| eap-common | `8cce7cd93d1e6cfde3fcf715894a01678b96ff76` |
 
 | Metric | Result |
 | --- | ---: |
 | target offered load | `2000 order confirmations/s` |
-| actual offered load | `1998.55 order confirmations/s` |
-| completed trades | `10000` |
-| business matched E2E TPS | `468.76 completed trades/s` |
-| wallet settlement reach TPS | `788.84/s` |
-| completion marker reach TPS | `631.70/s` |
+| valid actual offered load | median `1998.94 order confirmations/s`, range `1998.54-1999.13` |
+| completed trades per valid run | `10000` |
+| business matched E2E TPS | median `582.73 completed trades/s`, range `503.11-662.17` |
+| business completion window | median `17.29s`, range `15.10-19.88s` |
+| wallet settlement reach TPS | median `843.92/s`, range `825.46-974.14` |
+| completion marker reach TPS | median `745.60/s`, range `701.99-803.90` |
 | final queue ready / unacked | `0 / 0` |
 | DLQ | `0` |
 
-Interpretation: the system can accept near-2000/s input pressure in this short 10k scenario, but the fully gated completed-trade throughput is currently about 469/s on the local benchmark environment.
+One repeat, `EAP_PUBLIC_10K_20260713_R3`, completed the business gate but is excluded from the public median because the local load driver only achieved `733.79` buy confirmations/s, below the `95%` offered-load threshold.
+
+Interpretation: the system can accept near-2000/s input pressure in valid short 10k runs, but the fully gated completed-trade throughput is currently in the `503-662/s` range on the local benchmark environment.
 
 ## Benchmark Environment
 
@@ -62,7 +75,7 @@ Interpretation: the system can accept near-2000/s input pressure in this short 1
 | Redis | `redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99`, append-only disabled, `maxmemory=1024mb`, `noeviction` |
 | Load generator | same local machine as services and containers |
 
-The latest numbers are documented local benchmark results. Treat them as externally reproducible only after the benchmark code/config is committed and the run is repeated against that exact commit.
+The latest numbers are documented local benchmark results against the pinned snapshot above. Treat them as externally reproducible only after the result bundle under `build/load-test-reports/` is published with the corresponding commits.
 
 ## Timing Formula
 
@@ -72,7 +85,7 @@ businessMatchedE2eTps =
   (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
-`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window. In the latest 10k run, `10000 / 468.76 ~= 21.3s`, which reflects completion convergence plus queue drain after the input burst.
+`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window. In the latest valid repeat set, the median completion window was `17.29s`, so `10000 / 17.29 ~= 582.73 completed trades/s`. That reflects completion convergence plus queue drain after the input burst.
 
 ## Best Isolated Matching Result
 
@@ -93,6 +106,7 @@ Interpretation: the core Redis order book is not the current global E2E bottlene
 | Drop redundant Match outbox unique constraint | outbox insert SQL improved only about `58ms` over 10k rows | low-impact cleanup, not the main fix |
 | Use `trade_id` as Match `trade_executions` primary key | trade execution insert total `1015.71ms -> 820.40ms`; trade outbox insert total `802.17ms -> 546.88ms` | kept |
 | Wallet outbox JDBC projection/update | wallet outbox select SQL `384.24ms -> 59.77ms`; business E2E `384.15 -> 468.76` | kept |
+| Public repeat benchmark process | 4/5 valid repeats; valid median `582.73` completed trades/s | use median/range for public claims |
 
 ## Current Bottleneck
 
@@ -123,8 +137,8 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 
 - The latest global E2E report does not yet publish API p95/p99 or end-to-end p95/p99 latency.
 - The strongest 10k runs are short benchmark scenarios, not 30-minute soak claims.
-- Benchmark numbers should be repeated at least five times and reported as median plus min/max range before being treated as a stable public claim.
-- Exact Git commit should be pinned before the next public benchmark.
+- The latest 10k repeat has one invalid sample caused by local load-driver offered TPS, so the public summary uses valid-runs-only median/range.
+- Result artifacts are still local and should be attached to a release or otherwise published.
 - Failure-injection results should be split into a reliability report: duplicate messages, consumer restart, outbox retry, DLQ, and projection replay.
 
 ## Next Measurement Plan
@@ -132,7 +146,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 Before pushing for higher completed TPS, the next public-quality benchmark should add:
 
 1. API and end-to-end p50/p95/p99 latency.
-2. Five repeated 10k runs with reset rules and run links.
+2. Published result artifacts for the 10k repeat runs.
 3. A 10-15 minute steady-state run after warm-up.
 4. Queue backlog over time, not only final queue drain.
 5. Failure-injection results for retry and restart behavior.
@@ -143,7 +157,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Use this wording:
 
-> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. Under a 10k local benchmark with about 1998 offered order confirmations/s, the latest fully gated completed throughput is 468.76 trades/s with final queues and DLQ at zero. The main bottleneck is no longer Redis matching but database write amplification and outbox relay cost.
+> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. In a 5-run 10k local benchmark, 4 valid runs maintained about 1999 offered order confirmations/s and reached a median fully gated throughput of 582.73 completed trades/s, with final queues and DLQ at zero. The main bottleneck is no longer Redis matching but database write amplification and outbox relay cost.
 
 Avoid this wording:
 

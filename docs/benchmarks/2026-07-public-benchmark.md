@@ -1,6 +1,6 @@
 # EAP Public Benchmark Plan - 2026-07
 
-Status: planned. This document defines the benchmark release criteria before publishing a stronger README claim.
+Status: 10k repeat completed on 2026-07-13. Steady-state validation is still pending.
 
 ## Goal
 
@@ -32,10 +32,14 @@ The goal is not to claim 2000 completed TPS. The goal is to publish repeatable e
 | Redis image | `redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99` |
 | Load generator | same local machine as services and containers |
 
-Before publishing final numbers, fill in the exact Git commit after committing benchmark code/config.
+The 2026-07-13 repeat benchmark used this pinned snapshot:
 
 ```text
-gitCommit=<fill after commit>
+benchmarkInfra=2252e54738d10683894b965c93d93bff32fd8c08
+eap-order=5f7f6e18bb40c1e17e565de6377ea1eef77ed165
+eap-wallet=f5ac2916a6443c7f7c577db379712b4df34df545
+eap-matchEngine=012a5c488aeb0da503eb6897abb6afcbafc5cc69
+eap-common=8cce7cd93d1e6cfde3fcf715894a01678b96ff76
 ```
 
 Generate a machine-readable snapshot before running official repeats:
@@ -53,6 +57,8 @@ The snapshot records:
 - locally inspected image repo digests.
 
 Do not publish a reproducibility claim while `clean=false`.
+
+The 2026-07-13 snapshot reported `clean=true` for tracked files and `hasUntrackedFiles=true` for unrelated local files. Public claims should therefore cite the tracked commit snapshot and avoid implying the whole workspace contained no untracked local material.
 
 ## Official 10k Repeat Command
 
@@ -83,6 +89,54 @@ The summary JSON reports:
 - all-run statistics;
 - valid-runs-only statistics;
 - avg / median / min / max / spread.
+
+## 2026-07-13 Official 10k Repeat Result
+
+Command prefix:
+
+```bash
+REPEATS=5 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
+PUBLISHERS=128 TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline \
+MIN_OFFERED_TPS_RATIO=0.95 \
+bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_20260713
+```
+
+Artifacts:
+
+```text
+build/load-test-reports/EAP_PUBLIC_10K_20260713-snapshot.json
+build/load-test-reports/matched-e2e-repeat-EAP_PUBLIC_10K_20260713-summary.json
+```
+
+Validity:
+
+| Result | Count |
+| --- | ---: |
+| Valid public runs | `4` |
+| Invalid runs | `1` |
+| Invalid reason | `EAP_PUBLIC_10K_20260713_R3`: `driver_offered_tps_below_threshold` |
+
+Valid-runs-only summary:
+
+| Metric | Median | Min | Max |
+| --- | ---: | ---: | ---: |
+| actual buy publish TPS | `1998.94` | `1998.54` | `1999.13` |
+| business matched E2E TPS | `582.73` | `503.11` | `662.17` |
+| business completion seconds | `17.29` | `15.10` | `19.88` |
+| trade execution reach TPS | `1082.09` | `1036.83` | `1176.72` |
+| Order command match reach TPS | `843.92` | `825.46` | `974.14` |
+| Wallet settlement reach TPS | `843.92` | `825.46` | `974.14` |
+| completion marker reach TPS | `745.60` | `701.99` | `803.90` |
+
+Per-run business TPS:
+
+| Run | Valid | Offered TPS | Business E2E TPS | Completion Seconds | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| `R1` | yes | `1999.03` | `503.11` | `19.88` | final queues/DLQ `0` |
+| `R2` | yes | `1998.54` | `532.08` | `18.79` | final queues/DLQ `0` |
+| `R3` | no | `733.79` | `438.14` | `22.82` | driver offered TPS below threshold |
+| `R4` | yes | `1999.13` | `662.17` | `15.10` | final queues/DLQ `0` |
+| `R5` | yes | `1998.85` | `633.38` | `15.79` | final queues/DLQ `0` |
 
 ## Validity Rules
 

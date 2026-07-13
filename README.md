@@ -11,7 +11,7 @@ EAP is a production-style electricity market backend built with Java / Spring Bo
 | Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
 | --- | ---: | ---: | --- | --- |
 | Redis matching core | N/A | `18,388.25 ops/s` | Redis Lua atomic matching | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` |
-| Global 10k business-gated E2E, TPS54 | `1,998.55 order confirmations/s` | `468.76 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | final queues / DLQ `0` |
+| Global 10k business-gated E2E, TPS55 repeat | median `1,998.94 order confirmations/s` | median `582.73 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 4/5 valid runs, range `503.11-662.17`, final queues / DLQ `0` |
 | Current bottleneck | N/A | N/A | correctness preserved | DB write amplification and outbox relay cost in Match / Order / Wallet |
 
 See [docs/performance-report.md](docs/performance-report.md) for the curated report. The raw engineering log is preserved in [docs/features/2026-06-global-loadtest-2000-tps.md](docs/features/2026-06-global-loadtest-2000-tps.md).
@@ -32,7 +32,7 @@ businessMatchedE2eTps =
   (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
-`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window; for example, `10000 / 468.76 ~= 21.3s`.
+`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window; in the latest valid repeat set, the median completion window was `17.29s`, so `10000 / 17.29 ~= 582.73 completed trades/s`.
 
 ## Benchmark Environment
 
@@ -47,7 +47,7 @@ businessMatchedE2eTps =
 | Redis | `redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99`, append-only disabled for load-test profile |
 | Load generator | runs on the same local machine as services and containers |
 
-The latest numbers are documented local benchmark results. A public reproducibility claim should be made only after committing the benchmark code/config and rerunning the benchmark against that exact commit.
+The latest 10k repeat result was run against benchmark code/config commit `2252e54738d10683894b965c93d93bff32fd8c08` with service commits recorded in `build/load-test-reports/EAP_PUBLIC_10K_20260713-snapshot.json`. The repository still needs a pushed public artifact bundle before this can be treated as externally reproducible by a third party.
 
 ## What The System Does
 
@@ -115,8 +115,8 @@ Focused load-test scripts live under [scripts/load-test/](scripts/load-test/). T
 
 ```bash
 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=128 \
-TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=deep \
-bash scripts/load-test/run-2000-ticket-marker-10k.sh
+TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline MIN_OFFERED_TPS_RATIO=0.95 \
+REPEATS=5 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
 ```
 
 See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
@@ -125,8 +125,9 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 
 - The latest global E2E report does not yet include API p95/p99 or end-to-end p95/p99 latency.
 - The latest 10k result is a short benchmark run, not a 30-minute soak claim.
-- The next public benchmark should report at least five repeated runs with median, min/max, and run links instead of relying on a single best sample.
-- The next public benchmark should pin the exact Git commit and container image tags/digests.
+- The latest 10k repeat has 4 valid public samples out of 5; one run was excluded because the local driver did not maintain the required offered TPS.
+- The benchmark result artifact is local under `build/load-test-reports/`; it still needs to be published or attached to a release for third-party reproduction.
+- A 10-15 minute steady-state benchmark is still pending.
 - Failure-injection coverage should be summarized separately for duplicate delivery, consumer restart, outbox retry, DLQ, and projection replay.
 
 The public benchmark runbook is tracked in [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md).
