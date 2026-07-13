@@ -4879,3 +4879,1054 @@ Verification:
 
 - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` in `eap-wallet`: PASS.
 - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.TradeExecutedListenerTest --tests com.eap.eap_wallet.application.OutboxPollerTest` in `eap-wallet`: PASS.
+
+### TPS-35: RabbitMQ Publisher Path Attribution and Tuning Runbook
+
+Problem:
+
+- After reducing Order and Wallet SQL write amplification, the completion gate started pointing at the return-marker outbox relay path.
+- A naive fix was to increase outbox `publish-concurrency`, but the 2026-07-08 R8 experiment showed that this made completion worse.
+- This is a common interview trap: RabbitMQ queue backlog does not automatically mean "increase consumer or publisher threads"; the real bottleneck can be channel/connection contention, publisher confirms, serialization, DB transaction time, or downstream processing.
+
+Current RabbitMQ settings:
+
+- All three services use Spring Boot `spring-boot-starter-amqp` and Spring Boot `3.5.3`.
+- All three services enable:
+  - `spring.rabbitmq.publisher-confirm-type=correlated`
+  - `spring.rabbitmq.publisher-returns=true`
+  - `spring.rabbitmq.template.mandatory=true`
+- Loadtest consumer settings:
+  - MatchEngine simple listener: `concurrency=8`, `max-concurrency=32`, `prefetch=50`
+  - Wallet simple listener: `concurrency=4`, `max-concurrency=32`, `prefetch=20`
+  - Order service-level listeners: trade executed `concurrency=12`, batch size `50`, receive timeout `75ms`
+- Outbox relay batch settings:
+  - MatchEngine `trade-outbox-relay.batch-size=500`
+  - Order `order-event-outbox.batch-size=500`
+  - Wallet `outbox-relay.batch-size=500`
+
+Measured finding:
+
+- R7, before Order/Wallet parallel publisher change:
+  - `tradeExecutionReachTps=1550.22`
+  - `completionMarkerReachTps=492.31`
+  - `completedTradesReachedSeconds=20.31`
+  - Order outbox enqueue sum about `10.95s`, confirm sum about `1.25s`
+  - Wallet outbox enqueue sum about `11.50s`, confirm sum about `1.20s`
+- R8, with Order/Wallet `publish-concurrency=8`:
+  - `tradeExecutionReachTps=1538.03`
+  - `completionMarkerReachTps=432.67`
+  - `completedTradesReachedSeconds=23.11`
+  - Order outbox enqueue sum jumped to `151.71s`, confirm sum stayed low at `0.85s`
+  - Wallet outbox enqueue sum jumped to `157.54s`, confirm sum stayed low at `0.59s`
+  - MatchEngine enqueue sum was also high at `166.88s`
+- Conclusion:
+  - publisher confirm wait is not the dominant cost;
+  - DB mark-sent is not the dominant cost;
+  - high publisher thread count appears to amplify RabbitTemplate/channel/connection contention on the local loadtest setup;
+  - Order and Wallet return-marker outbox `publish-concurrency` should stay at `1`;
+  - MatchEngine can keep controlled parallel outbox publishing because earlier runs showed the upstream `TradeExecuted` path benefits from it.
+
+Spring AMQP reference points:
+
+- Spring AMQP's `CachingConnectionFactory` uses one shared connection by default and caches channels; the default channel cache size is `25`.
+- The channel cache size is not a hard limit unless `channelCheckoutTimeout` is greater than zero; if more channels are used than the cache size, surplus channels may be physically closed instead of retained.
+- Spring AMQP explicitly warns that in high-volume multi-threaded environments a small cache can cause high channel create/close churn and recommends monitoring RabbitMQ channels before increasing the cache.
+- Spring AMQP also notes that producers and consumers sharing one connection can be a risk when the broker blocks the connection; a separate publisher connection can mitigate that class of producer/consumer interference.
+- Spring Boot exposes the relevant cache properties:
+  - `spring.rabbitmq.cache.channel.size`
+  - `spring.rabbitmq.cache.channel.checkout-timeout`
+  - `spring.rabbitmq.cache.connection.mode`
+  - `spring.rabbitmq.cache.connection.size`
+
+Sources:
+
+- Spring AMQP connection/resource management: https://docs.spring.io/spring-amqp/reference/amqp/connections.html
+- Spring Boot common RabbitMQ application properties: https://docs.spring.io/spring-boot/appendix/application-properties/index.html
+
+Safe default after R8:
+
+```yaml
+eap:
+  match-engine:
+    trade-outbox-relay:
+      publish-concurrency: 8
+  order-event-outbox:
+    publish-concurrency: 1
+  wallet:
+    outbox-relay:
+      publish-concurrency: 1
+```
+
+Controlled next experiment:
+
+- Do not increase publisher concurrency by itself.
+- First add Rabbit channel-cache visibility:
+  - capture RabbitMQ management API connection/channel counts;
+  - capture channel churn if available from the management API;
+  - keep `*_outbox_publish_enqueue_duration`, `*_outbox_confirm_duration`, and `*_outbox_batch_duration`.
+- Then test one variable at a time:
+  - baseline: MatchEngine `publish-concurrency=8`, Order/Wallet `publish-concurrency=1`, current channel cache defaults;
+  - cache-only: `spring.rabbitmq.cache.channel.size=128`, same publisher concurrency shape;
+  - bounded parallel publish: `spring.rabbitmq.cache.channel.size=128`, `spring.rabbitmq.cache.channel.checkout-timeout=1000ms`, Order/Wallet `publish-concurrency=2`;
+  - only if `2` improves, try `4`; do not jump directly to `8`.
+
+Candidate loadtest patch for the cache experiment:
+
+```yaml
+spring:
+  rabbitmq:
+    cache:
+      channel:
+        size: 128
+```
+
+Acceptance criteria for any Rabbit publisher tuning:
+
+- `completionMarkerReachTps` improves over the current valid baseline by more than local run noise.
+- `businessMatchedE2eTps` improves or remains flat while completion improves.
+- `*_outbox_publish_enqueue_duration_seconds_sum` does not explode relative to single-thread baseline.
+- `*_outbox_confirm_duration_seconds_sum` remains low.
+- Final queues ready/unacked drain to zero.
+- No DLQ, no outbox failed rows, and final DB invariants remain correct.
+
+Interview explanation:
+
+> I initially suspected RabbitMQ outbox publishing because completion markers lagged after the DB SQL optimizations. Instead of guessing, I split the relay into select, enqueue, confirm, mark-sent, and batch wall-time metrics. The data showed publisher confirms were cheap, but enqueue time exploded when I increased publisher threads. That told me the bottleneck was not broker ack latency; it was local publisher path contention, likely around RabbitTemplate/channel/connection resources. I reverted the default concurrency, documented a channel-cache experiment, and kept the reliable outbox semantics unchanged.
+
+2026-07-08 follow-up measurements:
+
+| Run | Rabbit setting | `businessMatchedE2eTps` | `completionMarkerReachTps` | `tradeExecutionReachTps` | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS35_RABBIT_BASELINE_10K_R1` | all outbox publishers `publish-concurrency=1`, default channel cache | `427.80` | `427.80` | `1053.60` | Correctness PASS, but MatchEngine trade execution regressed versus the earlier MatchEngine-parallel runs. |
+| `GLT_20260708_TPS35_RABBIT_R7SHAPE_10K_R1` | MatchEngine `publish-concurrency=8`, Order/Wallet `1`, default channel cache | `349.63` | `437.73` | `1173.77` | Correctness PASS. Completion facts reached around `22.84s`, but final ready+unacked drain pushed business gate to `28.60s`. |
+| `GLT_20260708_TPS35_RABBIT_CACHE128_10K_R1` | MatchEngine `8`, Order/Wallet `1`, `spring.rabbitmq.cache.channel.size=128` | `399.59` | `478.64` | `962.19` | Correctness PASS. Valid publish pressure: `actualBuyPublishTps=1999.19`. |
+| `GLT_20260708_TPS35_RABBIT_CACHE128_10K_R2` | Same as R1 | `394.36` | `474.93` | `1313.74` | Correctness PASS. Valid publish pressure: `actualBuyPublishTps=1998.94`. |
+| `GLT_20260708_TPS35_RABBIT_CACHE128_10K_R3` | Same as R1 | `315.85` | `378.05` | `642.49` | Correctness PASS, but driver-limited: `actualBuyPublishTps=753.93`; exclude from service-side tuning average. |
+| `GLT_20260708_TPS35_RABBIT_CACHE128_10K_R4` | Same as R1 | `433.78` | `470.93` | `888.80` | Correctness PASS, but driver-limited: `actualBuyPublishTps=908.31`; exclude from service-side tuning average. |
+| `GLT_20260708_TPS35_ORDER_WALLET_PUB2_10K_R1` | Cache `128`, MatchEngine `8`, Order/Wallet `publish-concurrency=2` | `333.21` | `418.23` | `1023.57` | Correctness PASS and valid publish pressure (`1998.92`), but worse than PUB1. Revert Order/Wallet publisher concurrency to `1`. |
+
+Cache128 valid-publish average:
+
+- Valid runs: `R1`, `R2`.
+- `actualBuyPublishTps=1999.07`.
+- `businessMatchedE2eTps=396.98`.
+- `completionMarkerReachTps=476.78`.
+- `tradeExecutionReachTps=1137.97`.
+- `businessCompletionSeconds=25.20`.
+- `completedTradesReachedSeconds=20.98`.
+
+All-run average including driver-limited samples:
+
+- `actualBuyPublishTps=1415.09`.
+- `businessMatchedE2eTps=385.90`.
+- `completionMarkerReachTps=450.64`.
+- This number is not a clean service-side benchmark because `R3` and `R4` failed to sustain the 2000 TPS publish input.
+
+Stage timer comparison:
+
+| Stage | R7-shape default cache | Cache size 128 | Signal |
+| --- | ---: | ---: | --- |
+| MatchEngine outbox batch sum | `22.33s` | `19.71s` | Better. |
+| MatchEngine publish enqueue sum | `169.63s` | `138.76s` | Better; supports the channel-cache hypothesis. |
+| Order outbox batch sum | `14.39s` | `15.13s` | Roughly flat/slightly worse. |
+| Order publish enqueue sum | `11.95s` | `12.64s` | Roughly flat/slightly worse. |
+| Wallet outbox batch sum | `14.54s` | `15.33s` | Roughly flat/slightly worse. |
+| Wallet publish enqueue sum | `11.57s` | `12.54s` | Roughly flat/slightly worse. |
+
+Order/Wallet `publish-concurrency=2` rejection:
+
+- PUB2 was a valid input-pressure run (`actualBuyPublishTps=1998.92`), so the regression is meaningful.
+- Compared with Cache128 PUB1 valid samples:
+  - `businessMatchedE2eTps` dropped from about `396.98` to `333.21`.
+  - `completionMarkerReachTps` dropped from about `476.78` to `418.23`.
+  - business completion stretched from about `25.20s` to `30.01s`.
+- Stage timers explain the regression:
+  - Order publish enqueue sum increased from about `12-13s` to `27.88s`.
+  - Wallet publish enqueue sum increased from about `12-13s` to `27.75s`.
+  - Order confirm sum increased to `2.88s`; Wallet confirm sum increased to `3.76s`.
+- Conclusion:
+  - Order/Wallet return-marker publisher concurrency should remain `1`;
+  - the bottleneck is not solved by adding publisher threads;
+  - parallel marker publishing increases RabbitTemplate/channel/broker contention in this local benchmark.
+
+RabbitMQ channel observation:
+
+- Default-cache R7-shape snapshot had about `240` channel lines in `rabbitmq-channels.txt`.
+- Cache size `128` snapshot had about `549` channel lines.
+- Interpretation:
+  - increasing channel cache may reduce MatchEngine publisher churn, but it also allows the client to retain many more channels;
+  - this is not free and should be evaluated with more runs and RabbitMQ memory/CPU metrics;
+  - do not apply the same conclusion blindly to production without broker capacity limits.
+
+Current working hypothesis:
+
+- MatchEngine benefits from controlled parallel outbox publishing because it is the upstream fan-out point for `TradeExecuted`.
+- Order and Wallet return-marker relays should stay single-publisher for now; opening them to `2` or `8` created enqueue contention and lowered completion TPS.
+- Channel cache size `128` is a plausible loadtest tuning candidate for the MatchEngine-heavy shape, but it increases retained channels substantially and should be documented as a loadtest tuning, not blindly copied to production.
+- The next improvement work should avoid publisher-thread fan-out and instead inspect:
+  - MatchEngine `TradeExecuted` outbox publish path, because it still dominates enqueue time;
+  - final ready+unacked drain after completion markers are already written;
+  - whether `TradeExecuted` fan-out can reduce Rabbit payload/conversion/channel overhead without weakening outbox reliability.
+
+### TPS-36 to TPS-38: MatchEngine Hot Path Cleanup
+
+Problem:
+
+- After Order and Wallet write-amplification cleanup, the visible bottleneck moved back to MatchEngine.
+- TPS-35 showed Rabbit publisher concurrency is not a generic fix:
+  - Order/Wallet `publish-concurrency=2` regressed.
+  - MatchEngine still had high publisher enqueue cost and, in some runs, a large `matchEngine.orderConfirmed.queue` backlog.
+- The MatchEngine hot path still had two avoidable costs:
+  - parallel outbox publishing used one `RabbitTemplate.send(...)` call per worker/message, causing high channel/template overhead;
+  - trade persistence used JPA `findByTradeId` + `save(trade)` + `save(outbox)` for every matched trade.
+
+Implemented changes:
+
+- MatchEngine outbox relay:
+  - when `publish-concurrency > 1`, partition the pending outbox batch into contiguous chunks;
+  - publish each chunk through `RabbitTemplate.invoke(...)` so each worker reuses a dedicated channel for the chunk;
+  - keep per-message `CorrelationData` and the existing publisher confirm/mark-sent semantics.
+- MatchEngine completion marker listeners:
+  - consume `OrderTradeAppliedEvent` and `WalletTradeSettledEvent` as Spring AMQP consumer batches;
+  - write markers with JDBC `batchUpdate`;
+  - keep the same append-only `trade_completion_markers` table and `ON CONFLICT (trade_id, marker_type) DO NOTHING` idempotency.
+- MatchEngine trade recorder:
+  - replace the JPA recorder internals with explicit JDBC inserts;
+  - remove the per-trade `findByTradeId` preselect;
+  - insert `trade_executions` with `ON CONFLICT (trade_id) DO NOTHING` and fail if affected rows is `0`;
+  - insert `trade_outbox` in the same transaction with `ON CONFLICT (event_type, aggregate_id) DO NOTHING`;
+  - preserve the reliable outbox boundary: `trade_executions` and `trade_outbox` are still committed together.
+
+Verification:
+
+- Focused tests:
+  - `TradeOutboxRelayTest`
+  - `TradeCompletionServiceTest`
+  - `JpaTradeExecutionRecorderTest`
+- Command:
+
+```bash
+GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest --tests com.eap.eap_matchengine.application.TradeCompletionServiceTest --tests com.eap.eap_matchengine.application.TradeOutboxRelayTest
+```
+
+- Result: PASS.
+
+10k deep run comparison:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `tradeExecutionReachTps` | `businessCompletionSeconds` | `maxMatchEngineQueueReady` | `maxMatchEngineQueueUnacked` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cache128 valid average | Match publish-concurrency `8`, Order/Wallet `1`, channel cache `128` | `1999.07` | `396.98` | `476.78` | `1137.97` | `25.20` | mixed | mixed |
+| `GLT_20260708_TPS36_MATCH_INVOKE_10K_R1` | Match outbox chunked `RabbitTemplate.invoke(...)` | `1999.25` | `362.10` | `520.40` | `841.44` | `27.62` | `0` | `74` |
+| `GLT_20260708_TPS37_MATCH_MARKER_BATCH_10K_R1` | TPS36 + completion marker batch listener | `1999.30` | `390.38` | `525.21` | `684.92` | `25.62` | `3233` | `700` |
+| `GLT_20260708_TPS38_MATCH_JDBC_RECORDER_10K_R1` | TPS37 + JDBC trade recorder | `1794.00` | `454.71` | `621.38` | `968.74` | `21.99` | `0` | `27` |
+| `GLT_20260708_TPS38_MATCH_JDBC_RECORDER_10K_R2` | Same as R1 | `1998.40` | `532.93` | `617.32` | `994.10` | `18.76` | `0` | `95` |
+
+Interpretation:
+
+- TPS36 fixed the Match outbox publisher overhead:
+  - Match `trade_outbox_publish_enqueue_duration_seconds_sum` fell from the Cache128 `~138-139s` class to about `1.42s`.
+  - Match outbox batch wall time improved from roughly `19.7-20.0s` to `14.48s`.
+  - This was a real local publisher-path cleanup, but it did not by itself improve business E2E because downstream/final unacked drain still dominated.
+- TPS37 completion marker batching reduced transaction overhead but did not solve the main bottleneck:
+  - Match DB `BEGIN` count dropped from the `30026` class to about `11440`.
+  - `completionMarkerReachTps` improved only slightly (`520.40` to `525.21`).
+  - `matchEngine.orderConfirmed.queue` still spiked to `3233`, so marker batching is worth keeping but is not the primary fix.
+- TPS38 JDBC recorder is the first clearly effective MatchEngine hot-path fix:
+  - the per-trade JPA `findByTradeId` select disappeared from Match DB stats;
+  - `matchEngine.orderConfirmed.queue` peak dropped from TPS37 `3933` messages to `0-95`;
+  - valid-input R2 reached `businessMatchedE2eTps=532.93`, `completionMarkerReachTps=617.32`, and `businessCompletionSeconds=18.76`.
+
+Current conclusion:
+
+- The previous MatchEngine ingress bottleneck was not PostgreSQL raw statement time alone; it was the Java/JPA recorder path around the DB writes.
+- Explicit JDBC made the consumer hot path much cheaper even though the raw insert statements still appear near the top of `pg_stat_statements`.
+- The bottleneck has now moved downstream again:
+  - `order.tradeExecuted.queue` max unacked was `365` in TPS38 R2;
+  - `matchEngine.orderTradeApplied.queue` max unacked was `403`;
+  - `matchEngine.walletTradeSettled.queue` max unacked was `110`.
+- Next optimization should focus on Order `TradeExecuted` apply and return-marker drain, not further MatchEngine trade recorder micro-optimizations.
+
+Interview explanation:
+
+> I found a case where PostgreSQL statement timing alone was misleading. MatchEngine did not look terrible in `pg_stat_statements`, but RabbitMQ showed `matchEngine.orderConfirmed.queue` consumers saturated and backed up. The code path was doing a JPA duplicate preselect and two JPA saves for every trade. I replaced that with explicit JDBC inserts using unique constraints for idempotency and kept `trade_executions` plus `trade_outbox` in one transaction. The result was a clear drop in MatchEngine queue backlog and a valid 10k run improving business completion from the `~397 TPS` class to `~533 TPS`, while preserving reliable outbox semantics.
+
+### TPS-39 to TPS-41: Completion Tail and Marker Observability
+
+Purpose:
+
+- After TPS38, the main visible backlog moved away from MatchEngine ingress and toward downstream trade application / completion marker drain.
+- Two follow-up checks were run:
+  - test whether larger Order trade batches reduce business completion time;
+  - add Match completion marker metrics and test whether lowering marker listener wait time improves completion visibility.
+
+Order batch-size experiment:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS38_MATCH_JDBC_RECORDER_10K_R2` | Baseline after Match JDBC recorder | `1998.40` | `532.93` | `617.32` | `18.76` | Valid baseline. |
+| `GLT_20260708_TPS39_ORDER_BATCH100_10K_R1` | Order `trade-executed.batch-size=100`, `receive-timeout-ms=125` | `1999.10` | `487.29` | `652.28` | `20.52` | Rejected. Larger batches reduced batch count but stretched E2E tail. |
+
+TPS39 interpretation:
+
+- Order batch count dropped from `523` to `262`, and singleton fallback dropped from `47` to `0`.
+- Order batch append wall time improved from `6.99s` to `5.50s`.
+- But business completion worsened from `18.76s` to `20.52s`.
+- Conclusion: larger Order batches reduce local DB transaction overhead but add enough wait/tail latency to hurt this 10k business gate. Keep the smaller `batch-size=50` / `receive-timeout-ms=25` loadtest shape.
+
+Match completion marker experiment:
+
+- Added `TradeCompletionMarkerMetrics` for:
+  - `trade_completion_marker_batches`
+  - `trade_completion_marker_events`
+  - `trade_completion_marker_batch_size`
+  - `trade_completion_marker_insert_duration`
+- Reduced Match completion marker listener `receive-timeout-ms` from `75` to `25` in the loadtest profile.
+- Added focused unit coverage proving the marker metric class records batch count, event count, and insert timer.
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `tradeExecutionReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS40_MATCH_MARKER_METRICS_TIMEOUT25_10K_R1` | marker metrics + timeout `25ms` | `818.13` | `493.60` | `682.73` | `801.07` | `20.26` | Invalid for TPS comparison because publisher only reached `818 TPS`. |
+| `GLT_20260708_TPS41_MATCH_MARKER_METRICS_TIMEOUT25_10K_R2` | same as TPS40 | `1999.31` | `502.25` | `674.14` | `1094.19` | `19.91` | Valid input-pressure run. |
+
+TPS41 interpretation:
+
+- Lower marker listener timeout improved completion visibility relative to TPS38 R2:
+  - `completionMarkerReachTps`: `617.32` -> `674.14`.
+  - `completedTradesReachedSeconds`: `16.20s` -> `14.83s`.
+- It did not improve the full business gate:
+  - `businessMatchedE2eTps`: `532.93` -> `502.25`.
+  - `businessCompletionSeconds`: `18.76s` -> `19.91s`.
+- Match DB raw marker insert cost is not the dominant issue:
+  - TPS41 `trade_completion_markers` insert total was `899.72ms` for `20000` rows.
+  - The bigger remaining Match-side wall-clock cost is still outbox publish/confirm batch time (`trade_outbox_batch_duration_seconds_sum=12.28s`, confirm sum `11.36s`), but this overlaps with downstream drain and is no longer the only bottleneck.
+- The new marker metrics did not appear in the TPS41 actuator scrape even though the unit-level registry test passed. Production constructor ambiguity was removed after TPS41 by making Spring use the single production constructor with `TradeCompletionMarkerMetrics`.
+
+Current conclusion:
+
+- Reject Order batch-size `100` / timeout `125ms`; it hides work in a larger wait window and worsens E2E completion.
+- Keep Match marker timeout `25ms` as a candidate because it improves `completedTrades` visibility, but validate one more run after the constructor cleanup to confirm metrics are exposed.
+- The next real optimization target remains downstream completion:
+  - Order `TradeExecuted` apply still writes `order_trade_applications`, updates two `order_matching_state` rows, and inserts `order_event_outbox`.
+  - Order outbox return-marker publishing still adds visible select/update/publish work.
+  - Wallet settlement is no longer showing a large queue tail in TPS41, but it should still be monitored in mixed-flow tests.
+
+### TPS-42: Rejected Order Outbox Raw JSON Relay
+
+Hypothesis:
+
+- Order return-marker outbox already stores JSON payload in `order_event_outbox.payload`.
+- The relay was deserializing JSON into `OrderTradeAppliedEvent` and then letting `RabbitTemplate.convertAndSend(...)` serialize it again.
+- A possible fixed-cost cleanup was to publish the stored JSON bytes directly as an AMQP JSON message, preserving publisher confirms and the same outbox table.
+
+Experiment:
+
+- Temporarily changed `OrderEventOutboxRelay` to send raw JSON `Message` payloads with content type `application/json` and the stored message type header.
+- Ran `GLT_20260708_TPS42_ORDER_OUTBOX_RAW_JSON_10K_R1`.
+- Reverted the code after the result because the experiment regressed.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS41_MATCH_MARKER_METRICS_TIMEOUT25_10K_R2` | previous valid sample | `1999.31` | `502.25` | `674.14` | `19.91` | Baseline for this comparison. |
+| `GLT_20260708_TPS42_ORDER_OUTBOX_RAW_JSON_10K_R1` | Order outbox raw JSON send | `1998.99` | `396.71` | `485.46` | `25.21` | Rejected. |
+
+Evidence:
+
+- Order outbox publish enqueue got worse, not better:
+  - TPS41 class: about `13s` order outbox publish enqueue sum.
+  - TPS42: `eap_order_outbox_publish_enqueue_duration_seconds_sum=18.18s`.
+- Order outbox batch wall time also worsened:
+  - TPS42: `eap_order_outbox_batch_duration_seconds_sum=19.91s`.
+- TPS42 also had Match ingress noise:
+  - `maxMatchEngineQueueReady=2070`, `maxMatchEngineQueueUnacked=700`.
+  - That makes the full business TPS less clean as an Order-only comparison, but the local Order publish-enqueue timer still rejects the raw JSON hypothesis.
+
+Conclusion:
+
+- Do not switch Order outbox relay to raw JSON message publishing in this shape.
+- The deserialize + `convertAndSend` path is not the main fixed-cost problem for Order return markers on this local setup.
+- The next Order fixed-cost target should be the DB-side apply model:
+  - reducing many small batch fragments in `TradeExecuted` listener;
+  - reducing `hasExistingTradeApplications(...)` precheck/fallback cost;
+  - or combining trade application insert, matching-state update, and outbox insert into a single set-based SQL statement for the batch path.
+
+### TPS-43: Rejected Order Trade Consumer Concurrency 8
+
+Hypothesis:
+
+- Order `TradeExecuted` apply cost is partly per-batch fixed cost:
+  - lock matching states;
+  - precheck existing trade applications;
+  - insert trade application rows;
+  - update matching states;
+  - insert return-marker outbox rows.
+- With `trade-executed.concurrency=12`, 10k runs often split into many small batches.
+- Reducing consumer concurrency to `8` might make batches fuller and reduce DB round-trips without increasing `receive-timeout-ms`.
+
+Experiment:
+
+- Temporarily changed loadtest profile:
+  - `eap.order.listeners.trade-executed.concurrency=12` -> `8`
+  - kept `batch-size=50`
+  - kept `receive-timeout-ms=25`
+- Ran `GLT_20260708_TPS43_ORDER_TRADE_CONCURRENCY8_10K_R1`.
+- Reverted concurrency to `12` after the run because full business TPS did not improve.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS41_MATCH_MARKER_METRICS_TIMEOUT25_10K_R2` | previous valid sample | `1999.31` | `502.25` | `674.14` | `19.91` | Baseline for this comparison. |
+| `GLT_20260708_TPS43_ORDER_TRADE_CONCURRENCY8_10K_R1` | Order trade consumer concurrency `8` | `1998.32` | `458.52` | `703.19` | `21.81` | Rejected for full business TPS. |
+
+Useful evidence:
+
+- Local Order apply fixed cost improved:
+  - `eap_order_trade_batch_total`: `1333` -> `841`.
+  - `batch_total` sum: `7.22s` -> `5.34s`.
+  - `batch_lock_heads` sum: `1.30s` -> `0.95s`.
+  - fallback singleton events: `175` -> `49`.
+- Order outbox relay also looked slightly better:
+  - publish enqueue sum: `12.83s` -> `12.08s`.
+  - batch wall time: `14.03s` -> `13.19s`.
+- But full E2E got worse:
+  - `businessMatchedE2eTps`: `502.25` -> `458.52`.
+  - `businessCompletionSeconds`: `19.91s` -> `21.81s`.
+
+Conclusion:
+
+- Lowering Order trade consumer concurrency is not a standalone win.
+- It confirms that batch fragmentation is a real fixed-cost driver, but simply reducing concurrency trades away too much parallelism.
+- Next work should preserve concurrency while reducing per-batch DB round trips, most likely by replacing the current batch path's multiple statements with one set-based SQL operation:
+  - lock/load states for all batch orders;
+  - insert non-duplicate trade applications;
+  - update matching state rows;
+  - insert return-marker outbox rows;
+  - return counts for validation.
+
+### TPS-44 to TPS-46: Order Batch Fixed DB Round-Trip Reduction
+
+Hypothesis:
+
+- Order `TradeExecuted` batch hot path had real per-batch fixed DB cost.
+- The old batch path did:
+  - lock/load `order_matching_state`;
+  - preselect `order_trade_applications` for duplicate trade ids;
+  - JDBC batch insert `order_trade_applications`;
+  - JDBC batch update `order_matching_state`;
+  - JDBC batch insert `order_event_outbox`.
+- A safer optimization is to keep listener concurrency at `12`, but collapse duplicate detection, application insert, matching-state update, and return-marker outbox insert into one set-based CTE per non-overlapping batch.
+
+Implementation:
+
+- Replaced the batch append section with `insertTradeApplicationsMatchingStatesAndOutboxes(...)`.
+- The CTE:
+  - builds a batch `input` relation;
+  - counts existing trade applications first;
+  - inserts all trade applications only when no existing trade id is present;
+  - updates buyer and seller `order_matching_state` rows from the same inserted trade set;
+  - inserts one return-marker outbox row per trade;
+  - returns counts so Java can fail fast on partial writes.
+- Removed the previous `hasExistingTradeApplications(...)` preselect from the batch path after the CTE duplicate guard was in place.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS41_MATCH_MARKER_METRICS_TIMEOUT25_10K_R2` | previous valid sample | `1999.31` | `502.25` | `674.14` | `19.91` | Baseline for this comparison. |
+| `GLT_20260708_TPS44_ORDER_BATCH_CTE_10K_R1` | batch CTE, old preselect still present | `1999.11` | `463.13` | `593.32` | `21.59` | Local append improved, but full run regressed. |
+| `GLT_20260708_TPS45_ORDER_BATCH_CTE_NO_PRESELECT_10K_R1` | batch CTE + no preselect | `535.64` | `383.57` | `475.39` | `26.07` | Invalid: publisher only reached `535 TPS`. |
+| `GLT_20260708_TPS46_ORDER_BATCH_CTE_NO_PRESELECT_10K_R2` | batch CTE + no preselect | `1998.71` | `547.45` | `762.91` | `18.27` | Valid candidate. |
+
+TPS46 evidence:
+
+- Order apply fixed cost improved versus TPS41:
+  - `eap_order_trade_batch_total`: `1333` -> `1152`.
+  - `batch_append` sum: `7.22s` -> `3.28s`.
+  - `batch_lock_heads` sum: `1.30s` -> `1.19s`.
+  - `batch_total` sum: `7.22s` -> `5.58s`.
+  - singleton fallback events: `175` -> `96`.
+- Order outbox relay also improved versus TPS41/TPS44:
+  - publish enqueue sum: `12.83s` -> `11.10s`.
+  - outbox batch wall time: `14.03s` -> `12.04s`.
+- Business gate improved:
+  - `businessMatchedE2eTps`: `502.25` -> `547.45`.
+  - `businessCompletionSeconds`: `19.91s` -> `18.27s`.
+  - `completionMarkerReachTps`: `674.14` -> `762.91`.
+
+Conclusion:
+
+- Keep the Order batch CTE/no-preselect change as a candidate.
+- TPS46 supports the fixed-cost hypothesis: preserving concurrency while reducing batch DB round trips is better than lowering consumer concurrency.
+- The remaining large costs are no longer just Order append:
+  - Wallet settlement CTE still spent about `1476ms` total for `10000` settlements in TPS46.
+  - Match inserts still spent about `1009ms` on `trade_executions`, `855ms` on `trade_outbox`, and `837ms` on completion markers.
+  - Outbox relay select/update/publish work remains visible across services.
+
+### TPS-47: Rejected Match Recorder Combined CTE
+
+Hypothesis:
+
+- MatchEngine trade recording still does two JDBC write statements per trade:
+  - `trade_executions` insert;
+  - `trade_outbox` insert.
+- Combining both into one CTE might reduce one client/server round trip per trade and improve the Match front-half.
+
+Experiment:
+
+- Temporarily changed `JpaTradeExecutionRecorder.record(...)` to one CTE:
+  - insert `trade_executions`;
+  - insert `trade_outbox` only when `trade_executions` inserted;
+  - return inserted counts for the same duplicate/outbox conflict checks.
+- Ran focused unit tests successfully.
+- Ran `GLT_20260708_TPS47_MATCH_RECORDER_CTE_10K_R1`.
+- Reverted the code because the run regressed.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `tradeExecutionReachTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS46_ORDER_BATCH_CTE_NO_PRESELECT_10K_R2` | Order batch CTE candidate | `1998.71` | `547.45` | `1150.05` | `762.91` | `18.27` | Baseline for this comparison. |
+| `GLT_20260708_TPS47_MATCH_RECORDER_CTE_10K_R1` | Match recorder combined CTE | `1994.89` | `492.47` | `951.37` | `661.91` | `20.31` | Rejected. |
+
+Evidence:
+
+- Match DB write cost got worse:
+  - TPS46 separate statements:
+    - `trade_executions` insert total: about `1009ms`.
+    - `trade_outbox` insert total: about `855ms`.
+    - combined: about `1864ms`.
+  - TPS47 combined CTE:
+    - `WITH inserted_trade ... inserted_outbox ...`: `2210ms`.
+- Match front-half got slower:
+  - `tradeExecutionsReachedSeconds`: `8.70s` -> `10.51s`.
+  - `tradeExecutionReachTps`: `1150.05` -> `951.37`.
+- Business gate regressed:
+  - `businessMatchedE2eTps`: `547.45` -> `492.47`.
+  - `businessCompletionSeconds`: `18.27s` -> `20.31s`.
+
+Conclusion:
+
+- Do not combine Match `trade_executions` and `trade_outbox` inserts into this CTE shape.
+- The extra SQL complexity/planner/write cost outweighed the saved JDBC round trip.
+- Keep the existing Match recorder split inserts for now.
+- Next better target is not this recorder CTE. Inspect either:
+  - batch insertion of completion markers;
+  - outbox relay select/update/publish costs;
+  - Wallet settlement write cost and wallet outbox relay.
+
+### TPS-48: Rejected Wallet Outbox Chunked Parallel Publish
+
+Hypothesis:
+
+- Wallet settlement SQL is already one CTE, so the next visible fixed cost might be the wallet outbox relay.
+- TPS46 wallet outbox relay had `publish-concurrency: 1`; publishing `WalletTradeSettledEvent` back to MatchEngine was serial.
+- Changing the relay to chunked parallel publish with `RabbitTemplate.invoke(...)` and `publish-concurrency: 8` might reduce wall-clock outbox relay time.
+
+Experiment:
+
+- Temporarily changed `OutboxPoller.publishBatch(...)` to partition each pending batch into up to eight chunks.
+- Each chunk published through `RabbitTemplate.invoke(...)` on a worker thread.
+- Set wallet loadtest `eap.wallet.outbox-relay.publish-concurrency: 8`.
+- Ran focused wallet tests successfully.
+- Ran `GLT_20260708_TPS48_WALLET_OUTBOX_CHUNKED_PUBLISH8_10K_R1`.
+- Reverted the code and loadtest config because the run regressed.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `tradeExecutionReachTps` | `walletSettlementReachTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS46_ORDER_BATCH_CTE_NO_PRESELECT_10K_R2` | Order batch CTE candidate | `1998.71` | `547.45` | `1150.05` | `917.20` | `762.91` | `18.27` | Baseline for this comparison. |
+| `GLT_20260708_TPS48_WALLET_OUTBOX_CHUNKED_PUBLISH8_10K_R1` | Wallet chunked parallel publish 8 | `1998.74` | `516.98` | `946.26` | `760.59` | `657.55` | `19.34` | Rejected. |
+
+Evidence:
+
+- Wallet outbox batch wall time improved locally:
+  - `eap_wallet_outbox_batch_duration_seconds_sum`: `12.32s` -> `10.28s`.
+- But publisher confirm cost got much worse:
+  - `eap_wallet_outbox_confirm_duration_seconds_sum`: `0.64s` -> `9.39s`.
+  - max confirm latency: `0.077s` -> `0.359s`.
+- Wallet settlement did not improve:
+  - app transaction timer sum: `15.94s` -> `16.66s`.
+  - DB CTE total time: `1476ms` -> `1847ms`.
+- The front half also got slower:
+  - `tradeExecutionsReachedSeconds`: `8.70s` -> `10.57s`.
+  - `tradeExecutionReachTps`: `1150.05` -> `946.26`.
+
+Conclusion:
+
+- Do not keep wallet chunked parallel publish with concurrency 8.
+- In this local RabbitMQ publisher-confirm setup, extra publish parallelism reduced one local wall timer but increased confirm wait and overall interference.
+- Wallet outbox serial publish is not the next confirmed bottleneck fix.
+- Next better targets:
+  - reduce durable outbox marker write/index cost across services;
+  - review completion marker batching in MatchEngine;
+  - review Wallet `trade_settlements`/outbox schema write amplification, especially redundant surrogate keys or indexes for append-only idempotency tables.
+
+### TPS-49 to TPS-50: Match Trade Execution Unused Order Index Cleanup
+
+Hypothesis:
+
+- `trade_executions` maintained two secondary indexes that were not used by the current runtime query path:
+  - `idx_trade_executions_buyer_order`;
+  - `idx_trade_executions_seller_order`.
+- Removing them should reduce per-trade B-tree write amplification.
+
+Implementation:
+
+- Added `match-trade-009` to drop both indexes.
+- Kept all uniqueness constraints:
+  - `trade_id` for idempotency and `ON CONFLICT (trade_id)`;
+  - `(market_id, sequence)` for market sequencing uniqueness;
+  - `legacy_match_id` for legacy match identity.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `tradeExecutionReachTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS46_ORDER_BATCH_CTE_NO_PRESELECT_10K_R2` | before index cleanup | `1998.71` | `547.45` | `1150.05` | `762.91` | `18.27` | Baseline for this comparison. |
+| `GLT_20260708_TPS49_MATCH_DROP_UNUSED_TRADE_ORDER_INDEXES_10K_R1` | drop buyer/seller order indexes | `1999.35` | `486.93` | `1087.47` | `727.46` | `20.54` | Indexes removed, no E2E win. |
+| `GLT_20260708_TPS50_MATCH_DROP_UNUSED_TRADE_ORDER_INDEXES_10K_R2` | same change, second run | `1999.08` | `371.33` | `734.87` | `554.40` | `26.93` | Noisy/slow run with Match queue backlog. |
+
+Evidence:
+
+- The indexes were not used in TPS46/TPS48 and disappeared after the migration:
+  - before: both buyer/seller order indexes had `idx_scan = 0`;
+  - after: both indexes were absent from `pg_stat_user_indexes`.
+- `trade_executions` insert DB time did not produce a reliable win:
+  - TPS46: about `1009ms`;
+  - TPS49: about `1005ms`;
+  - TPS50: about `1606ms`.
+- The major slowdown in TPS49/TPS50 came from Match outbox relay/confirm rather than this index path:
+  - TPS46 `trade_outbox_batch_duration_seconds_sum`: `10.81s`;
+  - TPS49: `11.39s`;
+  - TPS50: `15.66s`;
+  - TPS46 `trade_outbox_confirm_duration_seconds_sum`: `9.92s`;
+  - TPS49: `10.43s`;
+  - TPS50: `14.42s`.
+
+Conclusion:
+
+- Dropping these two indexes is a reasonable cleanup because they are not tied to current reads.
+- It is not a proven TPS fix; do not count it as resolving the main write amplification.
+- The next primary target should be Match `trade_outbox` relay/confirm and mark-sent cost, because it dominates the slow runs more consistently than `trade_executions` index maintenance.
+
+### TPS-51 to TPS-52: Match Trade Outbox Publish Concurrency Tuning
+
+Hypothesis:
+
+- Match `trade_outbox` relay was the most consistent slowdown in TPS49/TPS50.
+- The relay already used chunked parallel publish with `RabbitTemplate.invoke(...)`.
+- `publish-concurrency: 8` may have been too aggressive for the local RabbitMQ publisher-confirm setup, increasing channel/confirm contention instead of improving end-to-end drain.
+
+Experiment:
+
+- Changed Match loadtest `eap.match-engine.trade-outbox-relay.publish-concurrency` from `8` to `4`.
+- Ran `GLT_20260708_TPS51_MATCH_OUTBOX_PUBLISH_CONCURRENCY4_10K_R1`.
+- Then changed the same setting from `4` to `2`.
+- Ran `GLT_20260708_TPS52_MATCH_OUTBOX_PUBLISH_CONCURRENCY2_10K_R1`.
+- Restored the setting to `4` after TPS52 because `2` regressed.
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `tradeExecutionReachTps` | `walletSettlementReachTps` | `completionMarkerReachTps` | `businessCompletionSeconds` | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS49_MATCH_DROP_UNUSED_TRADE_ORDER_INDEXES_10K_R1` | publish concurrency 8 | `1999.35` | `486.93` | `1087.47` | `862.84` | `727.46` | `20.54` | Previous comparable run after index cleanup. |
+| `GLT_20260708_TPS50_MATCH_DROP_UNUSED_TRADE_ORDER_INDEXES_10K_R2` | publish concurrency 8 | `1999.08` | `371.33` | `734.87` | `630.89` | `554.40` | `26.93` | Slow/noisy run with Match queue backlog. |
+| `GLT_20260708_TPS51_MATCH_OUTBOX_PUBLISH_CONCURRENCY4_10K_R1` | publish concurrency 4 | `1997.58` | `574.13` | `987.42` | `799.25` | `679.21` | `17.42` | Best business completion in this sequence. |
+| `GLT_20260708_TPS52_MATCH_OUTBOX_PUBLISH_CONCURRENCY2_10K_R1` | publish concurrency 2 | `1999.02` | `520.88` | `752.41` | `637.37` | `561.44` | `19.20` | Rejected: under-parallelized Match relay. |
+
+Evidence:
+
+- TPS51 improved the business gate versus TPS49/TPS50:
+  - `businessMatchedE2eTps`: `486.93` / `371.33` -> `574.13`.
+  - `businessCompletionSeconds`: `20.54s` / `26.93s` -> `17.42s`.
+  - `maxMatchEngineQueueReady`: TPS51 stayed at `0`, while TPS50 hit `1579`.
+- TPS51 did not prove that every Match relay local timer got faster:
+  - TPS49 `trade_outbox_batch_duration_seconds_sum`: `11.39s`;
+  - TPS51: `12.03s`;
+  - TPS49 `trade_outbox_confirm_duration_seconds_sum`: `10.43s`;
+  - TPS51: `11.16s`.
+- TPS52 showed that `2` is too low:
+  - business TPS fell from TPS51 `574.13` to `520.88`;
+  - completion marker reach TPS fell from `679.21` to `561.44`;
+  - Match queue ready peak returned to `500`;
+  - `trade_outbox_batch_duration_seconds_sum` worsened from `12.03s` to `15.00s`;
+  - `trade_outbox_confirm_duration_seconds_sum` worsened from `11.16s` to `14.06s`.
+
+Conclusion:
+
+- Keep Match loadtest `trade-outbox-relay.publish-concurrency: 4` as the current candidate.
+- The useful range is not "more publish threads is always better":
+  - `8` was unstable in TPS49/TPS50;
+  - `2` underfed the relay and increased backlog;
+  - `4` currently gives the best end-to-end business completion among these runs.
+- This is a tuning win, not the final write-amplification fix. The remaining fixed write costs are still visible:
+  - Match inserts per trade: `trade_executions`, `trade_outbox`, and two completion markers;
+  - durable outbox status updates after publish;
+  - Wallet settlement CTE plus wallet outbox publish enqueue time;
+  - Order trade apply batch fixed cost when batches fragment.
+- Next work should focus on reducing durable marker/outbox write count or replacing per-trade completion marker writes with a cheaper aggregate completion model, while preserving the current business gate semantics.
+
+### TPS-53: Match Completion Marker and Outbox SQL Write Amplification
+
+Open TPS-53 as the next SQL/write-model ticket.
+
+Problem statement:
+
+- TPS51/TPS52 confirmed that publisher concurrency tuning can change local drain behavior, but it does not solve the real bottleneck.
+- The remaining core problem is fixed durable write cost per completed trade.
+- Match currently pays multiple append/status writes for each trade:
+  - one `trade_executions` insert;
+  - one `trade_outbox` insert for `TradeExecuted`;
+  - one `trade_outbox` status update after publish;
+  - two `trade_completion_markers` inserts for `ORDER_APPLIED` and `WALLET_SETTLED`;
+  - completion/reconciliation reads over `trade_executions` and markers.
+- The business gate must still mean `TradeExecuted + ORDER_APPLIED marker + WALLET_SETTLED marker`; do not replace it with "published to Order/Wallet" only.
+
+Scope:
+
+- Inspect and optimize MatchEngine SQL/write model around:
+  - `trade_completion_markers`;
+  - `trade_outbox`;
+  - completion gate queries;
+  - indexes supporting marker insert/idempotency and completion reads.
+- Prefer reducing row width, redundant indexes, duplicate SQL round trips, or marker write count where correctness allows.
+- Keep service ownership intact: Order and Wallet still emit durable completion facts; MatchEngine owns completion aggregation.
+
+Out of scope:
+
+- Further tuning `publish-concurrency` as the main fix.
+- Counting `TradeExecuted` publish alone as completed business TPS.
+- Moving Order/Wallet state into MatchEngine.
+- Removing idempotency without duplicate/redelivery tests.
+
+Acceptance criteria:
+
+| Task | Priority | Acceptance |
+| --- | --- | --- |
+| TPS-53-01 Inventory Match completion/outbox SQL and indexes | P0 | Document current row writes, unique indexes, non-unique indexes, and `pg_stat_statements` totals for TPS51/TPS52. |
+| TPS-53-02 Propose SQL/write-model reduction options | P0 | Compare at least two options: keep append-only markers but slim indexes/SQL, versus derived aggregate completion state with fewer hot writes. |
+| TPS-53-03 Implement the smallest safe SQL/schema change | P0 | Change is migration-backed, preserves duplicate-safe marker handling, and keeps business gate semantics unchanged. |
+| TPS-53-04 Add/adjust focused tests | P0 | Duplicate and out-of-order Order/Wallet marker tests still pass; completion count remains correct. |
+| TPS-53-05 Run 10k deep comparison | P0 | Compare against TPS51 as the current best local candidate and TPS46 as earlier high-water reference. |
+
+Metrics to compare:
+
+- `businessMatchedE2eTps`
+- `businessCompletionSeconds`
+- `completionMarkerReachTps`
+- `trade_outbox` insert total time
+- `trade_outbox` status update total time
+- `trade_completion_markers` insert total time
+- completion gate query total time
+- `trade_completion_markers` table/index write stats
+- final queue/DLQ correctness
+
+Success bar:
+
+- Primary: reduce Match completion/outbox SQL total time without weakening completion semantics.
+- Secondary: improve or at least not regress `businessMatchedE2eTps` versus TPS51 beyond normal local noise.
+- If local SQL improves but E2E TPS is noisy, keep the change only if deep diagnostics prove durable write cost was reduced and correctness remains intact.
+
+### TPS-53 Implementation Pass 1: Completion Marker Batch SQL
+
+Hypothesis:
+
+- Match completion marker listeners were already using batch listeners, but the JDBC write used `JdbcTemplate.batchUpdate(...)`.
+- TPS51 `pg_stat_statements` showed this still reached PostgreSQL as `20000` marker insert calls:
+  - `INSERT INTO match_engine.trade_completion_markers ... ON CONFLICT ...`
+  - `calls=20000`, `total_exec_ms=1187.94`, `rows=20000`.
+- Keeping the same append-only marker table and idempotency PK, but sending each listener batch as one stable SQL statement, should reduce statement/round-trip overhead without weakening the business gate.
+
+Implementation:
+
+- Changed `TradeCompletionService.insertCompletionMarkers(...)` from per-row JDBC batch execution to one PostgreSQL array/`unnest` insert per listener batch:
+  - `unnest(?::varchar[], ?::varchar[], ?::timestamp[])`;
+  - `ON CONFLICT (trade_id, marker_type) DO NOTHING` remains unchanged.
+- Kept single-event marker methods unchanged for non-batch callers.
+- Added focused tests that execute the `ConnectionCallback` against mocked JDBC objects and verify:
+  - stable `unnest` SQL shape;
+  - `trade_id`, `marker_type`, and `marker_at` arrays are bound;
+  - marker metrics still record batch/event counts.
+
+Rejected intermediate:
+
+- A dynamic multi-values version was tested in `GLT_20260713_TPS53_MARKER_MULTI_VALUES_10K_R1`.
+- It reduced calls but generated many different SQL shapes by batch size, which made planning/statistics noisier.
+- It is not kept; the final implementation uses the stable `unnest` SQL shape.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| Focused tests | PASS: `TradeCompletionServiceTest`, `TradeCompletionReconcilerTest`, `JpaTradeExecutionRecorderTest`. |
+| `GLT_20260713_TPS53_MARKER_MULTI_VALUES_10K_R1` | Correctness PASS, but dynamic SQL shape rejected. |
+| `GLT_20260713_TPS53_MARKER_UNNEST_10K_R1` | Correctness PASS, final queues/DLQ `0`. |
+
+Result:
+
+| Run | Marker insert SQL | `businessMatchedE2eTps` | `completionMarkerReachTps` | Marker insert calls | Marker insert total time | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260708_TPS51_MATCH_OUTBOX_PUBLISH_CONCURRENCY4_10K_R1` | JDBC `batchUpdate`, PostgreSQL sees per-row insert | `574.13` | `679.21` | `20000` | `1187.94ms` | Best E2E reference. |
+| `GLT_20260713_TPS53_MARKER_MULTI_VALUES_10K_R1` | dynamic multi-values | `503.89` | `725.44` | `2083` in top-file sum | `1000.82ms` in top-file sum | Rejected because SQL shape varies by batch size. |
+| `GLT_20260713_TPS53_MARKER_UNNEST_10K_R1` | stable array `unnest` | `464.14` | `721.12` | `2314` | `970.28ms` | Kept as local SQL cleanup, not E2E fix. |
+
+Conclusion:
+
+- TPS-53 pass 1 reduces completion marker SQL statement count and total marker insert time:
+  - calls: `20000` -> `2314`;
+  - total marker insert time: `1187.94ms` -> `970.28ms`.
+- It does not solve the E2E TPS bottleneck:
+  - `businessMatchedE2eTps` regressed in this single run;
+  - `completionMarkerReachTps` improved versus TPS51, so the local marker path did get cheaper;
+  - end-to-end completion remains dominated by the broader Order/Wallet/outbox path and local run noise.
+- Keep this as a small SQL cleanup because it preserves semantics and reduces marker SQL cost.
+- Continue TPS-53 against higher-impact write amplification:
+  - Match `trade_outbox` insert/status update and relay select payload cost;
+  - Wallet settlement CTE and outbox publish enqueue;
+  - Order trade apply write model when batches fragment.
+
+### TPS-53 Implementation Pass 2: Trade Outbox Redundant Unique Constraint
+
+Hypothesis:
+
+- Match `trade_outbox` had a unique constraint on `(event_type, aggregate_id)`.
+- The same transaction already inserts `trade_executions` first with `ON CONFLICT (trade_id) DO NOTHING`.
+- For normal duplicate delivery, the `trade_executions.trade_id` gate exits before inserting outbox, so the outbox-level uniqueness is redundant on the hot path.
+
+Implementation:
+
+- Removed `ON CONFLICT (event_type, aggregate_id) DO NOTHING` from `JpaTradeExecutionRecorder` outbox insert.
+- Added `match-trade-010` to drop `uk_trade_outbox_event_aggregate`.
+- Preserved reliable outbox semantics:
+  - `trade_executions` and `trade_outbox` are still committed in the same transaction;
+  - duplicate trade handling still uses `trade_id`;
+  - if outbox insert unexpectedly returns no row, the transaction fails.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| Focused tests | PASS: `JpaTradeExecutionRecorderTest`, `TradeCompletionServiceTest`, `TradeOutboxRelayTest`. |
+| `GLT_20260713_TPS53_OUTBOX_DROP_UNIQUE_10K_R1` | Correctness PASS, final queues/DLQ `0`. |
+| Index check | `uk_trade_outbox_event_aggregate` absent from `pg_stat_user_indexes`. |
+
+Result:
+
+| Run | `actualBuyPublishTps` | `businessMatchedE2eTps` | `completionMarkerReachTps` | `trade_outbox` insert total | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260713_TPS53_MARKER_UNNEST_10K_R1` | not primary comparison | `464.14` | `721.12` | `860.76ms` | Before dropping outbox unique. |
+| `GLT_20260713_TPS53_OUTBOX_DROP_UNIQUE_10K_R1` | `642.23` | `387.58` | `550.04` | `802.17ms` | Driver publish was slow, so E2E is not comparable as a regression signal. |
+
+Conclusion:
+
+- The outbox unique removal is a correct local write-amplification cleanup.
+- It only saved about `58ms` over `10000` outbox inserts in this run, so it is not a main TPS fix.
+- Keep it because the idempotency gate is still `trade_executions.trade_id`, and the removed index is not needed by the normal runtime path.
+- Do not over-interpret the single-run E2E regression because `actualBuyPublishTps` was only `642.23`.
+
+### TPS-53 Implementation Pass 3: Trade Execution `trade_id` Primary Key
+
+Hypothesis:
+
+- `trade_executions` is the canonical trade fact, but the runtime path identifies it by `trade_id`.
+- The table still had both:
+  - surrogate `id` primary key;
+  - unique `trade_id` for idempotency and completion joins.
+- Since no runtime code reads `trade_executions` by `id`, the surrogate primary-key index is redundant write amplification.
+
+Implementation:
+
+- Added `match-trade-011`:
+  - drop `uk_trade_executions_trade_id`;
+  - drop the old `trade_executions_pkey`;
+  - add `trade_executions_pkey` on `trade_id`;
+  - drop the unused `id` column.
+- Updated JPA mapping:
+  - `TradeExecutionEntity.tradeId` is now `@Id`;
+  - `TradeExecutionRepository` now uses `String` id type.
+- Kept the other uniqueness constraints for now:
+  - `(market_id, sequence)`;
+  - `legacy_match_id`.
+- Those two constraints may still be business identity protection, so do not remove them without an architecture decision.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| Focused tests | PASS: `JpaTradeExecutionRecorderTest`, `TradeCompletionServiceTest`, `TradeOutboxRelayTest`. |
+| `GLT_20260713_TPS53_TRADE_ID_PK_10K_R1` | Correctness PASS, final queues/DLQ `0`. |
+| Index check | `trade_executions` now has `trade_executions_pkey`, `uk_trade_executions_legacy_match_id`, and `uk_trade_executions_market_sequence`; `uk_trade_executions_trade_id` is gone. |
+
+Result:
+
+| Run | `actualBuyPublishTps` | `businessMatchedE2eTps` | `tradeExecutionReachTps` | `completionMarkerReachTps` | `trade_executions` insert total | `trade_outbox` insert total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260713_TPS53_OUTBOX_DROP_UNIQUE_10K_R1` | `642.23` | `387.58` | `622.95` | `550.04` | `1015.71ms` | `802.17ms` |
+| `GLT_20260713_TPS53_TRADE_ID_PK_10K_R1` | `1999.36` | `384.15` | `969.86` | `563.35` | `820.40ms` | `546.88ms` |
+
+Additional diagnostics from `GLT_20260713_TPS53_TRADE_ID_PK_10K_R1`:
+
+| Area | Metric | Value |
+| --- | --- | ---: |
+| Match | `trade_completion_markers` insert total | `1013.77ms` |
+| Match | `trade_outbox_batch_duration_seconds_sum` | `15.10s` |
+| Match | `trade_outbox_confirm_duration_seconds_sum` | `14.15s` |
+| Order | `eap_order_trade_apply_duration_seconds_sum{phase="batch_total"}` | `8.37s` |
+| Order | `eap_order_outbox_batch_duration_seconds_sum` | `16.73s` |
+| Wallet | settlement CTE SQL total | `1665.92ms` |
+| Wallet | `eap_wallet_trade_settlement_transaction_duration_seconds_sum` | `19.59s` |
+| Wallet | `eap_wallet_outbox_batch_duration_seconds_sum` | `16.88s` |
+
+Conclusion:
+
+- This pass is a real Match local write improvement:
+  - `trade_executions` insert total improved from `1015.71ms` to `820.40ms`;
+  - Match front-half reach improved from `622.95` to `969.86` TPS, though the previous run had a weak publisher and is not a clean E2E baseline.
+- It still does not solve business E2E TPS:
+  - Order and Wallet completion reach stayed around `643.93` TPS;
+  - completed-trade marker reach was `563.35` TPS;
+  - durable outbox/marker completion flow is now the more important amplification layer than Match trade fact insertion.
+- Keep this change because it removes a redundant index/write without weakening the accepted `trade_id` idempotency semantics.
+- Next target should not be more Match `trade_executions` micro-optimization. The next ticket should evaluate reliable outbox completion amplification across Order, Wallet, and Match:
+  - per-service outbox publish/confirm/mark-sent fixed cost;
+  - whether Order/Wallet completion marker events need one durable outbox row per trade;
+  - whether marker aggregation can be batched or compacted while preserving `TradeExecuted + ORDER_APPLIED + WALLET_SETTLED` business gate semantics.
+
+### TPS-54 Implementation Pass 1: Wallet Outbox Relay JDBC Projection
+
+Hypothesis:
+
+- The Wallet settlement path had already moved the settlement write itself to explicit SQL, but the Wallet outbox relay still used Spring Data JPA to load pending outbox entities.
+- In TPS53, Wallet outbox select was a visible fixed cost:
+  - `select oe1_0.id, oe1_0.attempt_count, ... payload ... from wallet_service.outbox ...`
+  - `298 calls`, `384.24ms`, `10000 rows`.
+- Order relay already uses a lightweight JDBC projection for outbox rows. Matching that pattern in Wallet should reduce relay select/entity materialization overhead without changing reliable outbox semantics.
+
+Implementation:
+
+- Changed `OutboxPoller` pending selection from Spring Data repository entity loading to `JdbcTemplate.query(...)` with a small `OutboxRow` projection:
+  - `id`;
+  - `event_type`;
+  - `routing_key`;
+  - `payload`;
+  - `attempt_count`.
+- Changed Wallet outbox `mark SENT` and failure retry updates to `NamedParameterJdbcTemplate`.
+- Kept `OutboxRepository` for gauges, admin/recovery queries, and cleanup.
+- Preserved the existing relay semantics:
+  - publish first;
+  - wait for publisher confirm;
+  - only then mark rows `SENT`;
+  - nack/timeout increments attempts and schedules retry or marks `FAILED`.
+- Added a `status = 'PENDING'` guard to failure updates so a row that was already marked `SENT` by a partial mark-sent operation cannot be moved back to retry state.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| Focused tests | PASS: `OutboxPollerTest`, `TradeExecutedListenerTest`. |
+| `GLT_20260713_TPS54_WALLET_OUTBOX_JDBC_10K_R1` | Correctness PASS, final queues/DLQ `0`. |
+
+Result:
+
+| Run | Change | `actualBuyPublishTps` | `businessMatchedE2eTps` | `walletSettlementReachTps` | `completionMarkerReachTps` | Wallet outbox select SQL | Wallet outbox batch sum |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260713_TPS53_TRADE_ID_PK_10K_R1` | Wallet relay still JPA entity select | `1999.36` | `384.15` | `643.93` | `563.35` | `384.24ms` | `16.88s` |
+| `GLT_20260713_TPS54_WALLET_OUTBOX_JDBC_10K_R1` | Wallet relay JDBC projection/update | `1998.55` | `468.76` | `788.84` | `631.70` | `59.77ms` | `14.49s` |
+
+Additional metrics:
+
+| Metric | TPS53 | TPS54 |
+| --- | ---: | ---: |
+| Wallet settlement CTE SQL total | `1665.92ms` | `1536.98ms` |
+| `eap_wallet_trade_settlement_transaction_duration_seconds_sum` | `19.59s` | `15.75s` |
+| `eap_wallet_outbox_publish_enqueue_duration_seconds_sum` | `15.73s` | `13.27s` |
+| Wallet outbox mark-sent SQL total | `59.48ms` | `192.52ms` |
+
+Conclusion:
+
+- Keep the Wallet outbox JDBC projection change.
+- The strongest evidence is the outbox select path:
+  - SQL total dropped from `384.24ms` to `59.77ms`;
+  - this removes JPA entity materialization from a 10k-row relay hot path.
+- E2E improved in this comparable run:
+  - `businessMatchedE2eTps`: `384.15` -> `468.76`;
+  - `walletSettlementReachTps`: `643.93` -> `788.84`;
+  - `completionMarkerReachTps`: `563.35` -> `631.70`.
+- Caveat: mark-sent SQL total was higher in this single run, while the app timer remained close (`0.211s` -> `0.225s`). Treat mark-sent as not yet improved.
+- Next targets:
+  - apply the same scrutiny to Match outbox relay, which still shows JPA entity select cost;
+  - evaluate whether outbox relay select/update SQL should be stabilized further to reduce dynamic `IN (...)` statement shapes;
+  - keep completion semantics unchanged until a separate design ticket explicitly changes the marker model.
+
+### TPS-55 Public Benchmark Reproducibility
+
+Goal:
+
+- Stop treating a single strong local run as the public result.
+- Build a pinned, repeatable benchmark release process that can be cited from README and resume.
+- Preserve the honest distinction between offered order confirmations/s and completed business trades/s.
+
+Scope:
+
+| Task | Priority | Acceptance |
+| --- | --- | --- |
+| TPS-55-01 Pin loadtest container images | P0 | `docker-compose.loadtest.yml` uses image digests for PostgreSQL, RabbitMQ, and Redis. |
+| TPS-55-02 Add public benchmark runbook | P0 | `docs/benchmarks/2026-07-public-benchmark.md` defines workload, timing formula, validity rules, environment, and publication criteria. |
+| TPS-55-03 Add official 10k repeat wrapper | P0 | `scripts/load-test/run-public-benchmark-10k-repeat.sh` runs the existing 10k repeat flow with `REPEATS>=5`, baseline/light diagnostics, and explicit offered-load threshold. |
+| TPS-55-04 Improve repeat summary | P0 | Repeat summary reports median, valid/invalid runs, invalid reasons, artifact paths, all-run stats, and valid-runs-only stats. |
+| TPS-55-05 Add benchmark snapshot capture | P0 | `scripts/load-test/collect-benchmark-snapshot.sh` records infra/order/wallet/matchEngine/common commits, dirty status, and pinned image digests. |
+| TPS-55-06 Run five official 10k repeats | P1 | Produce `matched-e2e-repeat-EAP_PUBLIC_10K_...-summary.json`; publish median/min/max only after invalid run rules are applied. |
+| TPS-55-07 Commit/push exact benchmark snapshot | P1 | README can link to an exact commit and result artifacts. |
+
+Validity rules for public summary:
+
+- `actualBuyPublishTps >= TARGET_TPS * MIN_OFFERED_TPS_RATIO`;
+- `buyPublishFailures == 0`;
+- `sellPublishFailures == 0`;
+- `completedTrades == EVENTS`;
+- `tradeExecutions == EVENTS`;
+- `walletTradeSettlements == EVENTS`;
+- `orderCommandMatchedRows == EVENTS * 2`;
+- final measured ready/unacked queue backlog is zero.
+
+Current implementation status:
+
+- Done: digest-pinned loadtest compose for local image set.
+- Done: public benchmark runbook.
+- Done: official 10k repeat wrapper.
+- Done: repeat summary now includes median and validity classification.
+- Done: snapshot script records multi-repo dirty state and pinned image digests.
+- Not run yet: five official repeats on a committed snapshot.
+
+### TPS-56 Steady-State Benchmark
+
+Goal:
+
+- Add one steady-state result after TPS-55 so the README is not only a short 10k burst story.
+- Prove whether queues stay bounded under a conservative completed-throughput target.
+
+Initial plan:
+
+| Task | Priority | Acceptance |
+| --- | --- | --- |
+| TPS-56-01 Choose conservative steady-state target | P0 | Start near current completed capacity; do not start with 2000 offered TPS as the public steady-state claim. |
+| TPS-56-02 Run 10-15 minute steady-state | P0 | Capture completed business TPS, queue backlog over time, final drain, DLQ, and resource metrics. |
+| TPS-56-03 Summarize backlog trend | P0 | Report whether backlog grows, shrinks, or stays bounded. |
+| TPS-56-04 Update performance report | P1 | Add steady-state result or explicitly list it as remaining gap. |
+
+Suggested first command:
+
+```bash
+TARGET_TPS=500 \
+DURATION_SECONDS=900 \
+EVENTS=450000 \
+PUBLISHERS=128 \
+TIMEOUT_SECONDS=1800 \
+DIAGNOSTICS_LEVEL=light \
+bash scripts/load-test/run-global-matched-e2e-sustained.sh
+```
+
+Do not update the README headline with stronger claims until TPS-55 has a committed exact SHA and TPS-56 either has a completed result or remains clearly marked as a gap.

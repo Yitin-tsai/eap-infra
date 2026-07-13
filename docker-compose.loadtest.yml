@@ -1,6 +1,6 @@
 services:
   order-postgres:
-    image: postgres:14.6
+    image: postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647
     container_name: eap-order-postgres-loadtest
     restart: unless-stopped
     environment:
@@ -30,7 +30,7 @@ services:
       retries: 10
 
   wallet-postgres:
-    image: postgres:14.6
+    image: postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647
     container_name: eap-wallet-postgres-loadtest
     restart: unless-stopped
     environment:
@@ -60,7 +60,7 @@ services:
       retries: 10
 
   match-postgres:
-    image: postgres:14.6
+    image: postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647
     container_name: eap-match-postgres-loadtest
     restart: unless-stopped
     environment:
@@ -90,7 +90,7 @@ services:
       retries: 10
 
   rabbitmq:
-    image: rabbitmq:3-management-alpine
+    image: rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
     container_name: eap-rabbitmq-loadtest
     environment:
       RABBITMQ_DEFAULT_USER: admin
@@ -107,7 +107,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     container_name: eap-redis-loadtest
     ports:
       - "6379:6379"

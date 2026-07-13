@@ -155,12 +155,71 @@ rabbitmq_queue_lines() {
   fi
 }
 
+rabbitmq_connections_http() {
+  local connections_json
+  connections_json="$(curl -fsS -u "${RABBIT_MANAGEMENT_USER}:${RABBIT_MANAGEMENT_PASSWORD}" \
+    "${RABBIT_MANAGEMENT_URL}/api/connections?columns=name,user,vhost,channels,send_pend,state,recv_oct_details,send_oct_details")" || return 1
+
+  jq -r '
+    .[]
+    | [
+        .name,
+        .user,
+        .vhost,
+        (.channels // 0),
+        (.send_pend // 0),
+        (.state // ""),
+        (.recv_oct_details.rate // 0),
+        (.send_oct_details.rate // 0)
+      ]
+    | @tsv
+  ' <<< "${connections_json}"
+}
+
+rabbitmq_channels_http() {
+  local channels_json
+  channels_json="$(curl -fsS -u "${RABBIT_MANAGEMENT_USER}:${RABBIT_MANAGEMENT_PASSWORD}" \
+    "${RABBIT_MANAGEMENT_URL}/api/channels?columns=name,user,vhost,connection_details,number,consumer_count,messages_unacknowledged,prefetch_count,state")" || return 1
+
+  jq -r '
+    .[]
+    | [
+        .name,
+        .user,
+        .vhost,
+        (.connection_details.name // ""),
+        (.number // 0),
+        (.consumer_count // 0),
+        (.messages_unacknowledged // 0),
+        (.prefetch_count // 0),
+        (.state // "")
+      ]
+    | @tsv
+  ' <<< "${channels_json}"
+}
+
 snapshot_rabbitmq() {
   {
     echo "### rabbitmq queues"
     echo "capturedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     rabbitmq_queue_lines
   } > "${DIAG_DIR}/rabbitmq-queues.txt" 2>&1
+
+  {
+    echo "### rabbitmq connections"
+    echo "capturedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if ! rabbitmq_connections_http; then
+      echo "[WARN] RabbitMQ management HTTP API connections unavailable"
+    fi
+  } > "${DIAG_DIR}/rabbitmq-connections.txt" 2>&1
+
+  {
+    echo "### rabbitmq channels"
+    echo "capturedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if ! rabbitmq_channels_http; then
+      echo "[WARN] RabbitMQ management HTTP API channels unavailable"
+    fi
+  } > "${DIAG_DIR}/rabbitmq-channels.txt" 2>&1
 }
 
 snapshot_processes() {
@@ -188,7 +247,7 @@ snapshot_actuator() {
     for url in "$@"; do
       echo "# url=${url}"
       if curl -fsS "${url}" \
-        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_wallet_trade_settlement_.*|eap_wallet_outbox_(select|mark_sent)_duration_seconds_(count|sum|max)).*'; then
+        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_outbox_.*).*'; then
         return 0
       fi
     done
@@ -226,6 +285,12 @@ sample_loop() {
       echo "## sample $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo "# rabbitmq"
       rabbitmq_queue_lines
+      if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
+        echo "# rabbitmq connections"
+        rabbitmq_connections_http || echo "[WARN] RabbitMQ management HTTP API connections unavailable"
+        echo "# rabbitmq channels"
+        rabbitmq_channels_http || echo "[WARN] RabbitMQ management HTTP API channels unavailable"
+      fi
       echo "# processes"
       for repo in eap-wallet eap-order eap-matchEngine; do
         local_pid="$(service_pid "${repo}")"
@@ -247,7 +312,7 @@ sample_loop() {
           for url in ${urls}; do
             echo "# url=${url}"
             if curl -fsS "${url}" \
-              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total).*'; then
+              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_outbox_.*).*'; then
               break
             fi
           done
