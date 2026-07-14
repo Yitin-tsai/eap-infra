@@ -6068,3 +6068,79 @@ Stability evidence from R2 sampler:
   - sampled mid-run SELL book decreased monotonically in spot checks (`424887 -> 384831 -> 323414 -> 246548 -> 170581 -> 103456 -> 36141`);
   - BUY book stayed `0` in spot checks;
   - final `remainingSellOrders=0`, `remainingBuyOrders=0`.
+
+### TPS-58 Public Steady-State Evidence Hardening
+
+Goal:
+
+- Turn the clean TPS-56 R2 steady-state result into repeat-based public evidence.
+- Verify the repaired load-test harness after the RabbitMQ metadata and failure-diagnostics fixes.
+- Update the public performance documents with median/range instead of relying on a single steady-state sample.
+
+Scope:
+
+| Task | Priority | Acceptance |
+| --- | --- | --- |
+| TPS-58-01 Open evidence-hardening ticket | P0 | This ticket records the accepted scope: 10k guard, three steady-state repeats, report update, and commit. |
+| TPS-58-02 Run repaired 10k guard | P0 | 10k matched E2E run completes with `completedTrades=EVENTS`, Order/Wallet counts aligned, queues/DLQ zero, remaining BUY/SELL zero, and Redis `evicted_keys=0`. |
+| TPS-58-03 Run three steady-state repeats | P0 | Three near-500 offered-load 450k runs complete or are explicitly classified with reasons. Valid runs report median/range for offered TPS, business E2E TPS, completion window, drain time, and correctness counts. |
+| TPS-58-04 Update public performance docs | P0 | `docs/performance-report.md` and `docs/benchmarks/2026-07-public-benchmark.md` describe the repeat steady-state result and updated wording. |
+| TPS-58-05 Commit the evidence package | P1 | Commit includes load-test harness fix, missing-detail regression test, ticket/docs updates, and references local artifact paths. |
+
+Run IDs:
+
+- 10k guard: `GLT_20260714_TPS58_GUARD_10K`.
+- Steady-state repeats: `EAP_STEADY_500TPS_15M_20260714_R1` through `R3`.
+
+Notes:
+
+- Do not strengthen the public claim to 500 completed TPS unless the measured median supports it.
+- Keep wording as near-500 offered order confirmations/s plus measured fully gated completed trades/s.
+- If a run fails, preserve after-run diagnostics and classify the failure before rerunning.
+
+2026-07-14 execution result:
+
+- 10k guard `GLT_20260714_TPS58_GUARD_10K` completed the correctness gate:
+  - `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`;
+  - final measured queues and DLQ `0`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - Redis `maxmemory-policy=noeviction`, `evicted_keys=0`;
+  - offered BUY rate was only `521.47/s`, so this is a harness/correctness guard, not a public 2000 offered-load sample.
+- Three 450k steady-state repeats were attempted:
+  - valid samples: `2/3` (`R1`, `R2`);
+  - invalid sample: `R3`, reason `steady_state_correctness_miss_19_trades`.
+
+Valid steady-state samples:
+
+| Run | Offered BUY TPS | Business E2E TPS | Completion Window | Drain After BUY | Correctness |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `EAP_STEADY_500TPS_15M_20260714_R1` | `494.71` | `477.42` | `942.57s` | `32.95s` | `450000/450000`, final queues/DLQ `0`, Redis evictions `0` |
+| `EAP_STEADY_500TPS_15M_20260714_R2` | `500.00` | `497.89` | `903.81s` | `3.81s` | `450000/450000`, final queues/DLQ `0`, Redis evictions `0` |
+
+Valid-sample summary:
+
+- Offered BUY TPS median/range: `497.36`, range `494.71-500.00`.
+- Business matched E2E TPS median/range: `487.66`, range `477.42-497.89`.
+- Completion window median/range: `923.19s`, range `903.81-942.57s`.
+- Drain after BUY publish median/range: `18.38s`, range `3.81-32.95s`.
+
+Rejected sample `EAP_STEADY_500TPS_15M_20260714_R3`:
+
+- Offered BUY rate remained near target: `494.78/s`, publish failures `0`.
+- Result failed the correctness gate:
+  - `completedTrades=449981 / 450000`;
+  - `tradeExecutions=449981 / 450000`;
+  - `walletTradeSettlements=449981 / 450000`;
+  - `orderCommandMatchedRows=899962 / 900000`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=19`;
+  - `lockedCurrency=1900`, `lockedAmount=19`;
+  - final measured queues and DLQ drained to `0`;
+  - Redis stayed clean: `noeviction`, `evicted_keys=0`.
+- The run log recorded one RabbitMQ client message: `Received a frame on an unknown channel, ignoring it`.
+- The repaired two-phase harness preserved the result JSON, Redis/RabbitMQ metadata, after-run diagnostics, service shutdown, and final queue purge despite the failed Gradle task.
+
+Interpretation:
+
+- The clean Redis fix is holding: all TPS-58 runs had `evicted_keys=0`; the R3 failure is not the earlier Redis-eviction false-no-match failure.
+- The two valid 2026-07-14 samples support a near-500 offered-load steady-state claim with completed throughput in the `477-498/s` range on the local environment.
+- The invalid R3 sample prevents claiming three-run stable correctness. The next engineering task should investigate why 19 trades failed to complete despite broker queues draining and Redis eviction staying at zero.

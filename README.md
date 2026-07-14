@@ -126,9 +126,9 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 - The latest global E2E report does not yet include API p95/p99 or end-to-end p95/p99 latency.
 - The latest 10k result is a short benchmark run, not a 30-minute soak claim.
 - The latest 10k repeat has 4 valid public samples out of 5; one run was excluded because the local driver did not maintain the required offered TPS.
-- A first 15-minute steady-state attempt was rejected because the environment used an evicting development Redis. After switching to clean `noeviction` Redis, `EAP_STEADY_500TPS_15M_20260713_R2` completed `450000` trades at `481.42` fully gated completed trades/s, with final queues/DLQ and remaining orderbook entries at zero.
+- A first 15-minute steady-state attempt was rejected because the environment used an evicting development Redis. After switching to clean `noeviction` Redis, near-500 offered-load repeats produced 2 valid 450k runs with valid-sample median `487.66` fully gated completed trades/s; a third repeat exposed a 19-trade correctness miss and is the next investigation target.
 - The benchmark result artifact is local under `build/load-test-reports/`; it still needs to be published or attached to a release for third-party reproduction.
-- The current valid steady-state result is near-500 offered order confirmations/s, not a 2000 completed TPS claim.
+- The current valid steady-state evidence is near-500 offered order confirmations/s, not a 2000 completed TPS claim, and not yet a three-run stable correctness claim.
 - Failure-injection coverage should be summarized separately for duplicate delivery, consumer restart, outbox retry, DLQ, and projection replay.
 
 The public benchmark runbook is tracked in [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md).

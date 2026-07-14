@@ -202,6 +202,39 @@ The steady-state result should report:
 - Redis state: `maxmemory-policy=noeviction`, `evicted_keys=0`, peak memory about `270.77MB`.
 - Interpretation: valid near-500 offered-load steady-state result on the local environment. Do not describe it as 500 completed TPS or 2000 completed TPS.
 
+2026-07-14 repeat attempt:
+
+- Goal: verify the repaired load-test harness and turn the single clean steady-state result into repeat-based evidence.
+- 10k guard: `GLT_20260714_TPS58_GUARD_10K` completed the correctness gate with `10000` completed trades, aligned Order/Wallet counts, final queues/DLQ `0`, remaining orderbook entries `0`, and Redis `evicted_keys=0`. The local driver only reached `521.47` offered BUY confirmations/s, so this run is a harness/correctness guard, not a public 2000 offered-load sample.
+- Steady-state runs attempted: `EAP_STEADY_500TPS_15M_20260714_R1` through `R3`.
+- Valid steady-state samples: `2/3`.
+- Invalid sample: `R3`, rejected as `steady_state_correctness_miss_19_trades`.
+
+Valid steady-state samples:
+
+| Run | Offered BUY TPS | Business E2E TPS | Completion Window | Drain After BUY | Final State |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `R1` | `494.71` | `477.42` | `942.57s` | `32.95s` | `450000/450000`, queues/DLQ `0`, orderbook `0/0`, Redis evictions `0` |
+| `R2` | `500.00` | `497.89` | `903.81s` | `3.81s` | `450000/450000`, queues/DLQ `0`, orderbook `0/0`, Redis evictions `0` |
+
+Valid-sample summary:
+
+| Metric | Median | Min | Max |
+| --- | ---: | ---: | ---: |
+| actual BUY publish TPS | `497.36` | `494.71` | `500.00` |
+| business matched E2E TPS | `487.66` | `477.42` | `497.89` |
+| business completion seconds | `923.19` | `903.81` | `942.57` |
+| drain after BUY publish | `18.38s` | `3.81s` | `32.95s` |
+
+Rejected `R3` details:
+
+- Offered BUY rate stayed near target: `494.78/s`, with publish failures `0`.
+- Correctness gate failed: `449981 / 450000` completed trades, `449981 / 450000` trade executions, `449981 / 450000` Wallet settlements, and `899962 / 900000` Order command matched rows.
+- Final broker queues and DLQ drained to zero, but `remainingBuyOrders=19`, `lockedCurrency=1900`, and `lockedAmount=19`.
+- Redis remained clean: `maxmemory-policy=noeviction`, `evicted_keys=0`.
+- The run log contained one RabbitMQ client message: `Received a frame on an unknown channel, ignoring it`.
+- Interpretation: the earlier Redis eviction issue is fixed, but the system cannot yet claim three-run steady-state correctness. The next performance/reliability task should investigate the 19-trade miss with the preserved R3 diagnostics.
+
 ## Publication Criteria
 
 Do not update README with a stronger public claim until:

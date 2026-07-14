@@ -126,8 +126,9 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 - 最新 global E2E report 尚未提供 API p95/p99 或 end-to-end p95/p99 latency。
 - 最新 10k 結果是短場景 benchmark，不是 30 分鐘 soak claim。
 - 最新 10k repeat 有 4/5 輪符合 public summary 條件；其中 1 輪因本機 driver 未維持足夠 offered TPS 被排除。
+- 第一輪 15 分鐘 steady-state 因 Redis 使用 evicting 開發設定而被 rejected；切到乾淨 `noeviction` Redis 後，near-500 offered-load repeat 目前有 2 輪 450k valid run，valid-sample median 為 `487.66` fully gated completed trades/s；第 3 輪暴露 19 筆交易未完成，列為下一步調查目標。
 - Benchmark result artifact 目前位於本機 `build/load-test-reports/`，仍需發布或附到 release 才能讓第三方直接驗證。
-- 10-15 分鐘 steady-state benchmark 尚未完成。
+- 目前 steady-state 證據是 near-500 offered order confirmations/s，不是 2000 completed TPS claim，也還不是三輪穩定 correctness claim。
 - Failure injection 應另外整理 duplicate delivery、consumer restart、outbox retry、DLQ、projection replay。
 
 Public benchmark runbook 記錄在 [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md)。

@@ -175,12 +175,14 @@ append_service_metadata() {
 }
 
 append_rabbitmq_metadata() {
+  local rabbit_container="${RABBIT_CONTAINER:-eap-rabbitmq}"
   {
     echo
     echo "[rabbitmq.queues]"
-    docker exec eap-rabbitmq rabbitmqctl -q list_queues name messages_ready messages_unacknowledged consumers \
+    echo "container=${rabbit_container}"
+    docker exec "${rabbit_container}" rabbitmqctl -q list_queues name messages_ready messages_unacknowledged consumers \
       | grep -E '^(order|wallet|matchEngine)\.|^order\.dlq$' || true
-  } >> "${RUN_REPORT_META}"
+  } >> "${RUN_REPORT_META}" 2>&1
 }
 
 append_redis_metadata() {
@@ -313,8 +315,12 @@ collect_diagnostics before-run
 echo "[INFO] running load test"
 assert_environment "before run"
 start_diagnostic_sampler
+run_status=0
+set +e
 MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS="${TARGET_TPS}" DURATION_SECONDS="${DURATION_SECONDS}" PHASE=run \
   bash "${ROOT_DIR}/scripts/load-test/run-global-matched-e2e.sh" | tee "${RUN_REPORT_LOG}"
+run_status=${PIPESTATUS[0]}
+set -e
 stop_diagnostic_sampler
 append_rabbitmq_metadata
 append_redis_metadata
@@ -333,3 +339,8 @@ bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
 echo "[INFO] final queue state"
 assert_environment "before final queue verification"
 bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+
+if [[ "${run_status}" -ne 0 ]]; then
+  echo "[ERROR] load test failed with exit code ${run_status}; diagnostics were still collected." >&2
+  exit "${run_status}"
+fi

@@ -138,13 +138,13 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest global E2E report does not yet publish API p95/p99 or end-to-end p95/p99 latency.
 - The strongest 10k runs are short benchmark scenarios, not 30-minute soak claims.
 - The latest 10k repeat has one invalid sample caused by local load-driver offered TPS, so the public summary uses valid-runs-only median/range.
-- The first 15-minute steady-state attempt was rejected because Redis eviction invalidated the order-book state. The clean Redis rerun completed `450000` trades with `492.70` offered BUY confirmations/s and `481.42` fully gated completed trades/s.
+- The first 15-minute steady-state attempt was rejected because Redis eviction invalidated the order-book state. Clean Redis runs now keep `evicted_keys=0`, but the latest three-run steady-state attempt produced `2/3` valid samples and one correctness rejection with `19` missing completed trades.
 - Result artifacts are still local and should be attached to a release or otherwise published.
 - Failure-injection results should be split into a reliability report: duplicate messages, consumer restart, outbox retry, DLQ, and projection replay.
 
 ## Steady-State Stability Evidence
 
-Run `EAP_STEADY_500TPS_15M_20260713_R2` is the current best stability signal.
+The clean Redis single-run result `EAP_STEADY_500TPS_15M_20260713_R2` completed successfully and established the first valid near-500 offered-load steady-state signal.
 
 | Signal | Result |
 | --- | --- |
@@ -171,13 +171,36 @@ Runtime sampler stability:
 - Downstream sampled peak unacked counts stayed bounded: Order trade-executed `262`, Wallet trade-executed `176`, Order-applied marker `464`, Wallet-settled marker `243`.
 - Redis stayed on `noeviction`, `evicted_keys=0`, and used only about `26.5%` of configured memory at peak.
 
+## Steady-State Repeat Attempt
+
+Run set: `EAP_STEADY_500TPS_15M_20260714_R1` through `R3`, target `500` offered BUY confirmations/s for `900s`, `450000` intended completed trades per run.
+
+| Run | Valid | Offered BUY TPS | Business E2E TPS | Completion Window | Drain After BUY | Correctness |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `R1` | yes | `494.71` | `477.42` | `942.57s` | `32.95s` | `450000/450000`, queues/DLQ `0`, Redis evictions `0` |
+| `R2` | yes | `500.00` | `497.89` | `903.81s` | `3.81s` | `450000/450000`, queues/DLQ `0`, Redis evictions `0` |
+| `R3` | no | `494.78` | rejected | rejected | rejected | `449981/450000`, `remainingBuyOrders=19`, queues/DLQ `0`, Redis evictions `0` |
+
+Valid-sample summary:
+
+| Metric | Median | Range |
+| --- | ---: | ---: |
+| actual BUY publish TPS | `497.36/s` | `494.71-500.00/s` |
+| business matched E2E TPS | `487.66/s` | `477.42-497.89/s` |
+| business completion window | `923.19s` | `903.81-942.57s` |
+| drain after BUY publish | `18.38s` | `3.81-32.95s` |
+
+Rejected sample `R3` matters more than its raw `165.96/s` computed throughput. It failed because the target completion counts never reached `450000`: `tradeExecutions=449981`, `walletTradeSettlements=449981`, `orderCommandMatchedRows=899962`, `remainingBuyOrders=19`, `lockedCurrency=1900`, and `lockedAmount=19`. RabbitMQ queues and DLQ drained to zero, and Redis stayed on `noeviction` with `evicted_keys=0`, so this is not the earlier Redis eviction failure.
+
+Interpretation: EAP can complete near-500 offered-load steady-state runs on the local environment, but it should not yet be described as three-run stable. The next engineering task is to investigate the `19` missing trades in `R3` using the preserved diagnostics.
+
 ## Next Measurement Plan
 
 Before pushing for higher completed TPS, the next public-quality benchmark should add:
 
 1. API and end-to-end p50/p95/p99 latency.
 2. Published result artifacts for the 10k repeat runs.
-3. Repeat steady-state at least two more times or with a longer duration before treating `481.42/s` as a stable public median.
+3. Investigate the `EAP_STEADY_500TPS_15M_20260714_R3` correctness miss before treating the steady-state result as a stable public median.
 4. Queue backlog over time, not only final queue drain.
 5. Failure-injection results for retry and restart behavior.
 
@@ -187,7 +210,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Use this wording:
 
-> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. In a 5-run 10k local benchmark, 4 valid runs maintained about 1999 offered order confirmations/s and reached a median fully gated throughput of 582.73 completed trades/s, with final queues and DLQ at zero. In a clean 15-minute steady-state run, the system accepted 492.70 BUY confirmations/s and completed 481.42 fully gated trades/s across 450000 trades, with Redis eviction, final queues, DLQ, and remaining orderbook entries all at zero.
+> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. In a 5-run 10k local benchmark, 4 valid runs maintained about 1999 offered order confirmations/s and reached a median fully gated throughput of 582.73 completed trades/s, with final queues and DLQ at zero. In near-500 offered-load 15-minute steady-state testing, 2 of 3 clean Redis repeats completed all 450000 trades with a valid-sample median of 487.66 fully gated completed trades/s; the third repeat exposed a 19-trade correctness miss that is now the next investigation target.
 
 Avoid this wording:
 
