@@ -6144,3 +6144,54 @@ Interpretation:
 - The clean Redis fix is holding: all TPS-58 runs had `evicted_keys=0`; the R3 failure is not the earlier Redis-eviction false-no-match failure.
 - The two valid 2026-07-14 samples support a near-500 offered-load steady-state claim with completed throughput in the `477-498/s` range on the local environment.
 - The invalid R3 sample prevents claiming three-run stable correctness. The next engineering task should investigate why 19 trades failed to complete despite broker queues draining and Redis eviction staying at zero.
+
+2026-07-14 R3 follow-up investigation:
+
+- The miss is upstream of Order and Wallet:
+  - `tradeExecutions=449981`, `completedTrades=449981`, `walletTradeSettlements=449981`, and `orderCommandMatchedRows=899962`;
+  - Order and Wallet are aligned with the number of trades MatchEngine actually produced.
+- The 19 remaining BUY orders are real Redis orderbook entries with detail keys:
+  - final Redis buy book size was `19`;
+  - final Redis sell book size was `0`;
+  - remaining BUY details showed valid `BUY`, `price=100`, `amount=1`, and market `EAP_STEADY_500TPS_15M_20260714_R3`.
+- The remaining BUY order IDs did not appear as `buyer_order_id` in `match_engine.trade_executions`.
+- Their original deterministic SELL partners were not missing; those SELL orders were matched with other BUYs. This is expected under price-time matching and confirms the load generator should not assume fixed pair matching.
+- The actual missing SELL market sequences were:
+  - `356560`, `356562`, `356564`, `356566`, `356568`, `356572`, `356576`, `356580`, `356584`, `356588`, `356592`, `356596`, `356600`, `356604`, `356608`, `356612`, `356616`, `356620`, `356624`.
+- Those missing SELL orders were seeded and asset-confirmed in Order event store, but remained `OPEN` in `order_service.order_matching_state`.
+- Those SELL order IDs did not appear in `trade_executions` in any market.
+- Redis after-run state for those missing SELL orders:
+  - `order:<sellOrderId>` detail keys were gone;
+  - sell ZSET entries were gone;
+  - `user:<sellerId>:orders` set entries remained.
+- Nearby MatchEngine evidence:
+  - `trade_executions.sequence` had one missing generated match sequence: `1538280`;
+  - the surrounding trade rows were in the same seller-sequence window;
+  - MatchEngine logged 13 `was not linked in user open orders` warnings in the same window, but those 13 orders were otherwise `MATCHED` and are not the correctness miss.
+
+Current hypothesis:
+
+- The R3 failure is not a load-generator under-publish, Order delay, Wallet delay, RabbitMQ backlog, DLQ, or Redis eviction issue.
+- The likely fault boundary is MatchEngine's destructive Redis pop-before-durable-trade section:
+  - `getAndRemoveBestMatchOrderLua(...)` removes the resting SELL from Redis before `tradeExecutionRecorder.record(...)` persists `TradeExecuted`;
+  - if an exception, channel retry, shutdown edge, or local processing failure happens after the Redis pop but before durable trade persistence and cleanup, the resting SELL is lost from the orderbook and the incoming BUY can later retry against a different SELL;
+  - after enough lost resting SELLs, later BUYs remain open even though all broker queues drain.
+
+Next fix direction:
+
+- Add a focused MatchEngine ticket for Redis orderbook transactional safety:
+  - either compensate by re-adding the popped resting order if durable trade persistence fails before the trade fact is committed;
+  - or introduce a safer reserve/finalize model so Redis removes a resting order from public matching only after durable trade persistence succeeds.
+- Add regression coverage for a failure injected between `getAndRemoveBestMatchOrderLua(...)` and `tradeExecutionRecorder.record(...)`; expected behavior is no lost resting order and no unmatched residual order after retry.
+- Add a diagnostic counter for `resting_order_popped`, `trade_recorded`, `resting_order_readded_after_failure`, and `user_order_unlink_miss` by market so future steady-state runs can attribute this class of miss without manual Redis forensics.
+
+Implementation pass:
+
+- `MatchingEngineService` now treats the Redis pop-to-durable-trade section as a compensation boundary.
+- The incoming and resting order amounts are no longer mutated before `TradeExecuted` persistence succeeds.
+- If match ID generation or durable trade persistence fails after a resting order has been popped from Redis, MatchEngine re-adds the popped resting order with its original amount before rethrowing the exception for RabbitMQ retry.
+- Regression tests cover:
+  - failure during `tradeExecutionRecorder.record(...)`;
+  - failure during Redis `match:id:sequence` increment.
+- Focused verification passed:
+  - `./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest`.
