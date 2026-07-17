@@ -6195,3 +6195,38 @@ Implementation pass:
   - failure during Redis `match:id:sequence` increment.
 - Focused verification passed:
   - `./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest`.
+
+2026-07-17 reservation/finalize correction:
+
+- The 2026-07-14 compensation-only fix was not sufficient for long steady-state correctness:
+  - a later 450k run still ended with missing trades and remaining BUY orders;
+  - MatchEngine did re-add some popped resting orders, but the system could still lose a resting SELL if the order was popped again and failed in another uncovered window.
+- MatchEngine now uses a Redis reservation model for the resting order:
+  - `reserve_match_order_buy.lua` / `reserve_match_order_sell.lua` remove the resting order from the visible orderbook but keep the order detail and write `order:reservation:<orderId>`;
+  - `TradeExecuted` is persisted after reservation;
+  - on durable-trade failure, `release_reserved_order.lua` restores the original resting order amount to the visible orderbook and removes the reservation key;
+  - on full match success, `complete_reserved_order.lua` deletes the order detail, user open-order link, and reservation key;
+  - on partial match success, the remaining resting amount is released back to the visible orderbook.
+- This makes the dangerous middle state explicit and inspectable. A resting order should no longer disappear from the visible orderbook without either:
+  - a durable `TradeExecuted` fact; or
+  - a visible `order:reservation:<orderId>` key that can be diagnosed/reconciled.
+- Focused verification passed:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest`
+- 10k guard `GLT_20260717_TPS56_RESERVATION_GUARD_10K` passed:
+  - `sellPublished=10000`, `buyPublished=10000`, publish failures `0`;
+  - `actualBuyPublishTps=1999.08`;
+  - `tradeExecutions=10000`, `completedTrades=10000`, `walletTradeSettlements=10000`;
+  - `orderCommandMatchedRows=20000`;
+  - final measured queues and DLQ `0`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - `lockedCurrency=0`, `lockedAmount=0`;
+  - Redis `order:reservation:*` count after the run was `0`.
+- After removing the old destructive pop Lua entrypoints, smoke E2E `GLT_20260717_TPS56_RESERVATION_SMOKE_10` passed:
+  - `tradeExecutions=10`, `completedTrades=10`, `walletTradeSettlements=10`;
+  - final measured queues and DLQ `0`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - Redis `order:reservation:*` count after the run was `0`.
+- Remaining validation before closing the correctness concern:
+  - run at least one long 450k steady-state sample with the reservation model;
+  - if any `order:reservation:*` key remains, classify it as known reserved state instead of silent order loss;
+  - add reservation-count diagnostics to the load-test report so this does not require manual Redis scans.
