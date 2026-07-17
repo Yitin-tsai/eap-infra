@@ -6602,3 +6602,65 @@ Conclusion:
 - The 10k light run proves the core service stages can reach roughly `580-770/s` on this local machine when heavy diagnostics are removed, but business E2E remains lower because final queue-unacked drain still controls completion time.
 - For performance reporting, use light/baseline mode for headline throughput and deep mode only for attribution runs.
 - Next optimization target remains final ack/drain behavior and downstream consumer transaction tail latency, not the removed progress polling.
+
+### TPS-62 Final Drain Attribution and Outbox Publish-Concurrency Rejection
+
+2026-07-17 performance review:
+
+- TPS-61 showed the service stages could reach roughly `580-770/s` in light mode, but the accepted business gate stayed lower because `queueFullyDrainedSeconds` lagged behind `completedTradesReachedSeconds`.
+- The first drain trace used 1-second light queue sampling:
+  - Run ID: `GLT_20260717_TPS62_DRAIN_TRACE_10K_LIGHT_R1`.
+  - `actualBuyPublishTps=1999.15`, `businessMatchedE2eTps=461.81`.
+  - `tradeExecutionReachTps=1018.54`, `orderCommandMatchReachTps=674.29`, `walletSettlementReachTps=674.29`, `completionMarkerReachTps=586.90`.
+  - `completedTradesReachedSeconds=17.04`, but `queueFullyDrainedSeconds=21.65`.
+  - Runtime queue samples showed the final tail was not ready backlog; the remaining hot queues were `ready=0` and nonzero `unacked`.
+- Light diagnostics had a blind spot: final snapshots only captured Order actuator metrics. That made it hard to attribute Wallet and MatchEngine tail cost without switching to deep mode.
+
+Implementation:
+
+- Updated `scripts/load-test/collect-loadtest-diagnostics.sh` so light mode still keeps the low-cost runtime sampler, but final before/after snapshots now capture all three actuator endpoints:
+  - Wallet: `wallet-actuator-prometheus.txt`;
+  - Order: `order-actuator-prometheus.txt`;
+  - MatchEngine: `match-actuator-prometheus.txt`.
+- This is a diagnostics-only change; it does not add hot-path sampling during the run.
+
+Verification:
+
+- Script syntax:
+  - `bash -n scripts/load-test/collect-loadtest-diagnostics.sh` passed.
+- Focused compile:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` passed in both `eap-order` and `eap-wallet` while testing rejected config variants.
+- 10k light with final three-service actuator metrics:
+  - Run ID: `GLT_20260717_TPS62_LIGHT_FINAL_METRICS_10K_R1`.
+  - `actualBuyPublishTps=1998.76`, `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Throughput: `businessMatchedE2eTps=456.61`, `tradeExecutionReachTps=876.09`, `orderCommandMatchReachTps=720.25`, `walletSettlementReachTps=720.25`, `completionMarkerReachTps=619.69`.
+  - Timing: `completedTradesReachedSeconds=16.14`, `queueFullyDrainedSeconds=21.90`.
+  - DB pool signals were healthy: Order, Wallet, and MatchEngine Hikari `pending=0`, `timeout=0`.
+  - Order trade apply was not the dominant final tail: batch total `7.86s` summed across `1279` batch calls, max `94ms`.
+  - Wallet settlement transaction work summed to `17.87s` across `10000` events, max `36ms`, with no pool wait.
+  - Outbox relay fixed cost remained visible:
+    - MatchEngine trade outbox: `21` batches, batch duration sum `13.20s`, confirm sum `12.33s`;
+    - Order outbox: `21` batches, batch duration sum `15.27s`, publish enqueue sum `14.00s`;
+    - Wallet outbox: `22` batches, batch duration sum `15.29s`, publish enqueue sum `14.01s`.
+
+Rejected experiments:
+
+- Order/Wallet outbox `publish-concurrency=4`:
+  - Run ID: `GLT_20260717_TPS62_ORDER_WALLET_OUTBOX_PUB4_10K_R1`.
+  - Business gate looked better (`businessMatchedE2eTps=544.42`), but the run is not a valid 2000 TPS comparison because the input driver only reached `actualBuyPublishTps=852.68`.
+  - Order/Wallet `publish_enqueue` summed time inflated to roughly `54s` each, showing local RabbitMQ/publisher contention rather than a clean relay improvement.
+- Order/Wallet outbox `publish-concurrency=2`:
+  - Run ID: `GLT_20260717_TPS62_ORDER_WALLET_OUTBOX_PUB2_10K_R1`.
+  - Input pressure was valid (`actualBuyPublishTps=1997.71`), but throughput regressed: `businessMatchedE2eTps=380.96`, `completionMarkerReachTps=504.92`.
+  - MatchEngine intake backlog reappeared: `maxMatchEngineQueueReady=2569`, `maxMatchEngineQueueUnacked=700`.
+  - This indicates Order/Wallet outbox publish parallelism competes with MatchEngine intake and does not improve the accepted 2000 TPS business gate on the current local setup.
+
+Conclusion:
+
+- Keep the TPS-62 diagnostics change; it improves attribution without increasing runtime light-mode cost.
+- Do not adopt Order/Wallet outbox publish-concurrency tuning. Both tested variants are rejected:
+  - `4` invalidates the offered-load comparison;
+  - `2` preserves input TPS but worsens business completion and MatchEngine queue backlog.
+- Current accepted short-run reference remains the light final-metrics run around `456.61` business TPS with `619.69` completion-marker TPS.
+- Next target should be MatchEngine trade outbox publisher confirm behavior and broker/resource contention measurement, not increasing downstream marker relay concurrency.

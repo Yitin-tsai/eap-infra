@@ -286,7 +286,9 @@ snapshot_runtime_light() {
   snapshot_rabbitmq
   snapshot_redis
   snapshot_processes
+  snapshot_actuator wallet "http://localhost:8081/eap-wallet/actuator/prometheus"
   snapshot_actuator order "http://localhost:8080/eap-order/actuator/prometheus"
+  snapshot_actuator match "http://localhost:8082/match-engine/actuator/prometheus" "http://localhost:8082/actuator/prometheus"
 }
 
 sample_loop() {
