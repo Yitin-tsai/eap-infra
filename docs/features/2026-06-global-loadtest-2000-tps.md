@@ -6347,3 +6347,107 @@ Recommended validation tiers:
 | Guard | `10k` trades | Fast correctness gate: counts, queue drain, orderbook residuals | Before committing MatchEngine/Order/Wallet changes |
 | Medium steady-state | `120k` trades, `500 TPS * 240s` or `2000 TPS * 60s` | Multi-minute queue/DB/Redis behavior, backlog/drain behavior, and race exposure | After correctness-sensitive changes |
 | Formal steady-state | `450k` trades, `500 TPS * 900s` | Public/README evidence and rare race detection | Nightly, release candidate, or before publishing benchmark |
+
+### TPS-59 MatchEngine Reservation Convergence
+
+Review outcome:
+
+- TPS-56 changed the MatchEngine orderbook model from destructive pop to reserve/finalize.
+- This fixed the dangerous silent-loss class where a resting order could disappear from the visible orderbook before a durable `TradeExecuted` fact existed.
+- The remaining reliability gap is different:
+  - after `TradeExecuted` is durable, RabbitMQ publish, partial release, or reservation completion can still fail;
+  - the order is no longer silently lost, but it can remain in a known `order:reservation:<orderId>` state;
+  - the system currently exposes this state through diagnostics, but does not yet automatically converge it.
+
+Architecture decision:
+
+- MatchEngine owns Redis orderbook and reservation convergence.
+- `TradeExecuted` in MatchEngine PostgreSQL is the durable fact that decides whether a reservation should be completed or released:
+  - if a reservation has a matching durable `TradeExecuted`, the reservation should finalize/complete;
+  - if a reservation does not have a durable `TradeExecuted`, the reservation should be released back to the visible orderbook using its original amount;
+  - if the order was partially filled, the remaining quantity should be released only when the durable trade fact exists and the remaining amount is greater than zero.
+- Order and Wallet should not repair MatchEngine Redis orderbook state directly.
+- This ticket does not change the business completion gate. It only upgrades MatchEngine from "known stuck state" to "self-converging stuck state".
+
+Required implementation behavior:
+
+- Make reservation Lua operations idempotency-safe:
+  - `release_reserved_order.lua` must not resurrect an order unless the reservation key exists and represents that order;
+  - `complete_reserved_order.lua` should be safe to call repeatedly after a reservation was already completed;
+  - reserve should avoid overwriting an existing reservation for the same order without a clear outcome.
+- Add reservation inspection metadata sufficient for reconciliation:
+  - order id;
+  - market id;
+  - side;
+  - original reserved amount;
+  - current remaining amount when applicable;
+  - reserved timestamp;
+  - optional trade id / match id once a durable `TradeExecuted` exists.
+- Add a MatchEngine reconciler:
+  - scans `order:reservation:*`;
+  - classifies each reservation as `pending`, `durable_trade_exists`, `orphan_without_trade`, or `invalid_payload`;
+  - completes reservations with durable trades;
+  - releases orphan reservations without durable trades after a conservative age threshold;
+  - emits metrics and logs for every action and every non-actionable invalid reservation.
+- Add reservation metrics:
+  - active reservation count;
+  - reservation age max / p95 if practical;
+  - reconciler scanned count;
+  - reconciler completed count;
+  - reconciler released count;
+  - invalid reservation count;
+  - release/complete failure count.
+- Add load-test diagnostics:
+  - include `order:reservation:*` count in the matched E2E result JSON;
+  - include active reservation count before final queue purge;
+  - fail the correctness gate when reservations remain outside an explicitly allowed failure-injection test.
+
+Acceptance criteria:
+
+- Normal path:
+  - 10k guard passes with `completedTrades == EVENTS`;
+  - final measured queues and DLQ are `0`;
+  - final `order:reservation:*` count is `0`;
+  - reservation reconciler metrics show no invalid reservations.
+- Failure path before durable trade:
+  - inject failure after reserve and before `TradeExecuted` persistence;
+  - reservation remains visible as known state;
+  - reconciler releases the order back to the visible orderbook after the configured threshold;
+  - the order is matchable again;
+  - no `TradeExecuted` row is created for the failed attempt.
+- Failure path after durable trade:
+  - inject failure after `TradeExecuted` persistence and before Redis complete/release;
+  - reconciler detects the durable trade;
+  - reconciler completes the reservation or releases the remaining partial quantity exactly once;
+  - repeated reconciler runs do not duplicate visible orderbook entries.
+- Stale compensation safety:
+  - calling release for a non-existing reservation must not add the order back to the orderbook;
+  - calling complete repeatedly must remain harmless.
+- Regression:
+  - 120k medium steady-state still passes after the reconciler is enabled;
+  - if `2000 TPS * 60s` is used, the run may build backlog, but must still drain with reservations at `0`.
+
+Suggested task split:
+
+| Task | Priority | Owner | Acceptance |
+| --- | --- | --- | --- |
+| TPS-59-01 Harden reservation Lua idempotency | P0 | Implementation Lead | Lua scripts enforce reservation-key preconditions and repeated complete/release calls are safe. |
+| TPS-59-02 Add reservation metadata and metrics | P0 | Implementation Lead | Active count and reconciler action counters are exposed through actuator/Prometheus and diagnostics. |
+| TPS-59-03 Implement MatchEngine reservation reconciler | P0 | Implementation Lead | Stuck reservations converge based on durable `TradeExecuted` existence and age threshold. |
+| TPS-59-04 Add failure-injection tests | P0 | QA Lead | Tests cover reserve-before-trade failure, trade-after-reserve failure, repeated release/complete, and partial-fill recovery. |
+| TPS-59-05 Add load-test reservation gate | P0 | QA Lead | Matched E2E result JSON includes reservation count and fails unexpected residual reservations. |
+| TPS-59-06 Run guard and medium steady-state | P1 | Performance | 10k guard and 120k medium steady-state pass with final reservation count `0`. |
+
+Recommended verification commands:
+
+```bash
+GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest
+```
+
+```bash
+TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=128 TIMEOUT_SECONDS=300 MARKET_ID=GLT_<date>_TPS59_RESERVATION_GUARD_10K RUN_MODE=prepare-run DIAGNOSTICS_LEVEL=deep RESET_PG_STATS_BEFORE_RUN=true bash scripts/load-test/run-global-matched-e2e-sustained.sh
+```
+
+```bash
+TARGET_TPS=2000 DURATION_SECONDS=60 EVENTS=120000 PUBLISHERS=128 TIMEOUT_SECONDS=1800 MARKET_ID=EAP_STEADY_2000TPS_120K_<date>_TPS59 RUN_MODE=prepare-run DIAGNOSTICS_LEVEL=deep RESET_PG_STATS_BEFORE_RUN=true bash scripts/load-test/run-global-matched-e2e-sustained.sh
+```
