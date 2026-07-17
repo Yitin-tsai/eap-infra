@@ -6552,3 +6552,53 @@ Conclusion:
 - The CTE merge is a valid hot-path optimization: it reduces MatchEngine trade persistence round trips and improves the 120k business-gated result by about `8%`.
 - The system is still not near 600 completed trades/s steady-state; after this change, the next measured floor is downstream convergence around `447 completed-marker/s`, with final queue unacked drain still controlling business E2E TPS.
 - Next target should be completion-marker insertion/convergence and MatchEngine outbox publisher confirm behavior, not connection pool size.
+
+### TPS-61 Load-Test Progress Snapshot Cost Reduction
+
+2026-07-17 performance review:
+
+- TPS-60 deep diagnostics showed several top SQL statements were not service hot-path work, but load-test progress polling:
+  - Order projection stale count against `orders_current` / `order_stream_heads`;
+  - Order projection matched count against `orders_current`;
+  - repeated Wallet aggregate `SUM(...)` checks across `wallet_service.wallets`;
+  - duplicated Order command matched count from `order_matching_state`.
+- These checks are valuable for final correctness, but they do not need to run once per second while the services are trying to drain the queue.
+- Keeping them in the progress loop distorted local benchmark results because the load generator shares the same local PostgreSQL containers as the services under test.
+
+Implementation:
+
+- Split `MatchedE2eLoadGenerator` DB snapshots into:
+  - lightweight progress snapshot: Order command matched rows, MatchEngine trade executions, completion marker reach, Wallet settlements, and queue depth;
+  - strict final snapshot: projection stale count, wallet balance sums, Redis orderbook/reservation checks, queue drain, and full business invariants.
+- Reused the current queue sample inside the progress snapshot instead of querying RabbitMQ a second time during the same loop.
+- Removed the duplicated Order matched count query by using one `order_matching_state` count for both reported `orderMatchedEvents` and `orderCommandMatchedRows`.
+- Preserved correctness gates:
+  - the run only returns after core business counts are reached and queues are fully drained;
+  - final verification still requires zero locked wallet balances, expected buyer/seller balances, completed trades, Order command rows, Wallet settlements, empty Redis orderbooks, and zero active reservations.
+
+Verification:
+
+- Compile:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` in `eap-order` passed.
+- 500 smoke:
+  - Run ID: `GLT_20260717_TPS61_LIGHT_SNAPSHOT_SMOKE_500`.
+  - `actualBuyPublishTps=1973.87`, `completedTrades=500`, `tradeExecutions=500`, `walletTradeSettlements=500`, `orderCommandMatchedRows=1000`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - `pg_stat_statements` confirmed expensive projection and wallet sum checks ran only once at final verification rather than every progress snapshot.
+- 10k deep:
+  - Run ID: `GLT_20260717_TPS61_LIGHT_SNAPSHOT_10K_R1`.
+  - `actualBuyPublishTps=1998.86`, `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`.
+  - `businessMatchedE2eTps=320.97`, `tradeExecutionReachTps=572.96`, `orderCommandMatchReachTps=424.71`, `walletSettlementReachTps=424.71`, `completionMarkerReachTps=390.10`.
+  - Result is correctness-valid but not a good performance baseline; the service reach rates were lower than TPS-60, indicating local run noise or deep diagnostic interference.
+- 10k light:
+  - Run ID: `GLT_20260717_TPS61_LIGHT_SNAPSHOT_10K_LIGHT_R1`.
+  - `actualBuyPublishTps=1998.44`, `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Throughput signal improved under lighter diagnostics: `tradeExecutionReachTps=770.54`, `orderCommandMatchReachTps=657.09`, `walletSettlementReachTps=657.09`, `completionMarkerReachTps=578.30`, `businessMatchedE2eTps=399.65`.
+
+Conclusion:
+
+- TPS-61 reduces benchmark self-interference and preserves final correctness gates.
+- The 10k light run proves the core service stages can reach roughly `580-770/s` on this local machine when heavy diagnostics are removed, but business E2E remains lower because final queue-unacked drain still controls completion time.
+- For performance reporting, use light/baseline mode for headline throughput and deep mode only for attribution runs.
+- Next optimization target remains final ack/drain behavior and downstream consumer transaction tail latency, not the removed progress polling.
