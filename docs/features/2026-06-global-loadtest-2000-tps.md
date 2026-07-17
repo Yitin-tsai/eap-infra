@@ -6451,3 +6451,41 @@ TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=128 TIMEOUT_SECONDS=3
 ```bash
 TARGET_TPS=2000 DURATION_SECONDS=60 EVENTS=120000 PUBLISHERS=128 TIMEOUT_SECONDS=1800 MARKET_ID=EAP_STEADY_2000TPS_120K_<date>_TPS59 RUN_MODE=prepare-run DIAGNOSTICS_LEVEL=deep RESET_PG_STATS_BEFORE_RUN=true bash scripts/load-test/run-global-matched-e2e-sustained.sh
 ```
+
+2026-07-17 implementation pass:
+
+- Implemented reservation convergence in MatchEngine:
+  - reservation Lua now stores a metadata envelope with `reservedAtEpochMillis` and nested order JSON;
+  - reserve uses `SET ... NX` and reports existing-reservation inconsistency instead of overwriting;
+  - release requires a matching reservation key before restoring the orderbook entry;
+  - complete requires a matching reservation key before deleting order detail / user open-order link;
+  - `RedisOrderBookService` can scan reservation snapshots with backward compatibility for the old raw-order reservation value;
+  - `ReservationReconciler` scans `order:reservation:*`, checks durable `trade_executions` since reservation time, completes full fills, releases partial remaining quantity, and releases old orphan reservations without durable trades;
+  - `ReservationReconcilerMetrics` exposes active reservation gauge and scanned/completed/released/invalid/failure counters.
+- Implemented load-test reservation gate:
+  - matched E2E result JSON now includes `activeReservations`;
+  - normal matched E2E runs fail if `activeReservations != 0`;
+  - load-test cleanup removes stale `order:reservation:*` keys to prevent previous failed runs from polluting the next benchmark.
+- Focused verification:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.ReservationReconcilerTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest` passed.
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.EapMatchengineApplicationTests` passed, validating Spring bean wiring and repository query creation.
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` passed in `eap-order`, validating the load-test harness compile.
+- Smoke E2E:
+  - Run ID: `GLT_20260717_TPS59_RESERVATION_SMOKE_500`.
+  - `completedTrades=500`, `tradeExecutions=500`, `walletTradeSettlements=500`, `orderCommandMatchedRows=1000`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Manual Redis scan after the run found `0` `order:reservation:*` keys.
+- 10k guard:
+  - Run ID: `GLT_20260717_TPS59_RESERVATION_GUARD_10K`.
+  - `actualBuyPublishTps=1998.91`, `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`.
+  - `businessMatchedE2eTps=393.84`, `completionMarkerReachTps=448.51`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - This run exposed a false-positive reconciler log: SCAN saw reservation keys that normal completion deleted before GET, so the reconciler logged missing values as invalid reservations.
+- False-positive fix:
+  - `RedisOrderBookService.scanReservations()` now treats SCAN/GET disappearances as transient and skips them.
+  - R2 guard `GLT_20260717_TPS59_RESERVATION_GUARD_10K_R2` passed with `completedTrades=10000`, final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, and `activeReservations=0`.
+  - R2 was driver-limited (`actualBuyPublishTps=901.30`), so it is accepted as a correctness/log validation run, not as a 2000 offered-load throughput sample.
+  - R2 logs had no matched `ERROR`, `Invalid MatchEngine reservation`, reservation release failure, Redis orderbook inconsistency, Hikari thread-starvation, or RabbitMQ unknown-channel keyword. The only matched lines were existing Bean Validation provider INFO messages.
+- Remaining validation:
+  - Run 120k medium steady-state after this commit before closing TPS-59 fully.
+  - Consider adding a dedicated failure-injection integration test with Redis/Testcontainers if this becomes production-hardening work rather than benchmark-hardening work.
