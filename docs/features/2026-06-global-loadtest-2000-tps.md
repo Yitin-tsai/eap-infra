@@ -6500,3 +6500,55 @@ TARGET_TPS=2000 DURATION_SECONDS=60 EVENTS=120000 PUBLISHERS=128 TIMEOUT_SECONDS
   - Conclusion: TPS-59 closes the previous "completed trade but hidden Redis/orderbook state remains" failure mode for the current medium steady-state gate. This is still a 120k local validation run, not a formal 450k/nightly public benchmark.
 - Remaining validation:
   - Consider adding a dedicated failure-injection integration test with Redis/Testcontainers if this becomes production-hardening work rather than benchmark-hardening work.
+
+### TPS-60 MatchEngine Trade Persistence Round-Trip Reduction
+
+2026-07-17 performance review:
+
+- The TPS-59 120k medium run proved correctness, but still showed the first throughput ceiling at MatchEngine intake/persistence:
+  - `maxMatchEngineQueueReady=96975`;
+  - `tradeExecutionReachTps=527.00`;
+  - `businessMatchedE2eTps=404.19`.
+- `JpaTradeExecutionRecorder` wrote each trade with two JDBC statements inside one transaction:
+  - insert `match_engine.trade_executions`;
+  - insert `match_engine.trade_outbox`;
+  - the completion view hot path was already disabled in loadtest, so these two writes were the fixed MatchEngine DB round trips before downstream completion.
+
+Implementation:
+
+- Collapsed trade fact persistence and TradeExecuted outbox persistence into one PostgreSQL CTE statement:
+  - `WITH inserted_trade AS (INSERT ... RETURNING trade_id) INSERT INTO trade_outbox ... SELECT ... FROM inserted_trade`;
+  - duplicate `trade_id` still returns `0` rows and fails before downstream publication;
+  - the transactional outbox boundary is preserved: the durable trade fact and its outbox event are still committed atomically.
+- Updated `JpaTradeExecutionRecorderTest` to assert the single-statement persistence path and payload/routing-key parameters.
+
+Verification:
+
+- Focused tests:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest --tests com.eap.eap_matchengine.application.TradeOutboxRelayTest --tests com.eap.eap_matchengine.application.TradeCompletionServiceTest` passed.
+- 10k guard:
+  - Run ID: `GLT_20260717_TPS60_MATCH_CTE_10K_R1`.
+  - `actualBuyPublishTps=1999.08`, `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Throughput signal: `tradeExecutionReachTps=645.57`, `orderCommandMatchReachTps=541.40`, `walletSettlementReachTps=541.40`, `completionMarkerReachTps=410.30`, `businessMatchedE2eTps=345.98`.
+  - Interpretation: short-run business TPS was dominated by final unacked drain noise, but the MatchEngine trade execution stage improved enough to justify a 120k medium run.
+- 120k medium steady-state:
+  - Run ID: `EAP_STEADY_2000TPS_120K_20260717_TPS60_MATCH_CTE_R1`.
+  - `actualBuyPublishTps=1983.09`, `completedTrades=120000`, `tradeExecutions=120000`, `walletTradeSettlements=120000`, `orderCommandMatchedRows=240000`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Throughput improved versus TPS-59 120k:
+    - `businessMatchedE2eTps`: `404.19 -> 436.93` (`+8.1%`);
+    - `tradeExecutionReachTps`: `527.00 -> 571.76` (`+8.5%`);
+    - `orderCommandMatchReachTps`: `425.81 -> 456.82`;
+    - `walletSettlementReachTps`: `428.06 -> 456.82`;
+    - `completionMarkerReachTps`: `412.28 -> 447.20`;
+    - `drainSecondsAfterBuyPublish`: `236.88s -> 214.13s`;
+    - `maxMatchEngineQueueReady`: `96975 -> 85587`.
+  - Manual Redis scan after the run found `0` `order:reservation:*` keys.
+  - MatchEngine/Order/Wallet log grep had no matched `ERROR`, `Invalid MatchEngine reservation`, reservation release failure, Redis orderbook inconsistency, Hikari thread-starvation, or RabbitMQ unknown-channel keyword. The only matched lines were existing Bean Validation provider INFO messages.
+
+Conclusion:
+
+- The CTE merge is a valid hot-path optimization: it reduces MatchEngine trade persistence round trips and improves the 120k business-gated result by about `8%`.
+- The system is still not near 600 completed trades/s steady-state; after this change, the next measured floor is downstream convergence around `447 completed-marker/s`, with final queue unacked drain still controlling business E2E TPS.
+- Next target should be completion-marker insertion/convergence and MatchEngine outbox publisher confirm behavior, not connection pool size.
