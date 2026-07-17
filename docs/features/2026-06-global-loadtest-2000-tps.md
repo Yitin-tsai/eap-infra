@@ -6757,3 +6757,70 @@ Conclusion:
 - Keep TPS-64 metrics. They make the next MatchEngine optimization measurable and avoid another round of blind concurrency tuning.
 - Do not optimize by changing service boundaries or moving Order/Wallet state into MatchEngine.
 - Next ticket should implement and benchmark "reserve resting order + match-id generation in one Redis Lua operation", then compare against TPS-62/TPS-64 using the new stage timers.
+
+### TPS-65 Combine Redis Reservation and Match Sequence
+
+2026-07-17 implementation:
+
+- Combined the MatchEngine resting-order reservation and match-id sequence generation into the reserve-best-order Lua path.
+- The matched path now calls `reserveBestMatchOrderWithSequenceLua(...)`, which returns both:
+  - the reserved resting order payload;
+  - the generated `matchId`.
+- Removed the hot-path Java-side `RedisTemplate.opsForValue().increment("match:id:sequence")` call from `MatchingEngineService`.
+- Kept the existing reservation model:
+  - no-match incoming orders do not consume a sequence;
+  - the resting order is hidden from the visible orderbook only after a sequence is generated successfully;
+  - deterministic sequence-key failures happen before the script mutates the reservation/orderbook state;
+  - sequence gaps are acceptable if an impossible visible-order-plus-reservation inconsistency is detected.
+- Kept the legacy `reserveBestMatchOrderLua(...)` method for compatibility and existing consistency tests.
+
+Verification:
+
+- Focused tests:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest` passed.
+- 500 smoke after the safety-ordering fix:
+  - Run ID: `GLT_20260717_TPS65_COMBINED_RESERVE_SEQ_SAFE_SMOKE_500`.
+  - Correctness: `completedTrades=500`, `tradeExecutions=500`, `walletTradeSettlements=500`, final queues/DLQ `0`, `activeReservations=0`.
+  - Throughput: `actualBuyPublishTps=1799.45`, `businessMatchedE2eTps=385.38`, `completionMarkerReachTps=385.38`.
+- 10k comparison run before the safety-ordering fix:
+  - Run ID: `GLT_20260717_TPS65_COMBINED_RESERVE_SEQ_10K_R1`.
+  - Correctness: `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, final queues/unacked `0`, `activeReservations=0`.
+  - Throughput: `actualBuyPublishTps=1998.56`, `businessMatchedE2eTps=419.16`, `completionMarkerReachTps=494.97`.
+  - Timing: `tradeExecutionsReachedSeconds=15.64`, `completedTradesReachedSeconds=20.20`, `queueFullyDrainedSeconds=23.86`.
+  - Queue signal: `maxMatchEngineQueueReady=3750`, `maxMatchEngineQueueUnacked=700`.
+- 10k final safety run:
+  - Run ID: `GLT_20260717_TPS65_COMBINED_RESERVE_SEQ_SAFE_10K_R1`.
+  - Correctness: `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, final queues/DLQ `0`, `activeReservations=0`.
+  - This run is not valid for TPS comparison because the load generator only achieved `actualBuyPublishTps=1033.40` instead of the intended `~2000/s`.
+  - It is still useful as a correctness run after the Lua safety-ordering fix.
+
+Measured MatchEngine stage comparison:
+
+| Run | Offered BUY TPS | Business TPS | Completion-marker TPS | Reserve sum | Match-id sum | Reserve + match-id | Trade record sum | Complete reservation sum | Match outbox confirm sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-64 `GLT_20260717_TPS64_MATCH_STAGE_METRICS_10K_R1` | `1999.05` | `380.08` | `483.12` | `20.715s` | `7.515s` | `28.230s` | `16.232s` | `9.041s` | `16.498s` |
+| TPS-65 `GLT_20260717_TPS65_COMBINED_RESERVE_SEQ_10K_R1` | `1998.56` | `419.16` | `494.97` | `27.970s` | `0.000s` | `27.970s` | `17.822s` | `15.054s` | `15.766s` |
+| TPS-65 safe `GLT_20260717_TPS65_COMBINED_RESERVE_SEQ_SAFE_10K_R1` | `1033.40` | `319.06` | `454.05` | `27.905s` | `0.000s` | `27.905s` | `18.743s` | `14.008s` | `17.075s` |
+
+Interpretation:
+
+- The intended code effect is confirmed: `match_engine_match_id_duration_count=0`.
+- The optimization removed one visible Redis command per completed trade, but the measured `reserve + match-id` total only changed from `28.230s` to about `27.970s`.
+- This is a valid cleanup and small fixed-cost reduction, but it is not the dominant TPS lever.
+- The remaining high-cost chain is still:
+  - MatchEngine durable trade/outbox write;
+  - Redis reservation completion;
+  - MatchEngine trade outbox relay confirm;
+  - Order/Wallet outbox relay;
+  - Wallet settlement transaction.
+- The final safety run also shows a measurement concern: when the local load generator cannot maintain the target offered load, `businessMatchedE2eTps` must not be treated as a service-capacity regression.
+
+Conclusion:
+
+- Keep TPS-65 because it simplifies the matched hot path and removes a Redis round trip without changing business semantics.
+- Do not keep tuning consumer concurrency for this ticket; the repeated evidence says concurrency is not the main lever.
+- Next useful target should be fixed write cost:
+  - MatchEngine `TradeExecuted` durable write + outbox insert;
+  - reservation completion cost;
+  - outbox relay publish/confirm path;
+  - load-driver stability guardrails so invalid offered-load runs are automatically flagged.
