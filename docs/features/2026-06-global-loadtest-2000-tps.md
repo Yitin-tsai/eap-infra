@@ -6824,3 +6824,76 @@ Conclusion:
   - reservation completion cost;
   - outbox relay publish/confirm path;
   - load-driver stability guardrails so invalid offered-load runs are automatically flagged.
+
+### TPS-66 MatchEngine Trade Outbox JDBC Relay Projection
+
+2026-07-17 implementation:
+
+- Reworked `TradeOutboxRelay` to stop selecting full JPA `TradeOutboxEntity` records in the relay hot path.
+- The relay now uses `JdbcTemplate` to select only the columns required for publishing:
+  - `id`;
+  - `event_type`;
+  - `aggregate_id`;
+  - `routing_key`;
+  - `payload`;
+  - `attempt_count`.
+- Mark-SENT and failure/retry updates now use `NamedParameterJdbcTemplate` SQL updates, matching the lighter relay style already used by Order and Wallet.
+- Delivery semantics are unchanged:
+  - publish `TradeExecutedEvent`;
+  - wait for RabbitMQ publisher confirm;
+  - only confirmed records are marked `SENT`;
+  - nack/timeout/unroutable messages stay retryable or become `FAILED` after max attempts.
+
+Verification:
+
+- Focused test:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.TradeOutboxRelayTest` passed.
+- Compile surface:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` passed.
+- 500 smoke:
+  - Run ID: `GLT_20260717_TPS66_MATCH_OUTBOX_JDBC_SMOKE_500`.
+  - Correctness: `completedTrades=500`, `tradeExecutions=500`, `walletTradeSettlements=500`, final queues/DLQ `0`, `activeReservations=0`.
+  - Throughput: `actualBuyPublishTps=1977.26`, `businessMatchedE2eTps=417.20`, `completionMarkerReachTps=417.20`.
+
+10k run:
+
+- Run ID: `GLT_20260717_TPS66_MATCH_OUTBOX_JDBC_10K_R1`.
+- Correctness: `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, final queues/DLQ `0`, `activeReservations=0`.
+- Offered load was invalid for capacity comparison:
+  - target: `2000` BUY confirmations/s;
+  - actual: `720.25` BUY confirmations/s.
+- The business result must therefore not be used as a formal TPS improvement claim.
+- Observed values from the invalid run:
+  - `businessMatchedE2eTps=491.03`;
+  - `completionMarkerReachTps=614.64`;
+  - `tradeExecutionsReachedSeconds=14.12`;
+  - `completedTradesReachedSeconds=16.27`;
+  - `queueFullyDrainedSeconds=20.37`.
+
+Stage metrics from the invalid 10k run:
+
+| Stage | Count | Sum |
+| --- | ---: | ---: |
+| `match_engine_try_match_duration` | `20000` | `57.614s` |
+| `match_engine_reserve_order_duration` | `20000` | `21.159s` |
+| `match_engine_add_order_duration` | `10000` | `12.539s` |
+| `match_engine_trade_record_duration` | `10000` | `15.344s` |
+| `match_engine_complete_reservation_duration` | `10000` | `8.482s` |
+| `trade_outbox_batch_duration` | `22` | `13.147s` |
+| `trade_outbox_confirm_duration` | `10000` | `12.530s` |
+| `trade_outbox_mark_sent_duration` | `22` | `0.248s` |
+| `trade_outbox_select_duration` | `299` | `0.825s` |
+
+Interpretation:
+
+- The JDBC relay projection is a reasonable fixed-cost cleanup and aligns MatchEngine with the existing Order/Wallet relay implementation style.
+- The 500 smoke proves correctness.
+- The 10k run suggests relay wall-clock costs may be lower, but it is not a valid apples-to-apples benchmark because the load generator failed to maintain the target offered load.
+- Before using more 10k runs for performance decisions, the load-test tooling should explicitly flag invalid offered-load runs.
+
+Next step:
+
+- Add benchmark validity guardrails:
+  - compute `offeredLoadRatio = actualBuyPublishTps / targetTps`;
+  - mark runs invalid when target TPS is configured and actual offered load is below the accepted threshold;
+  - surface this in JSON and repeat summaries so we stop comparing driver-limited runs against service-limited runs.
