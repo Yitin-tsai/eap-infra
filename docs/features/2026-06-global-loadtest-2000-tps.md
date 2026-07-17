@@ -6271,11 +6271,79 @@ Implementation pass:
   - It does not replace a 450k / 15-minute formal evidence run because the earlier rare failure appeared only under longer exposure.
   - Use 120k as the default iteration gate after MatchEngine correctness changes; reserve 450k for nightly/formal release evidence.
 
+2026-07-17 load-test seed optimization:
+
+- Problem:
+  - The matched steady-state benchmark was paying too much setup cost before the actual run.
+  - The 120k / 500 TPS validation spent `6m14s` in seed before only `240s` of offered-load time.
+  - The 450k formal run is therefore expensive not only because of the publish window, but because setup writes scale with matched pairs.
+- Change:
+  - `MatchedE2eLoadGenerator` now supports `--seed-mode=bulk` as the default load-test-only seed path.
+  - The old service path is still available with `--seed-mode=service`.
+  - Bulk seed writes the minimum service-owned Order state needed for the matched benchmark:
+    - `order_service.order_event_store`;
+    - `order_service.order_stream_heads`;
+    - `order_service.order_matching_state`.
+  - Wallet seed remains a direct batch load for benchmark fixture state.
+  - Order outbox is still truncated after seed so seed events are not published into the live business path.
+- Correctness guard:
+  - Bulk seed creates two Order events per seeded order: `OrderSubmissionRequestedV1` and `OrderAssetReservationConfirmedV1`.
+  - Event ids are deterministic per order and seed event type.
+  - `payload_canonical`, `metadata_canonical`, `prev_hash`, and `hash` are written so projection/replay and event-chain checks remain meaningful.
+  - R2 verification query for market `EAP_STEADY_2000TPS_120K_20260717_BULKSEED_R2` showed `240000` seeded event rows, `0` broken hash links, and `0` stream-head mismatches.
+- Observed setup improvement:
+  - Before: 120k seed via service path took `6m14s`.
+  - After: 120k seed via bulk path took `32s`.
+  - Projection prewarm remains about `1m11s-1m13s` for `240000` open orders.
+- Boundary:
+  - This is a benchmark fixture optimization, not a production write-path optimization.
+  - Production order submission still goes through the Order service event-sourcing path.
+
+2026-07-17 120k / 2000 offered-TPS validation after bulk seed:
+
+- Purpose:
+  - Answer whether the steady-state harness can be run with the same `2000 TPS` input target used by earlier entry-side tests.
+  - Confirm the seed optimization does not hide lost trades or leave known reserved state behind.
+- Shared settings:
+  - `TARGET_TPS=2000`;
+  - `DURATION_SECONDS=60`;
+  - `EVENTS=120000`;
+  - `PUBLISHERS=128`;
+  - `RUN_MODE=prepare-run`;
+  - diagnostics level `deep`;
+  - `RESET_PG_STATS_BEFORE_RUN=true`;
+  - default `--seed-mode=bulk`.
+
+| Run | Actual buy publish TPS | Business completed TPS | TradeExecution reach TPS | Order match reach TPS | Wallet settlement reach TPS | Completion marker reach TPS | Drain after buy publish | Max match queue ready | Correctness |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `EAP_STEADY_2000TPS_120K_20260717_BULKSEED_R1` | `1397.11` | `490.54` | `588.65` | `510.97` | `510.97` | `496.41` | `158.74s` | `68826` | PASS |
+| `EAP_STEADY_2000TPS_120K_20260717_BULKSEED_R2` | `1999.91` | `454.57` | `592.77` | `480.16` | `483.08` | `469.79` | `203.98s` | `89835` | PASS |
+
+- R2 final correctness counts:
+  - `sellPublished=120000`, `buyPublished=120000`, publish failures `0`;
+  - `tradeExecutions=120000`;
+  - `completedTrades=120000`;
+  - `walletTradeSettlements=120000`;
+  - `orderCommandMatchedRows=240000`;
+  - final measured queues and DLQ `0`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - `lockedCurrency=0`, `lockedAmount=0`;
+  - Redis `order:reservation:*` count after the run was `0`;
+  - Redis `evicted_keys=0`.
+- Log check:
+  - No matched `ERROR`, reservation release failure, Redis orderbook inconsistency, or Hikari thread-starvation keyword was found in MatchEngine/Order/Wallet logs for the final run logs.
+  - Both 2000-TPS attempts emitted one RabbitMQ client `Received a frame on an unknown channel, ignoring it` message during high publish pressure. The tests still completed, but this should be tracked if it repeats in formal evidence runs.
+- Interpretation:
+  - The harness can run with a `2000 TPS` target, and R2 actually reached `1999.91` buy confirmations/s.
+  - Current business-complete capacity is still around `455-491 completed trades/s` for 120k local runs.
+  - At 2000 offered TPS, backlog is expected: R2 peaked at `89835` ready messages on the MatchEngine input queue and required `203.98s` to drain after buy publish ended.
+  - Therefore `2000` remains a valid offered-load stress profile, but it must not be described as `2000 completed TPS`.
+
 Recommended validation tiers:
 
 | Tier | Size | Purpose | When to run |
 | --- | ---: | --- | --- |
 | Smoke | `10-500` trades | Service startup, Lua/resource loading, obvious E2E breakage | Every risky local change |
 | Guard | `10k` trades | Fast correctness gate: counts, queue drain, orderbook residuals | Before committing MatchEngine/Order/Wallet changes |
-| Medium steady-state | `120k` trades, `500 TPS * 240s` | Multi-minute queue/DB/Redis behavior and race exposure | After correctness-sensitive changes |
+| Medium steady-state | `120k` trades, `500 TPS * 240s` or `2000 TPS * 60s` | Multi-minute queue/DB/Redis behavior, backlog/drain behavior, and race exposure | After correctness-sensitive changes |
 | Formal steady-state | `450k` trades, `500 TPS * 900s` | Public/README evidence and rare race detection | Nightly, release candidate, or before publishing benchmark |
