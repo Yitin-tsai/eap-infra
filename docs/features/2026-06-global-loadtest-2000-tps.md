@@ -6230,3 +6230,52 @@ Implementation pass:
   - run at least one long 450k steady-state sample with the reservation model;
   - if any `order:reservation:*` key remains, classify it as known reserved state instead of silent order loss;
   - add reservation-count diagnostics to the load-test report so this does not require manual Redis scans.
+
+2026-07-17 120k steady-state validation:
+
+- Run ID: `EAP_STEADY_500TPS_4M_20260717_RESERVATION_R1`.
+- Purpose:
+  - validate the reservation/finalize model beyond the 10k guard;
+  - avoid paying the full 450k / 15-minute steady-state cost on every implementation iteration.
+- Scale:
+  - `TARGET_TPS=500`;
+  - `DURATION_SECONDS=240`;
+  - `EVENTS=120000`;
+  - `PUBLISHERS=128`;
+  - diagnostics level `deep`.
+- Setup cost observed on local machine:
+  - seed phase: `6m14s`;
+  - Order projection prewarm: `1m11s`;
+  - this explains why 450k is expensive in practice: the run is not only the 15-minute publish window, but also 450k matched-pair seed data, projection prewarm, service restart, diagnostics, drain, and final cleanup.
+- Result:
+  - `sellPublished=120000`, `buyPublished=120000`, publish failures `0`;
+  - `actualBuyPublishTps=499.96`;
+  - `tradeExecutions=120000`;
+  - `completedTrades=120000`;
+  - `walletTradeSettlements=120000`;
+  - `orderCommandMatchedRows=240000`;
+  - `businessMatchedE2eTps=460.71`;
+  - `tradeExecutionReachTps=497.91`;
+  - `orderCommandMatchReachTps=492.45`;
+  - `walletSettlementReachTps=492.45`;
+  - `completionMarkerReachTps=472.23`;
+  - `drainSecondsAfterBuyPublish=20.45`;
+  - final measured queues and DLQ `0`;
+  - `remainingSellOrders=0`, `remainingBuyOrders=0`;
+  - `lockedCurrency=0`, `lockedAmount=0`;
+  - Redis `evicted_keys=0`;
+  - Redis `order:reservation:*` count after the run was `0`;
+  - MatchEngine/Order/Wallet logs had no matched `ERROR`, reservation release failure, Redis orderbook inconsistency, unknown channel, or Hikari thread-starvation keyword.
+- Interpretation:
+  - This is a valid medium steady-state correctness sample for the reservation/finalize fix.
+  - It does not replace a 450k / 15-minute formal evidence run because the earlier rare failure appeared only under longer exposure.
+  - Use 120k as the default iteration gate after MatchEngine correctness changes; reserve 450k for nightly/formal release evidence.
+
+Recommended validation tiers:
+
+| Tier | Size | Purpose | When to run |
+| --- | ---: | --- | --- |
+| Smoke | `10-500` trades | Service startup, Lua/resource loading, obvious E2E breakage | Every risky local change |
+| Guard | `10k` trades | Fast correctness gate: counts, queue drain, orderbook residuals | Before committing MatchEngine/Order/Wallet changes |
+| Medium steady-state | `120k` trades, `500 TPS * 240s` | Multi-minute queue/DB/Redis behavior and race exposure | After correctness-sensitive changes |
+| Formal steady-state | `450k` trades, `500 TPS * 900s` | Public/README evidence and rare race detection | Nightly, release candidate, or before publishing benchmark |
