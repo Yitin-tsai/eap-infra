@@ -6486,6 +6486,17 @@ TARGET_TPS=2000 DURATION_SECONDS=60 EVENTS=120000 PUBLISHERS=128 TIMEOUT_SECONDS
   - R2 guard `GLT_20260717_TPS59_RESERVATION_GUARD_10K_R2` passed with `completedTrades=10000`, final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, and `activeReservations=0`.
   - R2 was driver-limited (`actualBuyPublishTps=901.30`), so it is accepted as a correctness/log validation run, not as a 2000 offered-load throughput sample.
   - R2 logs had no matched `ERROR`, `Invalid MatchEngine reservation`, reservation release failure, Redis orderbook inconsistency, Hikari thread-starvation, or RabbitMQ unknown-channel keyword. The only matched lines were existing Bean Validation provider INFO messages.
+- 120k medium steady-state:
+  - Run ID: `EAP_STEADY_2000TPS_120K_20260717_TPS59_R1`.
+  - Command: `TARGET_TPS=2000 DURATION_SECONDS=60 EVENTS=120000 PUBLISHERS=128 TIMEOUT_SECONDS=1800 MARKET_ID=EAP_STEADY_2000TPS_120K_20260717_TPS59_R1 RUN_MODE=prepare-run DIAGNOSTICS_LEVEL=deep RESET_PG_STATS_BEFORE_RUN=true bash scripts/load-test/run-global-matched-e2e-sustained.sh`.
+  - Bulk seed completed in `28s`; projection prewarm produced `openOrders=240000`.
+  - Offered load reached target: `buyPublished=120000`, `buyPublishFailures=0`, `buyPublishSeconds=60.01`, `actualBuyPublishTps=1999.69`.
+  - Business completion passed: `completedTrades=120000`, `tradeExecutions=120000`, `walletTradeSettlements=120000`, `orderCommandMatchedRows=240000`.
+  - Final drain passed: final ready/unacked queues were `0`; `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Throughput signals: `businessMatchedE2eTps=404.19`, `tradeExecutionReachTps=527.00`, `orderCommandMatchReachTps=425.81`, `walletSettlementReachTps=428.06`, `completionMarkerReachTps=412.28`.
+  - Backlog signal: `maxMatchEngineQueueReady=96975`, so 2000 offered TPS still builds a large MatchEngine intake backlog, but it drained cleanly.
+  - Manual Redis scan after the run found `0` `order:reservation:*` keys; Redis stats showed `evicted_keys=0` and `rejected_connections=0`.
+  - MatchEngine/Order/Wallet log grep had no matched `ERROR`, `Invalid MatchEngine reservation`, reservation release failure, Redis orderbook inconsistency, Hikari thread-starvation, or RabbitMQ unknown-channel keyword. The only matched lines were existing Bean Validation provider INFO messages.
+  - Conclusion: TPS-59 closes the previous "completed trade but hidden Redis/orderbook state remains" failure mode for the current medium steady-state gate. This is still a 120k local validation run, not a formal 450k/nightly public benchmark.
 - Remaining validation:
-  - Run 120k medium steady-state after this commit before closing TPS-59 fully.
   - Consider adding a dedicated failure-injection integration test with Redis/Testcontainers if this becomes production-hardening work rather than benchmark-hardening work.
