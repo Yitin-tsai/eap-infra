@@ -6897,3 +6897,56 @@ Next step:
   - compute `offeredLoadRatio = actualBuyPublishTps / targetTps`;
   - mark runs invalid when target TPS is configured and actual offered load is below the accepted threshold;
   - surface this in JSON and repeat summaries so we stop comparing driver-limited runs against service-limited runs.
+
+### TPS-67 Single-Run Offered-Load Validity Guardrail
+
+2026-07-17 implementation:
+
+- Added single-run validity fields to `MatchedE2eLoadGenerator` result JSON:
+  - `minOfferedLoadRatio`;
+  - `offeredLoadRatio`;
+  - `validForCapacityComparison`;
+  - `capacityInvalidReasons`;
+  - `finalQueueBacklog`.
+- Added `--min-offered-load-ratio`, defaulting to `0.95`.
+- Threaded `MIN_OFFERED_LOAD_RATIO` through:
+  - `run-global-matched-e2e.sh`;
+  - `run-global-matched-e2e-two-phase.sh`;
+  - `run-global-matched-e2e-sustained.sh`;
+  - `run-2000-ticket-marker-10k.sh`;
+  - `run-2000-ticket-marker-repeat.sh`.
+- Repeat summaries already filtered invalid runs; this change makes every individual result JSON self-describing.
+
+Validity rule:
+
+- A run is not valid for capacity comparison when:
+  - actual BUY offered load is below `targetTps * minOfferedLoadRatio`;
+  - publish failures occur;
+  - completed trades / trade executions / wallet settlements do not match expected events;
+  - Order command rows do not match `events * 2`;
+  - final measured queues still have ready/unacked backlog;
+  - Redis orderbook or reservation state does not converge.
+
+Verification:
+
+- Compile:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` passed in `eap-order`.
+- Guardrail smoke:
+  - Run ID: `GLT_20260717_TPS_GUARDRAIL_SMOKE_10`.
+  - Config: `TARGET_TPS=100`, `EVENTS=10`, `PUBLISHERS=4`, `MIN_OFFERED_LOAD_RATIO=0.95`.
+  - Result fields:
+    - `actualBuyPublishTps=110.44`;
+    - `offeredLoadRatio=1.1044`;
+    - `validForCapacityComparison=true`;
+    - `capacityInvalidReasons=[]`;
+    - `finalQueueBacklog=0`;
+    - `completedTrades=10`;
+    - `activeReservations=0`.
+
+Conclusion:
+
+- Keep this guardrail before doing more TPS comparison.
+- Future benchmark interpretation should use:
+  - correctness gate first;
+  - `validForCapacityComparison` second;
+  - throughput metrics only after the above two pass.
