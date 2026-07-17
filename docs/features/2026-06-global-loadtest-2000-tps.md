@@ -6664,3 +6664,96 @@ Conclusion:
   - `2` preserves input TPS but worsens business completion and MatchEngine queue backlog.
 - Current accepted short-run reference remains the light final-metrics run around `456.61` business TPS with `619.69` completion-marker TPS.
 - Next target should be MatchEngine trade outbox publisher confirm behavior and broker/resource contention measurement, not increasing downstream marker relay concurrency.
+
+### TPS-63 Raw JSON Outbox Relay Rejection
+
+2026-07-17 performance review:
+
+- Hypothesis: Order and Wallet outbox relays might be paying unnecessary JSON deserialize/serialize cost by reading the stored payload into an event object, then calling `RabbitTemplate.convertAndSend(...)`.
+- Experiment: change Order and Wallet relays to publish the stored payload bytes directly as an AMQP JSON `Message`, matching the shape already used by MatchEngine `TradeOutboxRelay`.
+- The change preserved message correctness in a 500 smoke run:
+  - Run ID: `GLT_20260717_TPS63_RAW_OUTBOX_SMOKE_500`.
+  - `completedTrades=500`, `tradeExecutions=500`, `walletTradeSettlements=500`.
+  - Final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+- The 10k light comparison rejected the change:
+  - Run ID: `GLT_20260717_TPS63_RAW_OUTBOX_10K_R1`.
+  - `actualBuyPublishTps=1998.40`, but `businessMatchedE2eTps=294.13` and `completionMarkerReachTps=353.50`.
+  - This is materially worse than TPS-62 reference `businessMatchedE2eTps=456.61` and `completionMarkerReachTps=619.69`.
+  - MatchEngine input backlog returned: `maxMatchEngineQueueReady=4405`, `maxMatchEngineQueueUnacked=700`.
+  - Outbox relay enqueue cost worsened instead of improving:
+    - Order `publish_enqueue` sum: `13.997s -> 24.187s`;
+    - Wallet `publish_enqueue` sum: `14.006s -> 24.251s`;
+    - Match trade outbox confirm sum also worsened: `12.332s -> 22.383s`.
+
+Conclusion:
+
+- Do not switch Order/Wallet outbox relay to direct raw JSON `Message` publishing in this shape.
+- The result shows the apparent serialization cost was not the main bottleneck; this path increased local RabbitMQ/send-path contention and hurt full business completion.
+- The attempted code change was reverted. No production code from this rejected experiment should be kept.
+- Continue with MatchEngine hot-path attribution rather than more outbox relay API micro-tuning.
+
+### TPS-64 MatchEngine Hot-Path Stage Metrics
+
+2026-07-17 performance review:
+
+- TPS-62 and TPS-63 both showed that further consumer/publisher concurrency tuning is not the right next lever.
+- The visible bottleneck repeatedly moves back to MatchEngine intake/persistence when local broker or downstream relays are stressed.
+- Existing light diagnostics had outbox and downstream timers, but did not split `OrderConfirmed -> match -> TradeExecuted` into measurable MatchEngine stages.
+
+Implementation:
+
+- Added `MatchingEngineMetrics` with low-cost Micrometer timers/counters for:
+  - overall `tryMatch`;
+  - Redis reserve-best-order Lua call;
+  - Redis add-order Lua call for unmatched resting orders;
+  - Redis match-id generation;
+  - durable `TradeExecuted` record plus transactional outbox insert;
+  - Redis reservation completion/release;
+  - legacy publish path, if enabled.
+- Updated `MatchingEngineService` to record these stages without changing business behavior.
+- Updated the load-test diagnostics collector to include `match_engine_*` metrics in final actuator snapshots.
+
+Verification:
+
+- Focused tests:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest` passed.
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` passed in `eap-matchEngine`.
+- 10k light run:
+  - Run ID: `GLT_20260717_TPS64_MATCH_STAGE_METRICS_10K_R1`.
+  - Correctness: `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, final queues/unacked `0`, `remainingSellOrders=0`, `remainingBuyOrders=0`, `activeReservations=0`.
+  - Throughput: `actualBuyPublishTps=1999.05`, `businessMatchedE2eTps=380.08`, `completionMarkerReachTps=483.12`.
+  - Timing: `tradeExecutionsReachedSeconds=16.39`, `completedTradesReachedSeconds=20.70`, `queueFullyDrainedSeconds=26.31`.
+  - Queue signal: `maxMatchEngineQueueReady=2062`, `maxMatchEngineQueueUnacked=700`.
+
+Measured MatchEngine stage costs:
+
+| Stage | Count | Sum |
+| --- | ---: | ---: |
+| `match_engine_try_match_duration` | `20000` | `64.197s` |
+| `match_engine_reserve_order_duration` | `20000` | `20.715s` |
+| `match_engine_add_order_duration` | `10000` | `10.541s` |
+| `match_engine_match_id_duration` | `10000` | `7.515s` |
+| `match_engine_trade_record_duration` | `10000` | `16.232s` |
+| `match_engine_complete_reservation_duration` | `10000` | `9.041s` |
+| `trade_outbox_confirm_duration` | `10000` | `16.498s` |
+
+Interpretation:
+
+- The 10k matched workload is actually `20000` `OrderConfirmed` messages for `10000` trades.
+- Resting SELL orders still consume MatchEngine capacity: each no-match SELL pays a Redis reserve attempt and an add-order Lua write before BUY orders can match.
+- For each matched BUY, the visible fixed costs are roughly:
+  - Redis reserve best order;
+  - Redis match-id `INCR`;
+  - PostgreSQL durable trade/outbox CTE;
+  - Redis reservation completion;
+  - later MatchEngine trade outbox publisher confirm.
+- The clearest next code target is to remove one Redis round trip per completed trade by combining match-id generation into the reserve Lua operation:
+  - reserve the resting order and generate the sequence in one atomic Lua script;
+  - return both `matchId` and reserved order payload to Java;
+  - keep the sequence distributed and preserve the reservation safety model.
+
+Conclusion:
+
+- Keep TPS-64 metrics. They make the next MatchEngine optimization measurable and avoid another round of blind concurrency tuning.
+- Do not optimize by changing service boundaries or moving Order/Wallet state into MatchEngine.
+- Next ticket should implement and benchmark "reserve resting order + match-id generation in one Redis Lua operation", then compare against TPS-62/TPS-64 using the new stage timers.
