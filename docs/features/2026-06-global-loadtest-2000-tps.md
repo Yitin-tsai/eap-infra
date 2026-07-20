@@ -7200,3 +7200,148 @@ Interpretation:
 - This is a modest hot-path cleanup, not the final 2000 completed-TPS breakthrough.
 - R2 must be excluded from capacity comparison because the load driver only offered `37.27%` of target TPS. The benchmark guardrail correctly rejected it with `driver_offered_tps_below_threshold`.
 - The next target should be load-driver stability and remaining end-to-end drain tail, then MatchEngine/Order/Wallet stage timers under a valid offered load. Do not return to blind consumer concurrency tuning unless the stage evidence changes.
+
+### TPS-73 Load Driver Publish Attribution
+
+2026-07-20 implementation:
+
+- Added load-driver publish attribution to `MatchedE2eLoadGenerator`.
+- The run JSON now includes:
+  - `sellPublishAcquireWaitSeconds`, `sellPublishMaxAcquireWaitMs`;
+  - `sellPublishSendSeconds`, `sellPublishMaxSendMs`, `sellPublishMaxScheduleLagMs`;
+  - `buyPublishAcquireWaitSeconds`, `buyPublishMaxAcquireWaitMs`;
+  - `buyPublishSendSeconds`, `buyPublishMaxSendMs`, `buyPublishMaxScheduleLagMs`.
+- Purpose: distinguish service-side bottlenecks from load-driver under-offer caused by semaphore pressure, Rabbit publish blocking, or scheduler lag.
+
+Verification:
+
+- `eap-order` compile passed:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses`.
+- 500 smoke passed:
+  - Run ID: `GLT_20260720_TPS73_DRIVER_PUBLISH_METRICS_SMOKE_500`;
+  - `actualBuyPublishTps=998.64`;
+  - `validForCapacityComparison=true`;
+  - `businessMatchedE2eTps=482.32`;
+  - `completionMarkerReachTps=482.32`;
+  - `completedTrades=500`;
+  - final backlog `0`;
+  - `activeReservations=0`.
+
+10k baseline with new driver metrics:
+
+| Run | Offered BUY TPS | Valid | Business TPS | TradeExecution reach TPS | Order/Wallet reach TPS | Completion-marker TPS | Queue fully drained | Final backlog |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-73 R1 `GLT_20260720_TPS73_DRIVER_PUBLISH_METRICS_10K_R1` | `1998.41` | yes | `390.20` | `729.22` | `624.95` | `515.78` | `25.63s` | `0` |
+| TPS-73 deep R2 `GLT_20260720_TPS73_DRIVER_PUBLISH_METRICS_DEEP_10K_R2` | `1998.73` | yes | `391.95` | `676.00` | `629.41` | `553.05` | `25.51s` | `0` |
+
+Driver attribution:
+
+- TPS-73 R1 buy publish was healthy:
+  - `buyPublishAcquireWaitSeconds=0.0030`;
+  - `buyPublishSendSeconds=0.4889`;
+  - `buyPublishMaxSendMs=12.366`;
+  - `buyPublishMaxScheduleLagMs=7.104`.
+- TPS-73 deep R2 buy publish was also acceptable:
+  - `buyPublishAcquireWaitSeconds=0.0048`;
+  - `buyPublishSendSeconds=0.6707`;
+  - `buyPublishMaxSendMs=24.945`;
+  - `buyPublishMaxScheduleLagMs=24.545`.
+- Therefore the valid TPS-73 samples were service-side limited, not driver limited.
+
+Interpretation:
+
+- Driver metrics are worth keeping because they make invalid samples explainable.
+- Under valid offered load, MatchEngine ingress still created a visible tail:
+  - TPS-73 R1 `maxMatchEngineQueueReady=1122`, `maxMatchEngineQueueUnacked=700`;
+  - TPS-73 deep R2 `maxMatchEngineQueueReady=1352`, `maxMatchEngineQueueUnacked=700`.
+- Deep metrics showed the current two-phase workload paid an avoidable Redis fixed cost:
+  - `match_engine_try_match_duration_seconds_count=20000`;
+  - `match_engine_reserve_order_duration_seconds_count=20000`;
+  - `match_engine_add_order_duration_seconds_count=10000`.
+- In this workload, all resting SELL confirmations first try to reserve an opposite BUY, observe no match, and then execute a second `add_order.lua` call. The next target is to combine reserve-or-add into one Lua operation without changing durable trade semantics.
+
+### TPS-74 Redis Reserve-Or-Add Hot Path
+
+2026-07-20 implementation:
+
+- Added `reserve_or_add_order_buy.lua` and `reserve_or_add_order_sell.lua`.
+- Added `RedisOrderBookService.reserveBestMatchOrAddOrderWithSequenceLua(...)`.
+- Changed `MatchingEngineService.tryMatch(...)` to use the new combined Lua result:
+  - `__MATCH__` reserves the resting opposite order and returns the reserved order plus match sequence;
+  - `__ADDED__` adds the incoming order to the visible order book when no match exists;
+  - inconsistency statuses still fail fast when order detail is missing or a visible order is already reserved.
+- Removed the Java no-match path that first returned `null` from reserve and then called `add_order.lua`.
+- This does not change:
+  - `TradeExecuted` persistence;
+  - reservation completion/release behavior;
+  - Order/Wallet downstream event flow;
+  - completion markers;
+  - business-gated load-test correctness requirements.
+
+Unit verification:
+
+- MatchEngine targeted tests passed:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.MatchingEngineServiceTest --tests com.eap.eap_matchengine.application.RedisOrderBookServiceTest --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest`.
+- Added tests for:
+  - matched reserve-or-add returning a reserved order and match id;
+  - no-match reserve-or-add adding the incoming order in Redis;
+  - `MatchingEngineService` not calling the old second `addOrder` path when no match exists.
+
+Smoke and 10k validation:
+
+| Run | Offered BUY TPS | Valid | Business TPS | TradeExecution reach TPS | Order/Wallet reach TPS | Completion-marker TPS | Queue fully drained | Final backlog |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-74 smoke `GLT_20260720_TPS74_RESERVE_OR_ADD_SMOKE_500` | `994.81` | yes | `364.95` | `614.36` | `413.95` | `364.95` | `1.37s` | `0` |
+| TPS-74 R1 `GLT_20260720_TPS74_RESERVE_OR_ADD_10K_R1` | `756.55` | no | `445.66` | `745.02` | `745.02` | `641.85` | `22.44s` | `0` |
+| TPS-74 R2 `GLT_20260720_TPS74_RESERVE_OR_ADD_10K_R2` | `1999.19` | yes | `463.42` | `1008.29` | `817.83` | `689.84` | `21.58s` | `0` |
+| TPS-74 deep R3 `GLT_20260720_TPS74_RESERVE_OR_ADD_DEEP_10K_R3` | `1998.73` | yes | `466.45` | `763.44` | `649.20` | `570.77` | `21.44s` | `0` |
+
+Load-driver fix during TPS-74:
+
+- TPS-74 R1 was correctness-pass but invalid for capacity comparison because the driver only offered `756.55` BUY TPS.
+- The new TPS-73 metrics showed the client-side `RabbitTemplate.convertAndSend` path was blocked:
+  - `buyPublishSendSeconds=894.7765`;
+  - `buyPublishMaxSendMs=8636.465`;
+  - `buyPublishAcquireWaitSeconds=1.7281`.
+- Root cause was load-generator client shape:
+  - `MatchedE2eLoadGenerator` manually created its own `CachingConnectionFactory`;
+  - it did not inherit the Spring Boot Rabbit channel-cache settings used by services;
+  - with `128` publisher threads, the default channel cache caused excessive channel churn and occasional publish under-offer.
+- Fixed by setting driver `publisherChannelCacheSize` to `max(128, publishers * 2)` and adding the value to run JSON.
+- Also removed legacy queues from load-test purge:
+  - `order.create.queue`;
+  - `order.created.queue`;
+  - `order.failed.queue`.
+- Those queues no longer exist in the current topology; passive-declaring them produced RabbitMQ channel exceptions and polluted broker logs.
+
+TPS-74 deep evidence:
+
+- The intended Redis hot-path cleanup took effect:
+  - `match_engine_add_order_duration_seconds_count=0`;
+  - `match_engine_add_order_duration_seconds_sum=0.0`.
+- Combined reserve-or-add is now counted under the reserve timer:
+  - `match_engine_reserve_order_duration_seconds_count=20000`;
+  - `match_engine_reserve_order_duration_seconds_sum=23.651443`.
+- MatchEngine DB connection acquisition is not the bottleneck:
+  - `hikaricp_connections_acquire_seconds_count=12756`;
+  - `hikaricp_connections_acquire_seconds_sum=0.142`;
+  - `hikaricp_connections_acquire_seconds_max=0.020`.
+- Match DB top statements are still small per call:
+  - trade execution/outbox CTE: `10000` calls, `1319.40ms` total, `0.1319ms` mean;
+  - completion marker insert: `2354` calls, `1053.59ms` total, `0.4476ms` mean.
+- Wallet settlement SQL is not a single slow statement, but it remains a large fixed per-trade cost:
+  - settlement CTE: `10000` calls, `1821.39ms` total, `0.1821ms` mean;
+  - settlement processing timer: `17.455739s` total;
+  - settlement transaction timer: `17.089347s` total.
+- Outbox relay/drain is now the main tail candidate:
+  - Match outbox batch: `21` batches, `14.490855s` total;
+  - Order outbox batch: `21` batches, `16.357323s` total;
+  - Wallet outbox batch: `21` batches, `16.405692s` total;
+  - business gate is still dominated by final ready+unacked drain, around `21.4s`.
+
+Interpretation:
+
+- Keep TPS-74. It improves the valid 10k sample versus TPS-73 from `390.20` to `463.42` business TPS and from `515.78` to `689.84` completion-marker TPS.
+- It also removes the explicit second no-match Redis add call in the two-phase workload.
+- R1 must be excluded from service capacity comparison because the driver under-offered; the new driver metrics explain why.
+- The next TPS target should be outbox relay/drain cost and completion-tail attribution across MatchEngine, Order, and Wallet. Do not return to blind consumer concurrency tuning unless queue, DB, or outbox timers show under-parallelism rather than publish/confirm/drain tail.
