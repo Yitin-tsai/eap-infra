@@ -7067,3 +7067,81 @@ Interpretation:
 - Direct JSON relay is safe and worth keeping because it removes unnecessary relay conversion work while preserving outbox reliability.
 - The two-run average is better than TPS-67, but R1/R2 variance is still large, so this should be treated as a fixed-cost cleanup rather than a proven final capacity breakthrough.
 - `completionMarkerReachTps` stayed stable around `605 TPS`, while `businessMatchedE2eTps` moved with final queue drain time. The remaining bottleneck is still downstream relay/drain behavior and publisher path contention, not a single slow SQL statement.
+
+### TPS-70 Scoped RabbitTemplate Channel Experiment
+
+2026-07-20 experiment:
+
+- Tried aligning Order and Wallet outbox relay publish paths with the MatchEngine chunked `RabbitTemplate.invoke(...)` pattern.
+- The intent was to reduce per-message `RabbitTemplate.send(...)` fixed cost without changing:
+  - transactional outbox semantics;
+  - publisher confirms;
+  - returned-message checks;
+  - retry and mark-SENT behavior;
+  - default relay publish concurrency.
+
+Verification:
+
+- Compile/test passed before E2E:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` in `eap-order`;
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.OutboxPollerTest` in `eap-wallet`.
+- 500 smoke passed:
+  - Run ID: `GLT_20260717_TPS70_SCOPED_CHANNEL_SMOKE_500`;
+  - `actualBuyPublishTps=997.74`;
+  - `validForCapacityComparison=true`;
+  - `completedTrades=500`;
+  - final backlog `0`;
+  - `activeReservations=0`.
+
+10k result:
+
+| Run | Offered BUY TPS | Valid | Business TPS | Completion-marker TPS | Queue fully drained | Final backlog |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| TPS-70 `GLT_20260717_TPS70_SCOPED_CHANNEL_10K_R1` | `1998.83` | yes | `378.27` | `510.29` | `26.44s` | `0` |
+
+Selected metric comparison:
+
+| Metric | TPS-69 R1 | TPS-70 |
+| --- | ---: | ---: |
+| Order outbox enqueue sum | `14.117s` | `0.153s` |
+| Order outbox confirm sum | `0.920s` | `15.294s` |
+| Wallet outbox enqueue sum | `13.969s` | `0.156s` |
+| Wallet outbox confirm sum | `0.904s` | `14.973s` |
+| Match outbox confirm sum | `12.602s` | `17.050s` |
+
+Conclusion:
+
+- Do not keep this implementation.
+- The scoped-channel experiment reduced the measured enqueue timer, but shifted cost into publisher-confirm wait and lowered completed business TPS.
+- It was reverted. Direct JSON relay remains in place.
+
+### TPS-71 Wallet Hot-Path Logging Cleanup
+
+2026-07-20 implementation:
+
+- Lowered per-trade wallet settlement success logs from `INFO` to `DEBUG`.
+- Lowered duplicate settlement skip logs from `INFO` to `DEBUG`.
+- Rationale:
+  - successful processing is already captured by metrics;
+  - one `INFO` line per `TradeExecutedEvent` creates avoidable I/O and CPU cost;
+  - hot-path logging should report anomalies, not every successful event.
+
+Verification:
+
+- Tests passed:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.TradeExecutedListenerTest --tests com.eap.eap_wallet.application.OutboxPollerTest`.
+- The runtime wallet log dropped to startup-level volume:
+  - `eap-wallet.log` had `73` lines in the TPS-71 light run, instead of one settlement line per trade.
+
+10k runs:
+
+| Run | Diagnostics | Offered BUY TPS | Valid | Business TPS | Completion-marker TPS | Queue fully drained | Final backlog |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: |
+| TPS-71 light `GLT_20260717_TPS71_WALLET_LOG_THROTTLE_10K_R1` | light | `612.16` | no | `405.67` | `491.53` | `24.65s` | `0` |
+| TPS-71 baseline `GLT_20260717_TPS71_WALLET_LOG_THROTTLE_BASELINE_10K_R1` | baseline | `1997.44` | yes | `400.71` | `522.02` | `24.96s` | `0` |
+
+Interpretation:
+
+- The logging cleanup is correct and should stay, but it is not the main TPS breakthrough.
+- The invalid light run proves the offered-load guardrail is still necessary; the driver only reached `30.61%` of target TPS and must not be used for capacity comparison.
+- The valid baseline run still trails TPS-69, so current bottleneck work should move back to MatchEngine order-confirmed ingestion, Redis orderbook cost, RabbitMQ delivery/drain behavior, and load-generator stability.
