@@ -7145,3 +7145,58 @@ Interpretation:
 - The logging cleanup is correct and should stay, but it is not the main TPS breakthrough.
 - The invalid light run proves the offered-load guardrail is still necessary; the driver only reached `30.61%` of target TPS and must not be used for capacity comparison.
 - The valid baseline run still trails TPS-69, so current bottleneck work should move back to MatchEngine order-confirmed ingestion, Redis orderbook cost, RabbitMQ delivery/drain behavior, and load-generator stability.
+
+### TPS-72 Redis Lua EVALSHA Dispatch Cleanup
+
+2026-07-20 implementation:
+
+- Changed MatchEngine `RedisOrderBookService` to load Lua scripts into Redis at service startup and execute the hot path with `EVALSHA`.
+- Kept a `NOSCRIPT` fallback to the original `EVAL` path so Redis script-cache loss remains retryable without changing business semantics.
+- This does not change order-book keys, reservation semantics, match-id generation, durable `TradeExecuted` persistence, completion markers, or final business gates.
+
+Why this target:
+
+- Recent valid 10k runs showed raw PostgreSQL statement time was not the dominant cost.
+- Redis slowlog still contained repeated slow `EVAL` entries with full Lua script bodies for add/reserve paths from earlier runs.
+- The expected win is fixed-cost cleanup in MatchEngine order-confirmed ingestion: avoid sending and parsing the full Lua script on every order-book operation.
+
+Verification:
+
+- Compile passed:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` in `eap-matchEngine`.
+- 500 smoke passed:
+  - Run ID: `GLT_20260717_TPS72_REDIS_EVALSHA_SMOKE_500`;
+  - `actualBuyPublishTps=999.04`;
+  - `validForCapacityComparison=true`;
+  - `completedTrades=500`;
+  - final backlog `0`;
+  - `activeReservations=0`.
+
+10k baseline runs:
+
+| Run | Offered BUY TPS | Valid | Business TPS | Completion-marker TPS | Queue fully drained | Final backlog |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| TPS-72 R1 `GLT_20260717_TPS72_REDIS_EVALSHA_BASELINE_10K_R1` | `1998.95` | yes | `500.39` | `644.52` | `19.98s` | `0` |
+| TPS-72 R2 `GLT_20260717_TPS72_REDIS_EVALSHA_BASELINE_10K_R2` | `745.34` | no | `438.30` | `544.10` | `22.82s` | `0` |
+| TPS-72 R3 `GLT_20260717_TPS72_REDIS_EVALSHA_BASELINE_10K_R3` | `1999.07` | yes | `484.94` | `646.80` | `20.62s` | `0` |
+
+Valid-sample summary:
+
+- Valid runs: R1 and R3.
+- Average business E2E TPS: `492.67`.
+- Average completion-marker TPS: `645.66`.
+- Average queue fully drained seconds: `20.30s`.
+- Both valid runs completed all `10000` trades with final queue backlog `0`.
+
+Redis slowlog check:
+
+- Redis slowlog was reset before the R2/R3 validation window.
+- After R2/R3, `redis-cli slowlog get 20` contained only the `slowlog reset` command.
+- No slow `EVAL` or `EVALSHA` entry was recorded for TPS-72.
+
+Interpretation:
+
+- Keep the EVALSHA dispatch cleanup. It removes a measurable Redis fixed cost and eliminates the earlier slowlog symptom without changing business semantics.
+- This is a modest hot-path cleanup, not the final 2000 completed-TPS breakthrough.
+- R2 must be excluded from capacity comparison because the load driver only offered `37.27%` of target TPS. The benchmark guardrail correctly rejected it with `driver_offered_tps_below_threshold`.
+- The next target should be load-driver stability and remaining end-to-end drain tail, then MatchEngine/Order/Wallet stage timers under a valid offered load. Do not return to blind consumer concurrency tuning unless the stage evidence changes.
