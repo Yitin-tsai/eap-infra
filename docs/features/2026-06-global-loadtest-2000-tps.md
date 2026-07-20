@@ -6950,3 +6950,120 @@ Conclusion:
   - correctness gate first;
   - `validForCapacityComparison` second;
   - throughput metrics only after the above two pass.
+
+### TPS-68 Completion Marker Diagnostics and SQL Reset Hygiene
+
+2026-07-17 implementation:
+
+- Added `trade_completion_marker_*` to the selected actuator metric filters.
+- Added an after-run `match-completion-markers.txt` diagnostic snapshot keyed by `MARKET_ID`.
+- Extended run-phase DB stats reset so `RESET_PG_STATS_BEFORE_RUN=true` also calls `pg_stat_statements_reset()` for Order, Wallet, and MatchEngine when available.
+
+Why:
+
+- Light diagnostics previously omitted completion-marker metrics, so marker convergence could only be inferred from final business counts.
+- Manual SQL review after light runs could mix historical `pg_stat_statements` with the current run because only `pg_stat_reset()` was called.
+- The new marker snapshot gives a direct correctness and timing check:
+  - marker rows by type;
+  - distinct trades by type;
+  - first and last marker timestamps.
+
+Verification:
+
+- Script syntax:
+  - `bash -n scripts/load-test/run-global-matched-e2e-two-phase.sh` passed.
+  - `bash -n scripts/load-test/collect-loadtest-diagnostics.sh` passed.
+- Diagnostic snapshot verification:
+  - Run ID: `GLT_20260717_TPS68_MARKER_METRICS_10K_R1`.
+  - Marker snapshot confirmed `ORDER_APPLIED=10000` and `WALLET_SETTLED=10000`, both with `10000` distinct trades.
+
+Deep attribution run:
+
+- Run ID: `GLT_20260717_TPS68_MARKER_DEEP_10K_R1`.
+- Correctness passed, but it is not valid for capacity comparison:
+  - `actualBuyPublishTps=612.22`;
+  - `offeredLoadRatio=0.3061`;
+  - `validForCapacityComparison=false`;
+  - reason: `driver_offered_tps_below_threshold`.
+- Still useful for SQL attribution because the DB stats were reset before the run.
+
+Clean MatchEngine SQL top from the deep run:
+
+| SQL area | Calls | Total exec time | Mean |
+| --- | ---: | ---: | ---: |
+| `trade_executions + trade_outbox` CTE | `10000` | `1203.57ms` | `0.1204ms` |
+| `trade_completion_markers` batch insert | `2914` | `775.50ms` | `0.2661ms` |
+| `trade_outbox` select | `371` | `73.70ms` | `0.1987ms` |
+| `trade_outbox` mark SENT, largest grouped shape | `11` | `68.55ms` | `6.2317ms` |
+
+Interpretation:
+
+- The largest business SQL statements are not showing multi-second database execution by themselves.
+- Completion marker insertion is not the primary SQL bottleneck, although the observed average marker batch size was only about `6.9` markers per insert in the deep run.
+- The bigger wall-clock costs remain relay/publisher path and queue drain behavior rather than raw SQL execution time alone.
+
+### TPS-69 Order/Wallet Direct JSON Outbox Relay
+
+2026-07-17 implementation:
+
+- Changed Order and Wallet outbox relays to publish the stored JSON payload directly as AMQP `Message` instead of:
+  - deserializing the JSON into an event object;
+  - passing the object through `RabbitTemplate.convertAndSend(...)`;
+  - serializing it again through the message converter.
+- The relay now sets:
+  - `contentType=application/json`;
+  - `contentEncoding=UTF-8`;
+  - persistent delivery mode.
+- Publisher confirms, returned-message checks, retry behavior, and mark-SENT semantics are unchanged.
+
+Reasoning:
+
+- MatchEngine trade outbox already uses direct JSON message publishing and passed E2E correctness.
+- Order/Wallet relays do not need to inspect event fields during publish; the payload is already the durable outbox message.
+- This removes fixed relay CPU/conversion work without weakening transactional outbox semantics.
+
+Verification:
+
+- Compile/test:
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon testClasses` passed in `eap-order`.
+  - `GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.OutboxPollerTest` passed in `eap-wallet`.
+- 500 smoke:
+  - Run ID: `GLT_20260717_TPS69_DIRECT_JSON_SMOKE_500`.
+  - `actualBuyPublishTps=994.76`;
+  - `validForCapacityComparison=true`;
+  - `completedTrades=500`;
+  - `tradeExecutions=500`;
+  - `walletTradeSettlements=500`;
+  - final queues/DLQ `0`;
+  - `activeReservations=0`.
+
+10k light runs:
+
+| Run | Offered BUY TPS | Valid | Business TPS | Completion-marker TPS | Queue fully drained | Final backlog |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| TPS-67 `GLT_20260717_TPS67_VALIDATED_10K_R1` | `1999.06` | yes | `457.98` | `629.78` | `21.83s` | `0` |
+| TPS-69 R1 `GLT_20260717_TPS69_DIRECT_JSON_10K_R1` | `1998.93` | yes | `536.76` | `604.08` | `18.63s` | `0` |
+| TPS-69 R2 `GLT_20260717_TPS69_DIRECT_JSON_10K_R2` | `1999.19` | yes | `440.65` | `605.22` | `22.69s` | `0` |
+
+TPS-69 two-run average:
+
+- Average business E2E TPS: `488.71`.
+- Average completion-marker TPS: `604.65`.
+- Both runs completed all `10000` trades with final queue backlog `0`.
+
+Selected relay metrics:
+
+| Metric | TPS-69 R1 | TPS-69 R2 |
+| --- | ---: | ---: |
+| Order outbox batch sum | `15.445s` | `15.347s` |
+| Order outbox enqueue sum | `14.117s` | `14.103s` |
+| Wallet outbox batch sum | `15.255s` | `15.520s` |
+| Wallet outbox enqueue sum | `13.969s` | `14.420s` |
+| Match outbox batch sum | `13.296s` | `14.177s` |
+| Match outbox confirm sum | `12.602s` | `13.669s` |
+
+Interpretation:
+
+- Direct JSON relay is safe and worth keeping because it removes unnecessary relay conversion work while preserving outbox reliability.
+- The two-run average is better than TPS-67, but R1/R2 variance is still large, so this should be treated as a fixed-cost cleanup rather than a proven final capacity breakthrough.
+- `completionMarkerReachTps` stayed stable around `605 TPS`, while `businessMatchedE2eTps` moved with final queue drain time. The remaining bottleneck is still downstream relay/drain behavior and publisher path contention, not a single slow SQL statement.

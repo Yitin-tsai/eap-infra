@@ -119,6 +119,9 @@ reset_pg_stats() {
   docker exec eap-order-postgres-loadtest psql -U admin -d eap_order_db -v ON_ERROR_STOP=1 -c "select pg_stat_reset();" >/dev/null
   docker exec eap-wallet-postgres-loadtest psql -U admin -d eap_wallet_db -v ON_ERROR_STOP=1 -c "select pg_stat_reset();" >/dev/null
   docker exec eap-match-postgres-loadtest psql -U admin -d eap_match_db -v ON_ERROR_STOP=1 -c "select pg_stat_reset();" >/dev/null
+  docker exec eap-order-postgres-loadtest psql -U admin -d eap_order_db -v ON_ERROR_STOP=1 -c "select pg_stat_statements_reset();" >/dev/null || true
+  docker exec eap-wallet-postgres-loadtest psql -U admin -d eap_wallet_db -v ON_ERROR_STOP=1 -c "select pg_stat_statements_reset();" >/dev/null || true
+  docker exec eap-match-postgres-loadtest psql -U admin -d eap_match_db -v ON_ERROR_STOP=1 -c "select pg_stat_statements_reset();" >/dev/null || true
   if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
     DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" \
       bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" reset || true
