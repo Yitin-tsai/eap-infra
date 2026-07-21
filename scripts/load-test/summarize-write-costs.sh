@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+REPORT_DIR="${REPORT_DIR:-${ROOT_DIR}/build/load-test-reports}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: summarize-write-costs.sh [DIAG_DIR] [RESULT_JSON]
+
+Summarizes full-chain write and relay costs captured by collect-loadtest-diagnostics.sh.
+If DIAG_DIR is omitted, the latest matched-e2e diagnostics directory is used.
+EOF
+}
+
+latest_diag_dir() {
+  find "${REPORT_DIR}" -maxdepth 1 -type d -name 'matched-e2e-two-phase-*-diagnostics' \
+    -print0 \
+    | xargs -0 ls -td 2>/dev/null \
+    | head -1
+}
+
+DIAG_DIR="${1:-}"
+if [[ "${DIAG_DIR}" == "-h" || "${DIAG_DIR}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+if [[ -z "${DIAG_DIR}" ]]; then
+  DIAG_DIR="$(latest_diag_dir)"
+fi
+if [[ -z "${DIAG_DIR}" || ! -d "${DIAG_DIR}" ]]; then
+  echo "[ERROR] diagnostics directory not found: ${DIAG_DIR:-<empty>}" >&2
+  usage
+  exit 2
+fi
+
+RESULT_JSON="${2:-}"
+if [[ -z "${RESULT_JSON}" ]]; then
+  base="$(basename "${DIAG_DIR}")"
+  market="${base#matched-e2e-two-phase-}"
+  market="${market%-diagnostics}"
+  candidate="${REPORT_DIR}/matched-e2e-two-phase-${market}-result.json"
+  if [[ -f "${candidate}" ]]; then
+    RESULT_JSON="${candidate}"
+  fi
+fi
+
+OUT_FILE="${DIAG_DIR}/write-cost-summary.md"
+
+json_value() {
+  local key="$1"
+  if [[ -n "${RESULT_JSON}" && -f "${RESULT_JSON}" ]] && command -v jq >/dev/null 2>&1; then
+    jq -r ".${key} // empty" "${RESULT_JSON}"
+  fi
+}
+
+emit_result_summary() {
+  local market completed business_tps completion_seconds trade_tps order_tps wallet_tps marker_tps queue_drain last_queue last_queue_seconds
+  market="$(json_value marketId)"
+  completed="$(json_value completedTrades)"
+  business_tps="$(json_value businessMatchedE2eTps)"
+  completion_seconds="$(json_value businessCompletionSeconds)"
+  trade_tps="$(json_value tradeExecutionReachTps)"
+  order_tps="$(json_value orderCommandMatchReachTps)"
+  wallet_tps="$(json_value walletSettlementReachTps)"
+  marker_tps="$(json_value completionMarkerReachTps)"
+  queue_drain="$(json_value queueFullyDrainedSeconds)"
+  last_queue="$(json_value lastNonZeroQueue)"
+  last_queue_seconds="$(json_value lastNonZeroQueueSeconds)"
+
+  if [[ -z "${market}${completed}${business_tps}" ]]; then
+    echo "_No result JSON found._"
+    echo
+    return
+  fi
+
+  cat <<EOF
+| Metric | Value |
+|---|---:|
+| marketId | \`${market}\` |
+| completedTrades | ${completed:-n/a} |
+| businessMatchedE2eTps | ${business_tps:-n/a} |
+| businessCompletionSeconds | ${completion_seconds:-n/a} |
+| tradeExecutionReachTps | ${trade_tps:-n/a} |
+| orderCommandMatchReachTps | ${order_tps:-n/a} |
+| walletSettlementReachTps | ${wallet_tps:-n/a} |
+| completionMarkerReachTps | ${marker_tps:-n/a} |
+| queueFullyDrainedSeconds | ${queue_drain:-n/a} |
+| lastNonZeroQueue | \`${last_queue:-n/a}\` |
+| lastNonZeroQueueSeconds | ${last_queue_seconds:-n/a} |
+
+EOF
+}
+
+emit_timer_ranking() {
+  awk '
+    function basename(path, parts) {
+      n = split(path, parts, "/")
+      return parts[n]
+    }
+    function service_name(path, name) {
+      name = basename(path)
+      sub(/-actuator-prometheus.txt$/, "", name)
+      return name
+    }
+    function metric_name(line, tmp) {
+      tmp = line
+      sub(/\{.*/, "", tmp)
+      sub(/[[:space:]].*/, "", tmp)
+      return tmp
+    }
+    function label_text(line, tmp) {
+      tmp = ""
+      if (match(line, /\{[^}]*\}/)) {
+        tmp = substr(line, RSTART + 1, RLENGTH - 2)
+      }
+      gsub(/application="[^"]*",?/, "", tmp)
+      gsub(/,,+/, ",", tmp)
+      gsub(/^,|,$/, "", tmp)
+      return tmp
+    }
+    function metric_value(line, parts) {
+      split(line, parts, " ")
+      return parts[length(parts)] + 0
+    }
+    function should_keep(metric) {
+      if (metric ~ /_bucket$/ || metric ~ /_max$/) return 0
+      if (metric ~ /publish_duration_seconds_(sum|count)$/) return 0
+      return metric ~ /(_duration_seconds_(sum|count)|hikaricp_connections_(acquire|usage)_seconds_(sum|count))$/
+    }
+    function printable_metric(metric) {
+      sub(/_seconds_(sum|count)$/, "", metric)
+      sub(/_duration$/, "", metric)
+      return metric
+    }
+    FILENAME ~ /-actuator-prometheus.txt$/ {
+      metric = metric_name($0)
+      if (!should_keep(metric)) next
+      labels = label_text($0)
+      key_metric = metric
+      sub(/_sum$/, "", key_metric)
+      sub(/_count$/, "", key_metric)
+      key = service_name(FILENAME) "|" key_metric "|" labels
+      if (metric ~ /_sum$/) sums[key] = metric_value($0)
+      if (metric ~ /_count$/) counts[key] = metric_value($0)
+    }
+    END {
+      for (key in sums) {
+        split(key, parts, "|")
+        svc = parts[1]
+        metric = printable_metric(parts[2])
+        labels = parts[3]
+        count = counts[key] + 0
+        sum = sums[key] + 0
+        mean = count > 0 ? (sum * 1000.0 / count) : 0
+        printf "%.9f\t%s\t%s\t%s\t%d\t%.6f\t%.3f\n", sum, svc, metric, labels, count, sum, mean
+      }
+    }
+  ' "${DIAG_DIR}"/*-actuator-prometheus.txt 2>/dev/null \
+    | sort -nr \
+    | awk -F '\t' '
+      BEGIN {
+        print "| Rank | Service | Timer | Labels | Count | Cumulative seconds | Mean ms |"
+        print "|---:|---|---|---|---:|---:|---:|"
+      }
+      NR <= 25 {
+        labels = $4 == "" ? "-" : "`" $4 "`"
+        printf "| %d | %s | `%s` | %s | %s | %.3f | %.3f |\n", NR, $2, $3, labels, $5, $6, $7
+      }
+    '
+}
+
+emit_pg_ranking() {
+  for service in match order wallet; do
+    file="${DIAG_DIR}/${service}-pg-stat-statements-total-time.txt"
+    if [[ ! -f "${file}" ]]; then
+      continue
+    fi
+    awk -v service="${service}" '
+      /^[[:space:]]*[0-9]+[[:space:]]*\|/ {
+        n = split($0, fields, "|")
+        if (n < 9) next
+        calls = fields[1]
+        total = fields[2]
+        mean = fields[3]
+        rows = fields[4]
+        query = fields[9]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", calls)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", total)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", mean)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", rows)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", query)
+        if (query == "") next
+        printf "%09.3f\t%s\t%s\t%s\t%s\t%s\n", total + 0, service, calls, total, mean, substr(query, 1, 140)
+      }
+    ' "${file}"
+  done \
+    | sort -nr \
+    | awk -F '\t' '
+      BEGIN {
+        print "| Rank | Service | Calls | Total exec ms | Mean exec ms | Query prefix |"
+        print "|---:|---|---:|---:|---:|---|"
+      }
+      NR <= 20 {
+        gsub(/\|/, "\\|", $6)
+        printf "| %d | %s | %s | %.2f | %.4f | `%s` |\n", NR, $2, $3, $4, $5, $6
+      }
+    '
+}
+
+emit_hikari_snapshot() {
+  awk '
+    function basename(path, parts) {
+      n = split(path, parts, "/")
+      return parts[n]
+    }
+    function service_name(path, name) {
+      name = basename(path)
+      sub(/-actuator-prometheus.txt$/, "", name)
+      return name
+    }
+    /^[a-zA-Z_:][a-zA-Z0-9_:]*\{/ {
+      metric = $1
+      value = $2
+      labels = metric
+      sub(/^[^{]*\{/, "", labels)
+      sub(/\}.*/, "", labels)
+      sub(/\{.*/, "", metric)
+      if (metric ~ /^hikaricp_connections_(pending|active|max)$/) {
+        printf "| %s | `%s` | `%s` | %s |\n", service_name(FILENAME), metric, labels, value
+      }
+    }
+  ' "${DIAG_DIR}"/*-actuator-prometheus.txt 2>/dev/null \
+    | sort
+}
+
+{
+  echo "# Write Cost Summary"
+  echo
+  echo "- diagnostics: \`${DIAG_DIR}\`"
+  if [[ -n "${RESULT_JSON}" && -f "${RESULT_JSON}" ]]; then
+    echo "- result: \`${RESULT_JSON}\`"
+  fi
+  echo "- generatedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo
+  echo "## Business Result"
+  echo
+  emit_result_summary
+  echo "## Application Timer Ranking"
+  echo
+  echo "Cumulative seconds are sums across all observed events, so they show work/cost contribution rather than wall-clock elapsed time."
+  echo
+  emit_timer_ranking
+  echo
+  echo "## PostgreSQL Executor Ranking"
+  echo
+  echo "This is PostgreSQL executor time from pg_stat_statements. Gaps versus application timers usually point to JDBC, transaction, commit, broker confirm, scheduling, or client-side waits."
+  echo
+  emit_pg_ranking
+  echo
+  echo "## Hikari Snapshot"
+  echo
+  echo "| Service | Metric | Labels | Value |"
+  echo "|---|---|---|---:|"
+  emit_hikari_snapshot
+  echo
+  echo "## Reading Notes"
+  echo
+  echo "- Treat app timer ranking as the full-chain bottleneck view."
+  echo "- Treat pg_stat ranking as DB executor cost only; it does not include broker confirm, queue drain, or most client-side transaction gaps."
+  echo "- \`*_publish_duration_seconds\` is intentionally excluded because current relay instrumentation can overcount batch lifetime; use enqueue, confirm, select, mark-sent, and batch timers instead."
+} > "${OUT_FILE}"
+
+echo "${OUT_FILE}"

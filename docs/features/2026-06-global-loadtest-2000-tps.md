@@ -8598,7 +8598,7 @@ Decision:
 
 ### TPS-92 - DB Durable Write Ceiling Probe
 
-Status: **in progress; MatchEngine insert/outbox ceiling probe implemented**
+Status: **in progress; MatchEngine, Wallet, and Order DB ceiling probes implemented**
 
 Problem:
 
@@ -8696,6 +8696,20 @@ Initial implementation:
   - does not publish to RabbitMQ;
   - executes the same `trade_executions + trade_outbox` CTE shape used by `JpaTradeExecutionRecorder`;
   - supports `transaction_per_row` and `grouped_transaction` modes.
+- Added `walletDbCeilingProbe` Gradle task in `eap-wallet`.
+- Added `WalletDbCeilingProbe` as a raw JDBC runner:
+  - seeds synthetic buyer/seller wallet rows;
+  - executes the same trade settlement CTE shape used by `WalletTradeSettlementAppender`;
+  - excludes RabbitMQ listener, settlement relay, publisher confirm, and completion marker cost;
+  - supports `transaction_per_row` and `grouped_transaction` modes.
+- Added `orderDbCeilingProbe` Gradle task in `eap-order`.
+- Added `OrderDbCeilingProbe` as a raw JDBC runner:
+  - seeds synthetic `order_matching_state` rows;
+  - executes the current trade-apply batch CTE shape against `order_trade_applications`, `order_matching_state`, and `order_event_outbox`;
+  - excludes RabbitMQ listener, outbox relay, publisher confirm, and completion marker cost;
+  - reports `transaction_per_batch` because the current Order hot path applies a batch CTE as the durable unit.
+- Added `scripts/load-test/summarize-write-costs.sh`.
+- `run-global-matched-e2e-two-phase.sh` now writes a post-run `write-cost-summary.md` after result JSON extraction.
 
 Initial MatchEngine 10k probe:
 
@@ -8704,14 +8718,36 @@ Initial MatchEngine 10k probe:
 | `TPS92_MATCH_DB_TX_PER_ROW_10K_R1` | `transaction_per_row` | `10000` | `16` | `100` | `10000` | `0` | `1.203s` | `8311.04` | `1.142ms` | `2.109ms` | `3.116ms` |
 | `TPS92_MATCH_DB_GROUP100_10K_R1` | `grouped_transaction` | `10000` | `16` | `100` | `10000` | `0` | `1.052s` | `9507.01` | `0.609ms` | `1.660ms` | `4.111ms` |
 
+Initial Wallet 10k probe:
+
+| Run | Mode | Events | Workers | Batch size | Completed | Failures | Elapsed | TPS | p50 | p95 | p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TPS92_WALLET_DB_TX_PER_ROW_10K_R1` | `transaction_per_row` | `10000` | `16` | `100` | `10000` | `0` | `0.983s` | `10172.76` | `1.264ms` | `2.730ms` | `4.260ms` |
+| `TPS92_WALLET_DB_GROUPED_10K_R1` | `grouped_transaction` | `10000` | `16` | `100` | `10000` | `0` | `0.588s` | `17016.19` | `0.671ms` | `1.506ms` | `2.587ms` |
+
+Initial Order 10k probe:
+
+| Run | Mode | Events | Workers | Batch size | Completed | Failures | Batches | Elapsed | TPS | Batch p50 | Batch p95 | Batch p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TPS92_ORDER_DB_BATCH100_10K_R1` | `transaction_per_batch` | `10000` | `16` | `100` | `10000` | `0` | `100` | `7.737s` | `1292.47` | `1237.679ms` | `2306.241ms` | `2372.752ms` |
+| `TPS92_ORDER_DB_BATCH6_10K_R1` | `transaction_per_batch` | `10000` | `16` | `6` | `10000` | `0` | `1667` | `0.389s` | `25698.62` | `2.311ms` | `8.957ms` | `38.815ms` |
+| `TPS92_ORDER_DB_BATCH10_10K_R1` | `transaction_per_batch` | `10000` | `16` | `10` | `10000` | `0` | `1000` | `0.442s` | `22618.35` | `4.679ms` | `14.487ms` | `43.724ms` |
+
 Initial interpretation:
 
 - MatchEngine PostgreSQL can execute the isolated `TradeExecuted + trade_outbox` write shape far above the current full E2E business TPS.
+- Wallet PostgreSQL can execute the isolated settlement CTE far above the current full E2E business TPS.
+- Order PostgreSQL is sensitive to synthetic batch shape:
+  - `batch_size=100` is much slower and does not match the current full E2E observed average batch size;
+  - `batch_size=6` and `batch_size=10` are closer to the current runtime batch count and execute far above the current full E2E business TPS.
 - This does not mean the full system should reach `8000+ completed trades/s`:
   - the probe excludes Redis reservation work;
   - excludes `TradeOutboxRelay` select/publish/confirm/mark-SENT;
   - excludes Order and Wallet consumers;
   - excludes downstream completion-marker convergence;
   - excludes final RabbitMQ ready/unacked drain.
-- It does mean the current `480-780 completed trades/s` E2E ceiling is not explained by this one Match SQL statement or by PostgreSQL executor capacity alone.
-- Next TPS-92 step should add Order and Wallet DB ceiling probes, then compare them against their runtime app metrics.
+- It does mean the current `480-780 completed trades/s` E2E ceiling is not explained by these isolated SQL statements or by PostgreSQL executor capacity alone.
+- Current best bottleneck statement:
+  - DB SQL executor capacity is not the first limiter;
+  - the limiter is the full durable pipeline around those SQL statements: listener scheduling, transaction boundaries, JDBC/service overhead, outbox relay select/publish/confirm/mark-SENT, and completion-marker convergence.
+- Next TPS-92 step should isolate the outbox relay ceiling for MatchEngine, Order, and Wallet, because full-run app timers show about `16-18s` cumulative publisher-confirm / relay-batch cost per service while pg_stat SQL executor time remains much lower.
