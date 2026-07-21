@@ -8598,7 +8598,7 @@ Decision:
 
 ### TPS-92 - DB Durable Write Ceiling Probe
 
-Status: **open**
+Status: **in progress; MatchEngine insert/outbox ceiling probe implemented**
 
 Problem:
 
@@ -8686,3 +8686,32 @@ Out of scope:
 - Changing the completed-trade definition.
 - Replacing RabbitMQ or PostgreSQL.
 - Further concurrency tuning unless the probe shows an explicit worker saturation point.
+
+Initial implementation:
+
+- Added `matchDbCeilingProbe` Gradle task in `eap-matchEngine`.
+- Added `MatchDbCeilingProbe` as a raw JDBC runner:
+  - does not start Spring Boot;
+  - does not use Redis;
+  - does not publish to RabbitMQ;
+  - executes the same `trade_executions + trade_outbox` CTE shape used by `JpaTradeExecutionRecorder`;
+  - supports `transaction_per_row` and `grouped_transaction` modes.
+
+Initial MatchEngine 10k probe:
+
+| Run | Mode | Events | Workers | Batch size | Completed | Failures | Elapsed | TPS | p50 | p95 | p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TPS92_MATCH_DB_TX_PER_ROW_10K_R1` | `transaction_per_row` | `10000` | `16` | `100` | `10000` | `0` | `1.203s` | `8311.04` | `1.142ms` | `2.109ms` | `3.116ms` |
+| `TPS92_MATCH_DB_GROUP100_10K_R1` | `grouped_transaction` | `10000` | `16` | `100` | `10000` | `0` | `1.052s` | `9507.01` | `0.609ms` | `1.660ms` | `4.111ms` |
+
+Initial interpretation:
+
+- MatchEngine PostgreSQL can execute the isolated `TradeExecuted + trade_outbox` write shape far above the current full E2E business TPS.
+- This does not mean the full system should reach `8000+ completed trades/s`:
+  - the probe excludes Redis reservation work;
+  - excludes `TradeOutboxRelay` select/publish/confirm/mark-SENT;
+  - excludes Order and Wallet consumers;
+  - excludes downstream completion-marker convergence;
+  - excludes final RabbitMQ ready/unacked drain.
+- It does mean the current `480-780 completed trades/s` E2E ceiling is not explained by this one Match SQL statement or by PostgreSQL executor capacity alone.
+- Next TPS-92 step should add Order and Wallet DB ceiling probes, then compare them against their runtime app metrics.
