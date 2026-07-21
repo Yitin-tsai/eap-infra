@@ -8778,3 +8778,85 @@ Relay interpretation:
   - isolated relay mechanics are fast enough;
   - the current bottleneck is the combined consumer pipeline under concurrent service work: Match intake/record/relay, Order apply/relay, Wallet settlement/relay, and final completion-marker consumer drain.
 - Next TPS-92 step should measure full-chain per-stage wall-clock lag from event creation to consumer receive to durable apply to downstream publish to completion marker, because the remaining gap appears between isolated component ceiling and the integrated pipeline, not inside a single SQL or relay primitive.
+
+Java-side Wallet settlement probe:
+
+- Inspection found an important asymmetry in the consumer pipeline:
+  - Order `TradeExecuted` consumption already used a batch listener and batch append path;
+  - MatchEngine completion-marker consumption already used batch listeners;
+  - Wallet `TradeExecuted` settlement still consumed one event at a time, opening one Spring transaction per completed trade.
+- This explained why the isolated Wallet DB ceiling was far above full E2E throughput:
+  - isolated Wallet settlement CTE: `10172.76 TPS` in `transaction_per_row`, `17016.19 TPS` in grouped mode;
+  - previous full E2E Wallet settlement timer in TPS-91 ON: `10000` CTE/transaction observations for `10000` trades.
+- Implemented a guarded Wallet `TradeExecuted` batch listener:
+  - `walletTradeExecutedBatchListenerContainerFactory` enables AMQP consumer batch mode;
+  - loadtest profile uses `batch-size=50`, `receive-timeout-ms=25`, and existing `trade-executed.concurrency=12`;
+  - production/default profile keeps `batch-size=1` to avoid changing normal runtime behavior by default;
+  - batch settlement is only used when all buyer/seller users in the listener batch are non-null and non-overlapping;
+  - duplicate/existing settlement, incomplete batch result, data-integrity failure, optimistic-lock failure, singleton batch, or overlapping wallet rows fall back to the previous single-event settlement path.
+- Added Wallet batch metrics:
+  - `eap_wallet_trade_settlement_batch_applied_total`;
+  - `eap_wallet_trade_settlement_batch_fallback_total`;
+  - `eap_wallet_trade_settlement_batch_fallback_reason_total{reason=...}`;
+  - `eap_wallet_trade_settlement_batch_size`;
+  - `eap_wallet_trade_settlement_batch_duration`.
+
+Wallet batch smoke:
+
+| Run | Events | Target TPS | Diagnostics | Result | completedTrades | walletTradeSettlements | business TPS | Final queues/DLQ |
+| --- | ---: | ---: | --- | --- | ---: | ---: | ---: | --- |
+| `GLT_TPS92_WALLET_BATCH_SMOKE_500` | `500` | `500` | light | PASS | `500` | `500` | `288.58` | `0` |
+
+Smoke batch signal:
+
+| Metric | Value |
+| --- | ---: |
+| Wallet batch observations | `112` |
+| Wallet batch-applied count | `80` |
+| Wallet batch-fallback count | `32` |
+| Wallet batch size sum | `500` |
+| Wallet batch size max | `13` |
+| Wallet CTE observations | `112` |
+| Wallet CTE cumulative time | `1.600s` |
+
+Wallet batch 10k light runs:
+
+| Run | Events | Target TPS | Actual input TPS | Result | completedTrades | walletTradeSettlements | businessCompletionSeconds | business TPS | Final queues/DLQ |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS92_WALLET_BATCH_LIGHT_10K_R1` | `10000` | `2000` | `1997.95` | PASS | `10000` | `10000` | `13.16s` | `759.84` | `0` |
+| `GLT_TPS92_WALLET_BATCH_LIGHT_10K_R2` | `10000` | `2000` | `1996.99` | PASS | `10000` | `10000` | `18.21s` | `549.04` | `0` |
+
+10k business TPS average across R1/R2: `654.44 completed trades/s`.
+
+10k batch signal:
+
+| Metric | R1 | R2 |
+| --- | ---: | ---: |
+| Wallet batch observations | `1447` | `1860` |
+| Wallet batch-applied count | `1239` | `1493` |
+| Wallet batch-fallback count | `208` | `367` |
+| Wallet fallback reason | `singleton_batch=208` | `singleton_batch=367` |
+| Wallet batch size sum | `10000` | `10000` |
+| Wallet average listener batch size | `6.91` | `5.38` |
+| Wallet batch size max | `29` | `30` |
+| Wallet CTE observations | `1447` | `1860` |
+| Wallet CTE cumulative time | `9.549s` | `12.038s` |
+| Wallet batch cumulative time | `11.516s` | `15.790s` |
+
+Interpretation:
+
+- This is the clearest TPS-92 evidence so far that Java/service pipeline shape matters.
+- The Wallet SQL executor was already fast in isolation, but full E2E previously paid one listener transaction and one CTE observation per trade.
+- After changing Wallet to a guarded Java batch listener, Wallet settlement CTE observations dropped from `10000` to `1447-1860` for the same `10000` completed trades.
+- Business-gated throughput improved from the prior TPS-91 ON run (`487.92 completed trades/s`) to an R1/R2 average of `654.44 completed trades/s` in the same 10k target-2000 light scenario class.
+- The improvement is not caused by relaxing correctness:
+  - `completedTrades=10000`;
+  - `walletTradeSettlements=10000`;
+  - all measured ready/unacked queues ended at `0`;
+  - DLQ ended at `0`;
+  - fallback was only `singleton_batch`, not duplicate settlement, incomplete batch, data-integrity, or optimistic-lock fallback.
+- The remaining top cumulative app timers after this change are now MatchEngine order intake/matching, MatchEngine trade record, Order trade apply, and outbox relay confirm/batch timers.
+- Next implementation target should move from raw DB SQL tuning to integrated Java pipeline reduction:
+  - inspect MatchEngine `orderConfirmed` single-event listener and `tryMatch` loop;
+  - separate event deserialize/listener dispatch time from Redis reservation, trade record transaction, and outbox relay;
+  - avoid more blind concurrency tuning unless metrics show worker starvation.

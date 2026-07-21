@@ -332,7 +332,7 @@ collect_diagnostics after-run
 
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
-  if summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-write-costs.sh" "${DIAG_DIR}" "${RUN_REPORT_JSON}")"; then
+  if summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-write-costs.sh" "${RUN_DIAG_DIR}" "${RUN_REPORT_JSON}")"; then
     echo "[INFO] persisted write-cost summary=${summary_file}"
   else
     echo "[WARN] could not generate write-cost summary" >&2
