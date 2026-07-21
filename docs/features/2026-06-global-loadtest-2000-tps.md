@@ -8750,4 +8750,31 @@ Initial interpretation:
 - Current best bottleneck statement:
   - DB SQL executor capacity is not the first limiter;
   - the limiter is the full durable pipeline around those SQL statements: listener scheduling, transaction boundaries, JDBC/service overhead, outbox relay select/publish/confirm/mark-SENT, and completion-marker convergence.
-- Next TPS-92 step should isolate the outbox relay ceiling for MatchEngine, Order, and Wallet, because full-run app timers show about `16-18s` cumulative publisher-confirm / relay-batch cost per service while pg_stat SQL executor time remains much lower.
+- Added `outboxRelayCeilingProbe` Gradle task in `eap-matchEngine`.
+- Added `OutboxRelayCeilingProbe` as a raw JDBC + RabbitMQ runner:
+  - supports `match`, `order`, and `wallet-settlement` modes;
+  - seeds synthetic pending relay rows in the target service DB;
+  - drains those rows through select, publish enqueue, RabbitMQ publisher confirm, and mark-SENT update;
+  - publishes to a dedicated probe exchange/queue instead of business queues, so it does not contaminate the main Order/Wallet/MatchEngine queues;
+  - measures select, enqueue, confirm, mark-SENT, and total batch duration separately.
+
+Initial relay 10k probe:
+
+| Run | Service | Events | Batch size | Completed | Failures | Batches | Elapsed | Relay TPS | Select | Enqueue | Confirm | Mark SENT |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TPS92_RELAY_MATCH_10K_R1` | `match` | `10000` | `500` | `10000` | `0` | `20` | `0.643s` | `15560.04` | `0.089443s` | `0.060674s` | `0.313383s` | `0.120599s` |
+| `TPS92_RELAY_ORDER_10K_R1` | `order` | `10000` | `500` | `10000` | `0` | `20` | `0.776s` | `12889.62` | `0.213091s` | `0.091890s` | `0.321848s` | `0.117695s` |
+| `TPS92_RELAY_WALLET_10K_R1` | `wallet-settlement` | `10000` | `500` | `10000` | `0` | `20` | `0.678s` | `14752.26` | `0.108912s` | `0.062822s` | `0.262683s` | `0.193270s` |
+
+Relay interpretation:
+
+- Isolated relay select + publish + confirm + mark-SENT can run far above the current `480-780 completed trades/s` full E2E ceiling.
+- The full-run `16-18s` cumulative confirm/batch timers are therefore not explained by RabbitMQ publisher confirm throughput in isolation.
+- Caveat:
+  - the probe uses a dedicated probe exchange/queue, not the real fanout to Order/Wallet/MatchEngine business queues;
+  - it measures relay mechanics and broker confirms without downstream consumers, completion-marker writes, or competing service work.
+- Updated bottleneck statement:
+  - isolated DB SQL is fast enough;
+  - isolated relay mechanics are fast enough;
+  - the current bottleneck is the combined consumer pipeline under concurrent service work: Match intake/record/relay, Order apply/relay, Wallet settlement/relay, and final completion-marker consumer drain.
+- Next TPS-92 step should measure full-chain per-stage wall-clock lag from event creation to consumer receive to durable apply to downstream publish to completion marker, because the remaining gap appears between isolated component ceiling and the integrated pipeline, not inside a single SQL or relay primitive.
