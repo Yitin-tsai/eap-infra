@@ -134,7 +134,7 @@ snapshot_all() {
 rabbitmq_queue_lines_http() {
   local queues_json
   queues_json="$(curl -fsS -u "${RABBIT_MANAGEMENT_USER}:${RABBIT_MANAGEMENT_PASSWORD}" \
-    "${RABBIT_MANAGEMENT_URL}/api/queues?columns=name,messages,messages_ready,messages_unacknowledged,consumers")" || return 1
+    "${RABBIT_MANAGEMENT_URL}/api/queues?disable_stats=true&enable_queue_totals=true&columns=name,messages,messages_ready,messages_unacknowledged,consumers")" || return 1
 
   jq -r '
     .[]

@@ -9,19 +9,33 @@ if ! docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q list_queues name >/dev/nul
   exit 1
 fi
 
-queues="$(docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q list_queues name | grep -E '^(order|wallet|matchEngine)\.|^order\.dlq$' || true)"
+current_queues=(
+  "wallet.orderSubmitted.queue"
+  "wallet.tradeExecuted.queue"
+  "wallet.auctionBidSubmitted.queue"
+  "wallet.auctionCleared.queue"
+  "matchEngine.orderConfirmed.queue"
+  "matchEngine.orderTradeApplied.queue"
+  "matchEngine.walletTradeSettled.queue"
+  "matchEngine.auctionBidConfirmed.queue"
+  "order.orderConfirmed.queue"
+  "order.orderFailed.queue"
+  "order.tradeExecuted.queue"
+  "order.auctionCreated.queue"
+  "order.auctionCleared.queue"
+  "order.dlq"
+)
 
-if [[ -z "${queues}" ]]; then
-  echo "[INFO] no EAP queues found in ${RABBIT_CONTAINER}"
-  exit 0
-fi
-
-while IFS= read -r queue; do
-  [[ -z "${queue}" ]] && continue
+for queue in "${current_queues[@]}"; do
+  if ! docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q list_queues name | grep -Fx "${queue}" >/dev/null; then
+    continue
+  fi
   echo "[INFO] purging ${queue}"
   docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q purge_queue "${queue}" >/dev/null || true
-done <<< "${queues}"
+done
 
 echo "[INFO] queue state after purge"
-docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q list_queues name messages_ready messages_unacknowledged consumers \
-  | grep -E '^(order|wallet|matchEngine)\.|^order\.dlq$' || true
+for queue in "${current_queues[@]}"; do
+  docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q list_queues name messages_ready messages_unacknowledged consumers \
+    | awk -v queue="${queue}" '$1 == queue { print }'
+done

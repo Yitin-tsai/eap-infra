@@ -10,6 +10,7 @@ mkdir -p "$LOG_DIR" "$GRADLE_USER_HOME_DIR"
 start_service() {
   local repo="$1"
   local port="$2"
+  local health_path="$3"
   local log_file="${LOG_DIR}/${repo}.log"
   local pid_file="${LOG_DIR}/${repo}.pid"
 
@@ -21,13 +22,30 @@ start_service() {
   echo "[INFO] starting ${repo} on port ${port}; log=${log_file}"
   nohup bash -lc "cd '${ROOT_DIR}/${repo}' && GRADLE_USER_HOME='${GRADLE_USER_HOME_DIR}' ./gradlew --no-daemon bootRun --args='--spring.profiles.active=loadtest'" >"${log_file}" 2>&1 &
   echo "$!" >"${pid_file}"
+
+  local health_url="http://localhost:${port}${health_path}"
+  local deadline=$((SECONDS + ${LOADTEST_SERVICE_START_TIMEOUT_SECONDS:-120}))
+  until curl -fsS "${health_url}" >/dev/null 2>&1; do
+    if [[ $SECONDS -ge $deadline ]]; then
+      echo "[ERROR] ${repo} did not become ready: ${health_url}" >&2
+      tail -n 80 "${log_file}" >&2 || true
+      return 1
+    fi
+    if ! kill -0 "$(cat "${pid_file}")" >/dev/null 2>&1; then
+      echo "[ERROR] ${repo} exited before becoming ready: ${health_url}" >&2
+      tail -n 80 "${log_file}" >&2 || true
+      return 1
+    fi
+    sleep 1
+  done
+  echo "[INFO] ${repo} ready"
 }
 
-start_service eap-wallet 8081
-start_service eap-order 8080
-start_service eap-matchEngine 8082
+start_service eap-wallet 8081 /eap-wallet/actuator/health
+start_service eap-order 8080 /eap-order/actuator/health
+start_service eap-matchEngine 8082 /match-engine/actuator/health
 
-echo "[INFO] loadtest services starting"
+echo "[INFO] loadtest services ready"
 echo "[INFO] logs:"
 echo "  tail -f ${LOG_DIR}/eap-wallet.log"
 echo "  tail -f ${LOG_DIR}/eap-order.log"

@@ -101,13 +101,11 @@ jq -s \
           end
         )
       };
-  def finalQueueBacklog:
-    (
-      (.matchEngineQueueReady // 0)
-      + (.orderMatchedQueueReady // 0)
-      + (.walletMatchedQueueReady // 0)
-      + (.orderTradeExecutedQueueReady // 0)
-      + (.walletTradeExecutedQueueReady // 0)
+	  def finalQueueBacklog:
+	    (
+	      (.matchEngineQueueReady // 0)
+	      + (.orderTradeExecutedQueueReady // 0)
+	      + (.walletTradeExecutedQueueReady // 0)
       + (.orderTradeAppliedQueueReady // 0)
       + (.walletTradeSettledQueueReady // 0)
       + (.matchEngineQueueUnacked // 0)
