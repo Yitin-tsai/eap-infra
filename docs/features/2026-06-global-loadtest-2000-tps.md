@@ -8860,3 +8860,64 @@ Interpretation:
   - inspect MatchEngine `orderConfirmed` single-event listener and `tryMatch` loop;
   - separate event deserialize/listener dispatch time from Redis reservation, trade record transaction, and outbox relay;
   - avoid more blind concurrency tuning unless metrics show worker starvation.
+
+MatchEngine reserve phase metrics:
+
+- Added `match_engine_reserve_order_phase_duration_seconds{phase=...}` to split the `reserveBestMatchOrAddOrderWithSequenceLua` cost:
+  - `prepare`;
+  - `serialize_incoming`;
+  - `callback_prepare`;
+  - `redis_eval`;
+  - `result`;
+  - `deserialize_resting`.
+- This is observability only. It does not change matching semantics, Redis Lua behavior, or trade completion gates.
+
+Reserve phase smoke:
+
+| Run | Events | Target TPS | Result | completedTrades | business TPS | Final queues/DLQ |
+| --- | ---: | ---: | --- | ---: | ---: | --- |
+| `GLT_TPS92_MATCH_RESERVE_PHASE_SMOKE_500` | `500` | `500` | PASS | `500` | `263.10` | `0` |
+
+Smoke reserve phase signal:
+
+| Phase | Count | Cumulative seconds |
+| --- | ---: | ---: |
+| total reserve | `1000` | `2.588` |
+| `redis_eval` | `1000` | `2.447` |
+| `serialize_incoming` | `1000` | `0.064` |
+| `deserialize_resting` | `500` | `0.018` |
+| `callback_prepare` | `1000` | `0.011` |
+| `prepare` | `1000` | `0.006` |
+| `result` | `500` | `0.0003` |
+
+Reserve phase 10k run:
+
+| Run | Events | Target TPS | Actual input TPS | Result | completedTrades | businessCompletionSeconds | business TPS | Final queues/DLQ |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| `GLT_TPS92_MATCH_RESERVE_PHASE_LIGHT_10K_R1` | `10000` | `2000` | `1998.89` | PASS | `10000` | `11.40s` | `876.89` | `0` |
+
+10k reserve phase signal:
+
+| Phase | Count | Cumulative seconds | Mean ms |
+| --- | ---: | ---: | ---: |
+| total reserve | `20000` | `24.525` | `1.226` |
+| `redis_eval` | `20000` | `23.861` | `1.193` |
+| `serialize_incoming` | `20000` | `0.215` | `0.011` |
+| `deserialize_resting` | `10000` | `0.142` | `0.014` |
+| `callback_prepare` | `20000` | `0.057` | `0.003` |
+| `prepare` | `20000` | `0.022` | `0.001` |
+| `result` | `10000` | `0.003` | `<0.001` |
+
+Interpretation:
+
+- The MatchEngine reserve hot-path cost is not primarily Java JSON serialization/deserialization or byte-array callback preparation.
+- In the 10k run, Redis Lua eval accounts for about `97.3%` of total reserve time (`23.861s / 24.525s`).
+- Combined MatchEngine matching work is now dominated by:
+  - `reserve_or_add` Redis Lua for every order confirmation;
+  - `TradeExecuted + trade_outbox` durable DB transaction for every completed trade;
+  - `complete_reserved_order` Redis Lua for every completed resting order;
+  - relay publisher confirms and downstream completion-marker drain.
+- The good 10k result (`876.89 completed trades/s`) should be treated as a valid PASS run but not as proof that metrics improved performance; this is likely normal local-run variance plus the earlier Wallet batch improvement.
+- Next useful design question:
+  - whether the orderbook hot path can reduce Redis round trips or cleanup work without losing crash recovery for reserved orders;
+  - whether benchmark semantics should report order-confirmation throughput separately from completed-trade throughput, because each completed trade currently requires processing both a resting SELL confirmation and an incoming BUY confirmation in the same run.
