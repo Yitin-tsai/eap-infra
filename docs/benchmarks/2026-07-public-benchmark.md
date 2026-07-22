@@ -138,6 +138,46 @@ Per-run business TPS:
 | `R4` | yes | `1999.13` | `662.17` | `15.10` | final queues/DLQ `0` |
 | `R5` | yes | `1998.85` | `633.38` | `15.79` | final queues/DLQ `0` |
 
+## Post-Public Local Improvement: TPS93
+
+The 2026-07-13 repeat remains the pinned public benchmark result. A later local run set, `GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3`, is useful interview material because it shows a concrete performance improvement after the Order / Wallet batch-path work and the TPS semantic split. It should not replace the public benchmark until it is rerun on a clean commit snapshot with a published artifact bundle.
+
+Command prefix:
+
+```bash
+REPEATS=3 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
+PUBLISHERS=128 TIMEOUT_SECONDS=360 DIAGNOSTICS_LEVEL=light \
+RESET_PG_STATS_BEFORE_RUN=true \
+bash scripts/load-test/run-2000-ticket-marker-repeat.sh \
+  GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3
+```
+
+Validity:
+
+| Result | Count |
+| --- | ---: |
+| Valid local runs | `3` |
+| Invalid runs | `0` |
+| Final measured queues / DLQ | `0` in every run |
+
+Valid-runs summary:
+
+| Metric | Median | Min | Max |
+| --- | ---: | ---: | ---: |
+| actual buy publish TPS | `1999.22` | `1998.46` | `1999.26` |
+| orderbook admission TPS | `4211.32` | `3696.83` | `4972.65` |
+| business completed trade TPS | `833.58` | `729.71` | `940.93` |
+| blended market flow TPS | `1391.69` | `1218.84` | `1582.44` |
+| business completion seconds | `12.00` | `10.63` | `13.70` |
+
+Why this matters:
+
+- It gives a measured improvement path from the earlier public median `582.73` completed trades/s to a later local median `833.58` completed trades/s.
+- The input driver was stable across all three runs: actual offered TPS relative spread was only `0.04%`.
+- The correctness gate was not loosened: every run reached `10000` completed trades, `10000` trade executions, `10000` wallet settlements, `20000` Order command matched rows, and final measured queues / DLQ at zero.
+- The result should be discussed as median/range, not best-run throughput, because local service-side variance remained material.
+- The useful interview story is not "I tuned a thread count"; it is "I fixed the measurement boundary, separated admission TPS from completed-trade TPS, then reduced hot-path batch overhead and validated the improvement with repeated correctness-gated runs."
+
 ## Validity Rules
 
 A run is valid for public summary only if:
@@ -245,3 +285,22 @@ Do not update README with a stronger public claim until:
 4. Public table uses median plus min/max range.
 5. Invalid run rules are documented before interpreting results.
 6. At least one steady-state run is completed, or the rejected result and remaining gap are explicitly listed.
+
+## Cloud Benchmark Follow-Up
+
+The current public benchmark track is intentionally local-first. It is useful for code-path attribution, repeatability, and interview discussion, but it is not a GCP/GKE production-like capacity claim.
+
+Open a separate GCP/GKE benchmark epic only after the local evidence is internally consistent and committed. The cloud benchmark should add infrastructure realism without changing the business correctness gate.
+
+Minimum cloud benchmark additions:
+
+- exact service commits and image digests;
+- GKE mode, region/zone, node pool shape, pod requests/limits, replica counts, and autoscaling settings;
+- PostgreSQL topology, version, CPU/memory/disk/IOPS settings, connection limits, and relevant flags;
+- RabbitMQ topology, persistence settings, publisher confirm behavior, queue ready/unacked, DLQ, and disk alarm metrics;
+- Redis topology, memory limit, eviction policy, peak memory, and orderbook/reservation cleanup gates;
+- load-generator placement, CPU/network limits, offered-load accuracy, and client-side failures;
+- repeated-run median/min/max for orderbook admission TPS, TradeExecuted reach TPS, business-completed trade TPS, and blended market-flow TPS where applicable;
+- cost guard and teardown commands.
+
+Until that epic is complete, external claims should be worded as local benchmark evidence, not cloud or production TPS.

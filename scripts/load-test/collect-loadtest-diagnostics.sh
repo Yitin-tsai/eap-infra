@@ -38,6 +38,13 @@ psql_exec() {
   docker exec "${container}" psql -U admin -d "${db}" -v ON_ERROR_STOP=1 -P pager=off -c "${sql}"
 }
 
+psql_tsv_exec() {
+  local container="$1"
+  local db="$2"
+  local sql="$3"
+  docker exec "${container}" psql -U admin -d "${db}" -v ON_ERROR_STOP=1 -P pager=off -t -A -F $'\t' -c "${sql}"
+}
+
 safe_psql_exec() {
   local label="$1"
   local container="$2"
@@ -273,6 +280,215 @@ ORDER BY marker_type;
 " "${DIAG_DIR}/match-completion-markers.txt"
 }
 
+percentile_column() {
+  local file="$1"
+  local column="$2"
+  local percentile="$3"
+  awk -F '\t' -v column="${column}" 'NR > 1 && $column != "" { print $column }' "${file}" \
+    | sort -n \
+    | awk -v percentile="${percentile}" '
+      { values[++count] = $1 }
+      END {
+        if (count == 0) {
+          printf "n/a"
+          exit
+        }
+        idx = int((percentile / 100.0) * (count - 1)) + 1
+        if (idx < 1) idx = 1
+        if (idx > count) idx = count
+        printf "%.3f", values[idx]
+      }
+    '
+}
+
+emit_lag_summary_row() {
+  local file="$1"
+  local label="$2"
+  local column="$3"
+  local count p50 p95 p99 max
+  count="$(awk -F '\t' -v column="${column}" 'NR > 1 && $column != "" { count++ } END { print count + 0 }' "${file}")"
+  p50="$(percentile_column "${file}" "${column}" 50)"
+  p95="$(percentile_column "${file}" "${column}" 95)"
+  p99="$(percentile_column "${file}" "${column}" 99)"
+  max="$(awk -F '\t' -v column="${column}" '
+    NR > 1 && $column != "" {
+      if (!seen || $column > max) {
+        max = $column
+        seen = 1
+      }
+    }
+    END {
+      if (!seen) printf "n/a"
+      else printf "%.3f", max
+    }
+  ' "${file}")"
+  printf "| %s | %s | %s | %s | %s | %s |\n" "${label}" "${count}" "${p50}" "${p95}" "${p99}" "${max}"
+}
+
+snapshot_integrated_stage_lag() {
+  local lag_dir="${DIAG_DIR}/integrated-stage-lag"
+  local rows_file="${DIAG_DIR}/integrated-stage-lag.tsv"
+  local summary_file="${DIAG_DIR}/integrated-stage-lag.md"
+  mkdir -p "${lag_dir}"
+
+  if ! psql_tsv_exec "${MATCH_DB_CONTAINER}" eap_match_db "
+SELECT trade_id, EXTRACT(EPOCH FROM created_at) * 1000
+FROM match_engine.trade_executions
+WHERE market_id = '${MARKET_ID}';
+" > "${lag_dir}/match-trade-created.tsv" 2> "${lag_dir}/match-trade-created.err"; then
+    echo "[WARN] integrated stage lag unavailable: failed to read match trade_executions" > "${summary_file}"
+    return
+  fi
+
+  if ! psql_tsv_exec "${ORDER_DB_CONTAINER}" eap_order_db "
+SELECT payload::jsonb ->> 'tradeId',
+       EXTRACT(EPOCH FROM created_at) * 1000,
+       EXTRACT(EPOCH FROM published_at) * 1000
+FROM order_service.order_event_outbox
+WHERE message_type = 'com.eap.common.event.OrderTradeAppliedEvent'
+  AND payload LIKE '%${MARKET_ID}-%';
+" > "${lag_dir}/order-trade-applied-outbox.tsv" 2> "${lag_dir}/order-trade-applied-outbox.err"; then
+    echo "[WARN] integrated stage lag unavailable: failed to read order trade-applied outbox" > "${summary_file}"
+    return
+  fi
+
+  if ! psql_tsv_exec "${WALLET_DB_CONTAINER}" eap_wallet_db "
+SELECT trade_id,
+       EXTRACT(EPOCH FROM inserted_at) * 1000,
+       EXTRACT(EPOCH FROM updated_at) * 1000
+FROM wallet_service.trade_settlements
+WHERE trade_id LIKE '${MARKET_ID}-%';
+" > "${lag_dir}/wallet-trade-settlement-times.tsv" 2> "${lag_dir}/wallet-trade-settlement-times.err"; then
+    echo "[WARN] integrated stage lag unavailable: failed to read wallet trade settlements" > "${summary_file}"
+    return
+  fi
+
+  if ! psql_tsv_exec "${MATCH_DB_CONTAINER}" eap_match_db "
+SELECT trade_id, marker_type, EXTRACT(EPOCH FROM created_at) * 1000
+FROM match_engine.trade_completion_markers
+WHERE trade_id LIKE '${MARKET_ID}-%';
+" > "${lag_dir}/match-completion-markers.tsv" 2> "${lag_dir}/match-completion-markers.err"; then
+    echo "[WARN] integrated stage lag unavailable: failed to read match completion markers" > "${summary_file}"
+    return
+  fi
+
+  awk -F '\t' -v OFS='\t' '
+    FILENAME ~ /match-trade-created.tsv$/ {
+      matchCreated[$1] = $2
+      next
+    }
+    FILENAME ~ /order-trade-applied-outbox.tsv$/ {
+      orderOutboxCreated[$1] = $2
+      orderOutboxPublished[$1] = $3
+      next
+    }
+    FILENAME ~ /wallet-trade-settlement-times.tsv$/ {
+      walletSettlementInserted[$1] = $2
+      walletSettlementSent[$1] = $3
+      next
+    }
+    FILENAME ~ /match-completion-markers.tsv$/ {
+      if ($2 == "ORDER_APPLIED") orderMarker[$1] = $3
+      if ($2 == "WALLET_SETTLED") walletMarker[$1] = $3
+      next
+    }
+    END {
+      print "trade_id",
+            "match_created_ms",
+            "order_outbox_created_ms",
+            "order_outbox_mark_sent_ms",
+            "wallet_settlement_inserted_ms",
+            "wallet_settlement_mark_sent_ms",
+            "order_marker_created_ms",
+            "wallet_marker_created_ms",
+            "match_to_order_outbox_created_ms",
+            "order_outbox_created_to_mark_sent_ms",
+            "order_outbox_created_to_marker_ms",
+            "match_to_wallet_settlement_inserted_ms",
+            "wallet_settlement_inserted_to_mark_sent_ms",
+            "wallet_settlement_inserted_to_marker_ms",
+            "match_to_wallet_settlement_mark_sent_ms",
+            "match_to_wallet_marker_created_ms",
+            "marker_convergence_ms",
+            "order_wallet_marker_skew_ms"
+      for (tradeId in matchCreated) {
+        if (!(tradeId in orderOutboxCreated) || !(tradeId in walletSettlementInserted)) {
+          continue
+        }
+        orderMarkerValue = (tradeId in orderMarker) ? orderMarker[tradeId] : ""
+        walletMarkerValue = (tradeId in walletMarker) ? walletMarker[tradeId] : ""
+        orderMarkSentLag = orderOutboxPublished[tradeId] == "" ? "" : orderOutboxPublished[tradeId] - orderOutboxCreated[tradeId]
+        orderMarkerLag = orderMarkerValue == "" ? "" : orderMarkerValue - orderOutboxCreated[tradeId]
+        walletMarkSentLag = walletSettlementSent[tradeId] == "" ? "" : walletSettlementSent[tradeId] - walletSettlementInserted[tradeId]
+        walletMarkerFromInsertedLag = walletMarkerValue == "" ? "" : walletMarkerValue - walletSettlementInserted[tradeId]
+        walletMarkSentFromMatchLag = walletSettlementSent[tradeId] == "" ? "" : walletSettlementSent[tradeId] - matchCreated[tradeId]
+        walletMarkerLag = walletMarkerValue == "" ? "" : walletMarkerValue - matchCreated[tradeId]
+        convergence = ""
+        markerSkew = ""
+        if (orderMarkerValue != "" && walletMarkerValue != "") {
+          maxMarker = orderMarkerValue > walletMarkerValue ? orderMarkerValue : walletMarkerValue
+          convergence = maxMarker - matchCreated[tradeId]
+          markerSkew = orderMarkerValue > walletMarkerValue \
+            ? orderMarkerValue - walletMarkerValue \
+            : walletMarkerValue - orderMarkerValue
+        }
+        print tradeId,
+              matchCreated[tradeId],
+              orderOutboxCreated[tradeId],
+              orderOutboxPublished[tradeId],
+              walletSettlementInserted[tradeId],
+              walletSettlementSent[tradeId],
+              orderMarkerValue,
+              walletMarkerValue,
+              orderOutboxCreated[tradeId] - matchCreated[tradeId],
+              orderMarkSentLag,
+              orderMarkerLag,
+              walletSettlementInserted[tradeId] - matchCreated[tradeId],
+              walletMarkSentLag,
+              walletMarkerFromInsertedLag,
+              walletMarkSentFromMatchLag,
+              walletMarkerLag,
+              convergence,
+              markerSkew
+      }
+    }
+  ' "${lag_dir}/match-trade-created.tsv" \
+    "${lag_dir}/order-trade-applied-outbox.tsv" \
+    "${lag_dir}/wallet-trade-settlement-times.tsv" \
+    "${lag_dir}/match-completion-markers.tsv" > "${rows_file}"
+
+  {
+    echo "# Integrated Stage Lag"
+    echo
+    echo "- marketId: \`${MARKET_ID}\`"
+    echo "- rows: \`${rows_file}\`"
+    echo "- generatedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo
+    echo "Lag values are measured from persisted database timestamps after the run. They are for attribution, not hot-path instrumentation."
+    echo
+    echo "Notes:"
+    echo
+    echo '- Match time uses `trade_executions.created_at`.'
+    echo '- Order time uses `OrderTradeAppliedEvent` outbox `created_at` and mark-SENT `published_at`, not the event `applied_at` business timestamp.'
+    echo '- Wallet settlement apply time uses `trade_settlements.inserted_at`; Wallet relay mark-SENT time uses settlement row `updated_at` after RabbitMQ confirm.'
+    echo '- Relay mark-SENT timestamps happen after RabbitMQ confirm and can be later than downstream marker creation; they are attribution points, not delivery-before-consume ordering.'
+    echo '- Completion marker timing uses `trade_completion_markers.created_at`, not `marker_at` from the business event payload.'
+    echo
+    echo "| Stage | Count | p50 ms | p95 ms | p99 ms | max ms |"
+    echo "|---|---:|---:|---:|---:|---:|"
+    emit_lag_summary_row "${rows_file}" "Match persisted -> Order outbox created" 9
+    emit_lag_summary_row "${rows_file}" "Order outbox created -> relay mark-SENT" 10
+    emit_lag_summary_row "${rows_file}" "Order outbox created -> ORDER_APPLIED marker" 11
+    emit_lag_summary_row "${rows_file}" "Match persisted -> Wallet settlement inserted" 12
+    emit_lag_summary_row "${rows_file}" "Wallet settlement inserted -> relay mark-SENT" 13
+    emit_lag_summary_row "${rows_file}" "Wallet settlement inserted -> WALLET_SETTLED marker" 14
+    emit_lag_summary_row "${rows_file}" "Match persisted -> Wallet settlement relay mark-SENT" 15
+    emit_lag_summary_row "${rows_file}" "Match persisted -> WALLET_SETTLED marker" 16
+    emit_lag_summary_row "${rows_file}" "Match persisted -> both completion markers" 17
+    emit_lag_summary_row "${rows_file}" "Order/Wallet marker skew" 18
+  } > "${summary_file}"
+}
+
 snapshot_actuator() {
   local name="$1"
   shift
@@ -384,9 +600,14 @@ case "${PHASE}" in
   after-run)
     snapshot_runtime
     snapshot_all
+    snapshot_integrated_stage_lag
     ;;
   after-run-light)
     snapshot_runtime_light
+    snapshot_integrated_stage_lag
+    ;;
+  stage-lag)
+    snapshot_integrated_stage_lag
     ;;
   sample)
     sample_loop
@@ -395,7 +616,7 @@ case "${PHASE}" in
     touch "${DIAG_DIR}/sampler.stop"
     ;;
   *)
-    echo "usage: $0 {reset|before-run|after-run|sample|stop-sample}" >&2
+    echo "usage: $0 {reset|before-run|before-run-light|after-run|after-run-light|stage-lag|sample|stop-sample}" >&2
     exit 2
     ;;
 esac

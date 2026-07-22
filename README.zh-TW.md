@@ -11,6 +11,7 @@ EAP 是一個 production-style 電力交易後端系統，以 Java / Spring Boot
 | Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
 | --- | ---: | ---: | --- | --- |
 | Redis matching core | N/A | `18,388.25 ops/s` | Redis Lua atomic matching | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` |
+| Current global 10k business-gated E2E, TPS93 repeat | median `1,999.22 order confirmations/s` | median `833.58 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 3/3 valid runs，range `729.71-940.93`，final queues / DLQ `0`；目前本機面試基準，尚未整理成 pinned public artifact bundle |
 | Global 10k business-gated E2E, TPS55 repeat | median `1,998.94 order confirmations/s` | median `582.73 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 4/5 valid runs，range `503.11-662.17`，final queues / DLQ `0` |
 | Current bottleneck | N/A | N/A | correctness preserved | DB write amplification and outbox relay cost in Match / Order / Wallet |
 
@@ -27,12 +28,18 @@ EAP 是一個 production-style 電力交易後端系統，以 Java / Spring Boot
 Business E2E TPS 公式：
 
 ```text
-businessMatchedE2eTps =
+businessCompletedTradeTps =
   completedTrades /
   (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
-`DURATION_SECONDS=5` 是 offered-load publishing window，不是完整 business completion timing window；最新有效 repeat set 的 median completion window 是 `17.29s`，所以 `10000 / 17.29 ~= 582.73 completed trades/s`。
+目前 benchmark 另外拆出三個 TPS：
+
+- `orderbookAdmissionTps`：resting SELL confirmations 進入 Redis order book 的速度。
+- `businessCompletedTradeTps`：包含 correctness gate 的完整成交 TPS。
+- `blendedMarketFlowTps`：兩階段 benchmark 中 SELL+BUY order confirmations 的整體市場流量。
+
+`DURATION_SECONDS=5` 是 offered-load publishing window，不是完整 business completion timing window；最新 TPS93 repeat set 的 median completion window 是 `12.00s`，所以 `10000 / 12.00 ~= 833.58 completed trades/s`。
 
 ## Benchmark Environment
 

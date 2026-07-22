@@ -55,10 +55,15 @@ json_value() {
 }
 
 emit_result_summary() {
-  local market completed business_tps completion_seconds trade_tps order_tps wallet_tps marker_tps queue_drain last_queue last_queue_seconds
+  local market completed orderbook_tps business_completed_tps blended_tps blended_orders blended_seconds legacy_business_tps completion_seconds trade_tps order_tps wallet_tps marker_tps queue_drain last_queue last_queue_seconds
   market="$(json_value marketId)"
   completed="$(json_value completedTrades)"
-  business_tps="$(json_value businessMatchedE2eTps)"
+  orderbook_tps="$(json_value orderbookAdmissionTps)"
+  business_completed_tps="$(json_value businessCompletedTradeTps)"
+  blended_tps="$(json_value blendedMarketFlowTps)"
+  blended_orders="$(json_value blendedMarketFlowOrders)"
+  blended_seconds="$(json_value blendedMarketFlowSeconds)"
+  legacy_business_tps="$(json_value businessMatchedE2eTps)"
   completion_seconds="$(json_value businessCompletionSeconds)"
   trade_tps="$(json_value tradeExecutionReachTps)"
   order_tps="$(json_value orderCommandMatchReachTps)"
@@ -68,7 +73,7 @@ emit_result_summary() {
   last_queue="$(json_value lastNonZeroQueue)"
   last_queue_seconds="$(json_value lastNonZeroQueueSeconds)"
 
-  if [[ -z "${market}${completed}${business_tps}" ]]; then
+  if [[ -z "${market}${completed}${legacy_business_tps}${business_completed_tps}" ]]; then
     echo "_No result JSON found._"
     echo
     return
@@ -79,8 +84,13 @@ emit_result_summary() {
 |---|---:|
 | marketId | \`${market}\` |
 | completedTrades | ${completed:-n/a} |
-| businessMatchedE2eTps | ${business_tps:-n/a} |
+| orderbookAdmissionTps | ${orderbook_tps:-n/a} |
+| businessCompletedTradeTps | ${business_completed_tps:-${legacy_business_tps:-n/a}} |
+| blendedMarketFlowTps | ${blended_tps:-n/a} |
+| blendedMarketFlowOrders | ${blended_orders:-n/a} |
+| blendedMarketFlowSeconds | ${blended_seconds:-n/a} |
 | businessCompletionSeconds | ${completion_seconds:-n/a} |
+| businessMatchedE2eTps legacy alias | ${legacy_business_tps:-n/a} |
 | tradeExecutionReachTps | ${trade_tps:-n/a} |
 | orderCommandMatchReachTps | ${order_tps:-n/a} |
 | walletSettlementReachTps | ${wallet_tps:-n/a} |
@@ -234,6 +244,15 @@ emit_hikari_snapshot() {
     | sort
 }
 
+emit_integrated_stage_lag() {
+  local lag_file="${DIAG_DIR}/integrated-stage-lag.md"
+  if [[ ! -f "${lag_file}" ]]; then
+    echo "_No integrated stage lag report found._"
+    return
+  fi
+  awk 'NR > 1 { print }' "${lag_file}"
+}
+
 {
   echo "# Write Cost Summary"
   echo
@@ -257,6 +276,10 @@ emit_hikari_snapshot() {
   echo "This is PostgreSQL executor time from pg_stat_statements. Gaps versus application timers usually point to JDBC, transaction, commit, broker confirm, scheduling, or client-side waits."
   echo
   emit_pg_ranking
+  echo
+  echo "## Integrated Stage Lag"
+  echo
+  emit_integrated_stage_lag
   echo
   echo "## Hikari Snapshot"
   echo

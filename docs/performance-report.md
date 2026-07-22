@@ -13,7 +13,9 @@ EAP reports multiple throughput numbers because they answer different questions.
 | trade execution reach TPS | MatchEngine persisted `TradeExecuted` facts | No |
 | wallet settlement reach TPS | Wallet settlement records reached target count | Partial |
 | completion marker reach TPS | MatchEngine completion view received Order + Wallet markers | Close, but queue drain still matters |
-| business matched E2E TPS | completion markers reached target count and measured queues drained | Yes |
+| orderbook admission TPS | resting SELL confirmations admitted into the Redis order book | No, this is order-book admission, not completed trades |
+| business completed trade TPS | completion markers reached target count and measured queues drained | Yes |
+| blended market flow TPS | total SELL+BUY order confirmations processed across the full two-phase benchmark window | No, useful for workload capacity but it mixes order confirmations and completed trades |
 
 The project intentionally does not report accepted order throughput as completed trading throughput.
 
@@ -32,7 +34,40 @@ The current global 10k benchmark is a controlled matched-trade workload.
 
 This means offered order confirmations/s and completed trades/s are intentionally different units. The first is input pressure; the second is fully gated business completion.
 
-## Latest Accepted 10k Repeat Result
+## Latest Current 10k Repeat Result
+
+Run set: `GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3`, 3 repeats, 3 valid samples.
+
+This is the latest local interview benchmark after the Order and Wallet batch-path optimization work and the TPS semantic split. It is not yet a pinned public artifact bundle, so use it as current engineering evidence and interview talking material rather than an externally reproducible public release claim.
+
+| Metric | Result |
+| --- | ---: |
+| target offered load | `2000 order confirmations/s` |
+| actual offered load | median `1999.22 order confirmations/s`, range `1998.46-1999.26` |
+| completed trades per valid run | `10000` |
+| orderbook admission TPS | median `4211.32 order confirmations/s`, range `3696.83-4972.65` |
+| business completed trade TPS | median `833.58 completed trades/s`, range `729.71-940.93` |
+| blended market flow TPS | median `1391.69 order confirmations/s`, range `1218.84-1582.44` |
+| business completion window | median `12.00s`, range `10.63-13.70s` |
+| final queue ready / unacked | `0 / 0` |
+| DLQ | `0` |
+
+Per-run summary:
+
+| Run | Offered TPS | Business Completed TPS | Blended Market Flow TPS | Completion Window | Final State |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `R1` | `1998.46` | `833.58` | `1391.69` | `12.00s` | queues/DLQ `0`, all correctness counts reached |
+| `R2` | `1999.26` | `940.93` | `1582.44` | `10.63s` | queues/DLQ `0`, all correctness counts reached |
+| `R3` | `1999.22` | `729.71` | `1218.84` | `13.70s` | queues/DLQ `0`, all correctness counts reached |
+
+Why this is an effective TPS improvement:
+
+- The load driver was stable across all three runs: actual offered TPS relative spread was only `0.04%`.
+- All runs preserved correctness: `completedTrades=10000`, `tradeExecutions=10000`, `walletTradeSettlements=10000`, `orderCommandMatchedRows=20000`, final measured backlog `0`.
+- The median completed-trade throughput improved from the earlier public repeat median `582.73` to the current local median `833.58` after the Order / Wallet batch-path work became visible in the full chain.
+- The result should be reported as median/range, not best run, because service-side local variance remains material: business completed TPS relative spread was about `25.30%`.
+
+## Previous Public 10k Repeat Result
 
 Run set: `EAP_PUBLIC_10K_20260713`, 5 repeats, 4 valid public samples.
 
@@ -85,7 +120,7 @@ businessMatchedE2eTps =
   (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
-`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window. In the latest valid repeat set, the median completion window was `17.29s`, so `10000 / 17.29 ~= 582.73 completed trades/s`. That reflects completion convergence plus queue drain after the input burst.
+`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window. In the latest TPS93 repeat set, the median completion window was `12.00s`, so `10000 / 12.00 ~= 833.58 completed trades/s`. That reflects completion convergence plus queue drain after the input burst.
 
 ## Best Isolated Matching Result
 
@@ -107,6 +142,13 @@ Interpretation: the core Redis order book is not the current global E2E bottlene
 | Use `trade_id` as Match `trade_executions` primary key | trade execution insert total `1015.71ms -> 820.40ms`; trade outbox insert total `802.17ms -> 546.88ms` | kept |
 | Wallet outbox JDBC projection/update | wallet outbox select SQL `384.24ms -> 59.77ms`; business E2E `384.15 -> 468.76` | kept |
 | Public repeat benchmark process | 4/5 valid repeats; valid median `582.73` completed trades/s | use median/range for public claims |
+| Order / Wallet batch-path validation with split TPS semantics | 3/3 valid 10k repeats; business completed median `833.58` completed trades/s; blended market flow median `1391.69` order confirmations/s | use as current interview benchmark; publish only after clean commit/artifact bundle |
+| Outbox batch-confirm A/B probe | Match+Order+Wallet ON: `869.38` single-run completed trades/s but Match confirm timer worsened to `39.534s`; Match OFF + Order/Wallet ON: `822.99` and confirm timers roughly unchanged | rejected as default tuning; flags remain disabled for loadtest A/B |
+| OrderTradeApplied application-table relay experiment | Removed generic OrderTradeApplied outbox rows in a 10k run, but business completed TPS regressed to `619.67`; new relay confirm sum was `13.301s` and batch sum `13.855s` | rejected; do not merge relay state into `order_trade_applications` hot fact table |
+| Order trade-apply stable `unnest` CTE input | Correctness passed, but 10k completed TPS regressed to `687.76`; Order `batch_total` worsened from TPS-93 R2 `9.256s` to `15.553s` and `batch_append` from `5.164s` to `7.592s` | rejected; keep dynamic `VALUES` CTE path and focus on durable-write semantics |
+| Redis user-open-order index OFF repeat | Latest 10k run completed at `749.07` trades/s with final queues/DLQ at zero; `reserve_order.redis_eval` was `19.784s`, not better than TPS-93 R2 `15.888s` | keep as diagnostic flag; not the current TPS fix |
+| Integrated stage-lag diagnostics | TPS98 10k run completed at `622.05` trades/s with final queues/DLQ at zero. Wallet insert attribution shows p95 `Match persisted -> Wallet settlement inserted = 2073.250ms`, `Wallet settlement inserted -> WALLET_SETTLED marker = 1172.450ms`, and `Wallet settlement inserted -> relay mark-SENT = 1483.760ms` | keep; Wallet is visible in the convergence cost, but it is not independently slower than Order apply |
+| MatchEngine tryMatch outcome attribution | TPS99 10k run completed at `580.10` trades/s with final queues/DLQ at zero. `added_to_book` cost `20.594s / 10000`, `fully_matched` cost `29.333s / 10000`, and `reserve_order.redis_eval` cost `27.705s / 20000` | keep; the common Redis reserve-or-add path is a major integrated cost under full pressure |
 
 ## Current Bottleneck
 
@@ -118,6 +160,10 @@ The strongest current signal is DB and outbox write amplification:
 - Completion requires both Order and Wallet markers to converge.
 
 Increasing consumer concurrency alone has repeatedly failed to solve this class of problem. Several runs improved local queue drain but regressed full business TPS. The next useful work is targeted SQL/write-model review, not another broad concurrency increase.
+
+The latest integrated stage-lag report makes the bottleneck more concrete: isolated DB SQL and isolated relay probes are fast, but under full service load the Order and Wallet marker paths take seconds to converge at p95. Wallet now has an immutable settlement insert timestamp for attribution. The latest 10k attribution run shows Wallet settlement insertion and Order trade application arrive at almost the same p95 latency from Match persistence, so the next optimization target should remain the integrated Match intake/trade persistence -> downstream apply/relay/marker pipeline rather than Wallet SQL alone.
+
+MatchEngine was not cleared as "no longer relevant"; previous work cleared narrower hypotheses. Redis orderbook admission and isolated DB/relay probes are fast enough in isolation, but full `tryMatch` still combines two workloads: resting-order admission and incoming-order trade completion. TPS99 separates `added_to_book` from `fully_matched` and shows both outcomes grow under full pressure, with the shared Redis reserve-or-add Lua path dominating reserve time. The next target is MatchEngine intake/Redis orderbook semantics, not another broad concurrency increase.
 
 ## Correctness Gates
 
@@ -210,7 +256,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Use this wording:
 
-> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. In a 5-run 10k local benchmark, 4 valid runs maintained about 1999 offered order confirmations/s and reached a median fully gated throughput of 582.73 completed trades/s, with final queues and DLQ at zero. In near-500 offered-load 15-minute steady-state testing, 2 of 3 clean Redis repeats completed all 450000 trades with a valid-sample median of 487.66 fully gated completed trades/s; the third repeat exposed a 19-trade correctness miss that is now the next investigation target.
+> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. After reducing Order and Wallet batch-path overhead, a 3-run 10k local benchmark sustained about 1999 offered order confirmations/s and reached a median fully gated throughput of 833.58 completed trades/s, with a 729.71-940.93 range and final queues/DLQ at zero. I also report orderbook admission and blended market-flow throughput separately to avoid mixing accepted input with completed business throughput.
 
 Avoid this wording:
 

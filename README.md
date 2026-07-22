@@ -11,6 +11,7 @@ EAP is a production-style electricity market backend built with Java / Spring Bo
 | Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
 | --- | ---: | ---: | --- | --- |
 | Redis matching core | N/A | `18,388.25 ops/s` | Redis Lua atomic matching | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` |
+| Current global 10k business-gated E2E, TPS93 repeat | median `1,999.22 order confirmations/s` | median `833.58 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 3/3 valid runs, range `729.71-940.93`, final queues / DLQ `0`; current local interview benchmark, not yet a pinned public artifact bundle |
 | Global 10k business-gated E2E, TPS55 repeat | median `1,998.94 order confirmations/s` | median `582.73 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 4/5 valid runs, range `503.11-662.17`, final queues / DLQ `0` |
 | Current bottleneck | N/A | N/A | correctness preserved | DB write amplification and outbox relay cost in Match / Order / Wallet |
 
@@ -27,12 +28,18 @@ See [docs/performance-report.md](docs/performance-report.md) for the curated rep
 Business E2E TPS formula:
 
 ```text
-businessMatchedE2eTps =
+businessCompletedTradeTps =
   completedTrades /
   (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
-`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window; in the latest valid repeat set, the median completion window was `17.29s`, so `10000 / 17.29 ~= 582.73 completed trades/s`.
+The current benchmark also reports:
+
+- `orderbookAdmissionTps`: resting SELL confirmations admitted into Redis order book.
+- `businessCompletedTradeTps`: fully correctness-gated completed trades.
+- `blendedMarketFlowTps`: total SELL+BUY order confirmations processed across the full two-phase benchmark window.
+
+`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window; in the latest TPS93 repeat set, the median completion window was `12.00s`, so `10000 / 12.00 ~= 833.58 completed trades/s`.
 
 ## Benchmark Environment
 

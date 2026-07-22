@@ -172,6 +172,12 @@ jq -s \
       metaTxt: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-meta.txt"),
       runLog: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-run.log"),
       actualBuyPublishTps,
+      orderbookAdmissionTps,
+      orderbookAdmissionSeconds,
+      businessCompletedTradeTps,
+      blendedMarketFlowTps,
+      blendedMarketFlowSeconds,
+      blendedMarketFlowOrders,
       businessMatchedE2eTps,
       businessCompletionSeconds,
       tradeExecutionReachTps,
@@ -190,6 +196,9 @@ jq -s \
     metrics: {
       allRuns: {
         actualBuyPublishTps: ($runs | stat("actualBuyPublishTps")),
+        orderbookAdmissionTps: ($runs | stat("orderbookAdmissionTps")),
+        businessCompletedTradeTps: ($runs | stat("businessCompletedTradeTps")),
+        blendedMarketFlowTps: ($runs | stat("blendedMarketFlowTps")),
         businessMatchedE2eTps: ($runs | stat("businessMatchedE2eTps")),
         businessCompletionSeconds: ($runs | stat("businessCompletionSeconds")),
         tradeExecutionReachTps: ($runs | stat("tradeExecutionReachTps")),
@@ -200,6 +209,9 @@ jq -s \
       },
       validRunsOnly: {
         actualBuyPublishTps: ($validRuns | stat("actualBuyPublishTps")),
+        orderbookAdmissionTps: ($validRuns | stat("orderbookAdmissionTps")),
+        businessCompletedTradeTps: ($validRuns | stat("businessCompletedTradeTps")),
+        blendedMarketFlowTps: ($validRuns | stat("blendedMarketFlowTps")),
         businessMatchedE2eTps: ($validRuns | stat("businessMatchedE2eTps")),
         businessCompletionSeconds: ($validRuns | stat("businessCompletionSeconds")),
         tradeExecutionReachTps: ($validRuns | stat("tradeExecutionReachTps")),
