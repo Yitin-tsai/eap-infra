@@ -68,7 +68,10 @@ emit_result_summary() {
   trade_tps="$(json_value tradeExecutionReachTps)"
   order_tps="$(json_value orderCommandMatchReachTps)"
   wallet_tps="$(json_value walletSettlementReachTps)"
-  marker_tps="$(json_value completionMarkerReachTps)"
+  marker_tps="$(json_value businessConvergenceReachTps)"
+  if [[ -z "${marker_tps}" || "${marker_tps}" == "null" ]]; then
+    marker_tps="$(json_value completionMarkerReachTps)"
+  fi
   queue_drain="$(json_value queueFullyDrainedSeconds)"
   last_queue="$(json_value lastNonZeroQueue)"
   last_queue_seconds="$(json_value lastNonZeroQueueSeconds)"
@@ -94,7 +97,7 @@ emit_result_summary() {
 | tradeExecutionReachTps | ${trade_tps:-n/a} |
 | orderCommandMatchReachTps | ${order_tps:-n/a} |
 | walletSettlementReachTps | ${wallet_tps:-n/a} |
-| completionMarkerReachTps | ${marker_tps:-n/a} |
+| businessConvergenceReachTps | ${marker_tps:-n/a} |
 | queueFullyDrainedSeconds | ${queue_drain:-n/a} |
 | lastNonZeroQueue | \`${last_queue:-n/a}\` |
 | lastNonZeroQueueSeconds | ${last_queue_seconds:-n/a} |

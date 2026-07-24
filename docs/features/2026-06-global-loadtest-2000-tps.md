@@ -9629,3 +9629,1154 @@ Candidate first ticket:
 | ID | Priority | Task | Owner | Acceptance Criteria |
 | --- | --- | --- | --- | --- |
 | GCP-TPS-01 | P0 | Design GCP/GKE benchmark architecture and cost guard | Architect + Performance | Document topology, resource sizing, managed-vs-self-hosted datastore choice, expected cost envelope, teardown plan, benchmark commands, metrics, and correctness gates. No deployment is required in this ticket. |
+
+### TPS-105 to TPS-108 - outbox relay index and confirm-cost attribution
+
+Status: **Match relay select fix accepted; batch-confirm flags rejected as default tuning**
+
+Context:
+
+- A noisy 10k stress repeat showed final business completion degrading to `332.32 completed trades/s`.
+- Integrated lag attributed the long tail to the gap after Match persisted `TradeExecuted` and before Order/Wallet durable work became visible.
+- Application timers showed the immediate culprit was MatchEngine outbox relay selection:
+  - slow run `trade_outbox_select_duration_seconds_sum=23.784829s`;
+  - slow run `trade_outbox_select_duration_seconds_max=3.575777s`.
+- The existing partial retry index was:
+  - `idx_trade_outbox_pending_retry(next_retry_at, created_at) WHERE status='PENDING'`.
+- The hot relay query drains pending rows by durable creation order:
+  - `WHERE status='PENDING' AND next_retry_at <= CURRENT_TIMESTAMP ORDER BY created_at, id LIMIT ?`.
+
+Change:
+
+- Added a MatchEngine partial index aligned with the hot relay drain order:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_trade_outbox_pending_created_id
+ON match_engine.trade_outbox(created_at, id)
+WHERE status = 'PENDING';
+```
+
+Verification:
+
+- `TradeOutboxRelayTest` + `JpaTradeExecutionRecorderTest`: PASS.
+- 10k light run `GLT_TPS105_MATCH_OUTBOX_INDEX_LIGHT_10K_R1`: PASS, final measured queues/DLQ `0`.
+
+Observed impact:
+
+| Run | Change | Actual input TPS | Business completed TPS | Business completion seconds | Match outbox select sum | Match outbox select max | Final queues/DLQ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Slow reference | before hot relay index | n/a | `332.32` | `30.09s` | `23.784829s` | `3.575777s` | `0` |
+| `GLT_TPS105_MATCH_OUTBOX_INDEX_LIGHT_10K_R1` | add pending-created index | `9745.05` | `824.64` | `12.13s` | `0.414843s` | `0.019853s` | `0` |
+
+Interpretation:
+
+- The relay select long tail was real and index-related.
+- The new `created_at, id` partial index fixes the hot scan/order path for normal pending drain.
+- Keep the old retry index for now:
+  - it protects delayed retry scans when many failed rows have future `next_retry_at`;
+  - removing it could save some write amplification on `PENDING` insert and `SENT` update, but risks expensive retry scans under failure backlog.
+- Record as future squeeze point only:
+  - A/B removing `idx_trade_outbox_pending_retry` may be useful later, but only with both normal 10k load and a retry-backlog scenario.
+
+Publisher-confirm A/B:
+
+| Run | Batch-confirm config | Business completed TPS | Business completion seconds | TradeExecuted reach TPS | Max Match ready | Key signal |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS105_MATCH_OUTBOX_INDEX_LIGHT_10K_R1` | all OFF | `824.64` | `12.13s` | `824.64` | `1225` | current best comparable run |
+| `GLT_TPS106_BATCH_CONFIRM_ALL_LIGHT_10K_R1` | Match + Order + Wallet ON | `613.79` | `16.29s` | `638.75` | `5036` | worse queue backlog and completion |
+| `GLT_TPS107_MATCH_BATCH_CONFIRM_ONLY_LIGHT_10K_R1` | Match ON only | `725.18` | `13.79s` | `746.16` | `3189` | Match batch confirm alone regressed |
+| `GLT_TPS108_DOWNSTREAM_BATCH_CONFIRM_ONLY_LIGHT_10K_R1` | Order + Wallet ON only | `772.34` | `12.95s` | `834.52` | `2647` | downstream batch confirm was not a win |
+
+Confirm-cost readings:
+
+| Run | Match confirm sum | Order confirm sum | Wallet settlement relay confirm sum |
+| --- | ---: | ---: | ---: |
+| `TPS105` all OFF | `10.247074s` | `9.899103s` | `9.709595s` |
+| `TPS106` all ON | `54.411997756s` | `12.825280740s` | `12.488236662s` |
+| `TPS107` Match ON only | `46.861912753s` | `11.020499s` | `11.001504s` |
+| `TPS108` Order + Wallet ON only | `10.715506s` | `10.629510904s` | `10.512364097s` |
+
+Decision:
+
+- Do not enable `batch-confirm-enabled` by default for MatchEngine, Order, or Wallet in the 10k loadtest profile.
+- The current batch-confirm metrics can overstate per-message confirm cost because batch wall-clock is re-recorded across messages. Use batch duration and business gate timing when interpreting these runs.
+- Publisher confirm cost is still real, but the naive fix is not "wait once per batch".
+- Next improvement should be narrower:
+  - split relay batch wall-clock into publish enqueue, confirm wait, mark-SENT, and scheduler gap;
+  - compare RabbitMQ confirm wall-clock against downstream marker creation, not only cumulative timer sums;
+  - avoid broad consumer-count tuning unless a specific relay or queue shows under-drain after the phase metrics are separated.
+
+### TPS-109 - relay phase metrics
+
+Status: **implemented; smoke verified**
+
+Purpose:
+
+- TPS-105 to TPS-108 confirmed that cumulative confirm timers alone are not enough to decide whether the cost is RabbitMQ publisher confirm, Java relay scheduling, publish enqueue, or database mark-SENT.
+- Add finer phase metrics to the three completion relays without changing reliable-publication semantics:
+  - MatchEngine `TradeOutboxRelay`;
+  - Order `OrderEventOutboxRelay`;
+  - Wallet `WalletTradeSettlementRelay`.
+
+New metrics:
+
+| Relay | Publish stage | Confirm wall-clock | Post-confirm mark gap |
+| --- | --- | --- | --- |
+| MatchEngine TradeExecuted outbox | `trade_outbox_publish_stage_duration_seconds` | `trade_outbox_confirm_wall_duration_seconds` | `trade_outbox_post_confirm_mark_gap_duration_seconds` |
+| Order outbox | `eap_order_outbox_publish_stage_duration_seconds` | `eap_order_outbox_confirm_wall_duration_seconds` | `eap_order_outbox_post_confirm_mark_gap_duration_seconds` |
+| Wallet settlement relay | `eap_wallet_trade_settlement_relay_publish_stage_duration_seconds` | `eap_wallet_trade_settlement_relay_confirm_wall_duration_seconds` | `eap_wallet_trade_settlement_relay_post_confirm_mark_gap_duration_seconds` |
+
+Interpretation:
+
+- Keep using existing metrics for the other phases:
+  - `*_select_duration_seconds`;
+  - `*_publish_enqueue_duration_seconds`;
+  - `*_confirm_duration_seconds`;
+  - `*_mark_sent_duration_seconds`;
+  - `*_batch_duration_seconds`.
+- Prefer `*_confirm_wall_duration_seconds` when deciding whether publisher confirm is actually delaying a relay batch.
+- Treat `*_confirm_duration_seconds` as a backward-compatible per-message/cumulative view; it can be misleading when batch confirm mode records an averaged duration per message.
+- `*_post_confirm_mark_gap_duration_seconds` should normally be near zero. If it grows, investigate Java scheduling, executor starvation, or code between confirm completion and mark-SENT.
+
+Smoke verification:
+
+| Run | Events | Target input TPS | Actual input TPS | Business completed TPS | Final queues/DLQ |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS109_RELAY_PHASE_METRICS_SMOKE_500` | `500` | `1000` | `998.08` | `413.65` | `0` |
+
+Smoke metric presence:
+
+| Metric | Count | Sum |
+| --- | ---: | ---: |
+| `trade_outbox_publish_stage_duration_seconds` | `4` | `0.025532s` |
+| `trade_outbox_confirm_wall_duration_seconds` | `4` | `0.227566s` |
+| `trade_outbox_post_confirm_mark_gap_duration_seconds` | `4` | `0.000006s` |
+| `eap_order_outbox_publish_stage_duration_seconds` | `4` | `0.021124s` |
+| `eap_order_outbox_confirm_wall_duration_seconds` | `4` | `0.174362s` |
+| `eap_order_outbox_post_confirm_mark_gap_duration_seconds` | `4` | `0.000032s` |
+| `eap_wallet_trade_settlement_relay_publish_stage_duration_seconds` | `4` | `0.058616s` |
+| `eap_wallet_trade_settlement_relay_confirm_wall_duration_seconds` | `4` | `0.178224s` |
+| `eap_wallet_trade_settlement_relay_post_confirm_mark_gap_duration_seconds` | `4` | `0.000008s` |
+
+Next run:
+
+- Run the latest 10k light benchmark with these metrics enabled.
+- Compare `confirm_wall`, `publish_stage`, `mark_sent`, and integrated stage lag before changing relay code.
+- Prefer code-path fixes over broad tuning if a single phase dominates.
+
+### TPS-110 - 10k light relay phase attribution
+
+Status: **completed; publisher-confirm wall-clock is the dominant relay phase**
+
+Run:
+
+| Run | Events | Target input TPS | Actual input TPS | Business completed TPS | Business completion seconds | Final queues/DLQ |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS110_RELAY_PHASE_METRICS_LIGHT_10K_R1` | `10000` | `10000` | `9974.85` | `787.41` | `12.70s` | `0` |
+
+Throughput split:
+
+| Metric | Value |
+| --- | ---: |
+| Orderbook admission TPS | `4888.46` |
+| TradeExecuted reach TPS | `908.50` |
+| Order command match reach TPS | `813.62` |
+| Wallet settlement reach TPS | `813.62` |
+| Completion marker reach TPS | `787.41` |
+| Blended market flow TPS | `1356.34` |
+
+Relay phase timers:
+
+| Relay | Batch sum | Confirm wall sum | Publish stage sum | Publish enqueue sum | Mark-SENT sum | Post-confirm mark gap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| MatchEngine `trade_outbox` | `12.008487s` | `11.193571s` | `0.531806s` | `0.928575s` | `0.153428s` | `0.000071s` |
+| Order outbox | `11.404403s` | `10.968683s` | `0.148122s` | `0.141779s` | `0.191908s` | `0.000073s` |
+| Wallet settlement relay | `11.441370s` | `10.917118s` | `0.224538s` | `0.216649s` | `0.236588s` | `0.000081s` |
+
+Interpretation:
+
+- At 10k offered BUY TPS, all three completion relays spend most of their batch wall-clock in RabbitMQ publisher-confirm waiting.
+- Java post-confirm scheduling is not the issue in this run:
+  - all `*_post_confirm_mark_gap_duration_seconds_sum` values are near zero.
+- DB `mark-SENT` is visible but not dominant:
+  - each relay spent about `0.15-0.24s` cumulative marking `10000` records `SENT`.
+- Publish enqueue / message build is small for Order and Wallet, but MatchEngine enqueue is larger:
+  - MatchEngine `publish_enqueue=0.928575s`;
+  - still much smaller than MatchEngine `confirm_wall=11.193571s`.
+- The completion tail still ends at `matchEngine.walletTradeSettled.queue`, but the new metrics suggest the relay bottleneck is not the code between confirm completion and mark-SENT.
+
+Next investigation:
+
+- Treat RabbitMQ publisher confirms as a real fixed cost under full business completion.
+- Do not re-enable batch-confirm flags by default; TPS-106 to TPS-108 already rejected that broad approach.
+- Look for code-path improvements around how many durable relay publications are required per trade, and only then revisit broker-confirm strategy with a narrower correctness-preserving design.
+
+### TPS-111 - Remove Order/Wallet completion-marker relay from the hot path
+
+Status: **completed for marker removal; 10k durable gate exposed an Order inbound reliability gap**
+
+Decision:
+
+- Stop treating per-trade `OrderTradeAppliedEvent` and `WalletTradeSettledEvent` callbacks to MatchEngine as part of the business hot path.
+- Keep the durable facts that matter for correctness:
+  - MatchEngine: `match_engine.trade_executions`;
+  - Order: `order_service.order_trade_applications` plus `order_service.order_matching_state`;
+  - Wallet: `wallet_service.trade_settlements` plus wallet balance invariants.
+- Define `completedTrades` in the load test as the lower bound of those three durable fact counts, not as `trade_completion_markers` convergence.
+- Keep final RabbitMQ ready/unacked drain and DLQ checks in the benchmark gate.
+
+Rationale:
+
+- TPS-110 showed that the Order and Wallet marker relays were dominated by RabbitMQ publisher-confirm wall-clock:
+  - Order outbox confirm wall sum: `10.968683s`;
+  - Wallet settlement relay confirm wall sum: `10.917118s`.
+- Those callbacks were used to let MatchEngine maintain a convenience completion view. They were not required for Order to apply a trade or Wallet to settle it.
+- Requiring every downstream service to publish an acknowledgement back to MatchEngine creates an open-ended consistency loop: once those acknowledgements exist, they themselves need retry, idempotency, queue drain, and monitoring.
+- The cheaper consistency check is post-run or diagnostic reconciliation over durable state, not two more per-trade relay publications.
+
+Implementation:
+
+- Order trade application no longer creates a generic `OrderTradeAppliedEvent` row in `order_event_outbox`.
+- Wallet settlement no longer publishes `WalletTradeSettledEvent` back to MatchEngine.
+- After TPS-120, `trade_settlements` is only the Wallet settlement fact/idempotency table:
+  - `trade_id`;
+  - `legacy_match_id`;
+  - `settled_at`;
+  - `inserted_at`.
+- `MatchedE2eLoadGenerator` now reports:
+  - `completedTrades` = `min(trade_executions, order_trade_applications, trade_settlements)`;
+  - `businessConvergenceReachTps` as the new durable-state convergence rate;
+  - `completionMarkerReachTps` remains as a backward-compatible alias during the transition.
+- Integrated stage-lag diagnostics now use durable facts:
+  - `trade_executions.created_at`;
+  - `order_trade_applications.applied_at`;
+  - `trade_settlements.inserted_at`.
+
+Expected effect:
+
+- Remove two per-trade downstream-to-MatchEngine relay publications from the measured business completion chain.
+- Remove two publisher-confirm tails that were not contributing to business correctness.
+- Preserve the ability to verify consistency through durable-state counts, wallet balance invariants, final queue drain, DLQ checks, and targeted reconciliation queries.
+
+Follow-up:
+
+- Open the next ticket for Order `TradeExecuted` inbound inbox/replay before treating 10k completed-business TPS as stable.
+- After Order inbound replay is fixed, rerun 10k light and then retire unused MatchEngine completion-marker listeners/tables and old relay metrics from the active load-test documentation.
+
+Smoke verification:
+
+| Run | Events | Target input TPS | Actual input TPS | Durable completed trades | Business TPS | Final queues/DLQ |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS111_MARKER_REMOVED_SMOKE_500` | `500` | `1000` | `999.17` | `500` | `536.29` | `0` |
+
+Smoke correctness and removal checks:
+
+- `tradeExecutions=500`;
+- `orderCommandMatchedRows=1000`;
+- `walletTradeSettlements=500`;
+- `completedTrades=500`;
+- `businessConvergenceReachTps=536.29`;
+- `finalQueueBacklog=0`;
+- `activeReservations=0`;
+- marker queues stayed unused:
+  - `maxOrderTradeAppliedQueueUnacked=0`;
+  - `maxWalletTradeSettledQueueUnacked=0`;
+  - final `orderTradeAppliedQueueReady=0`;
+  - final `walletTradeSettledQueueReady=0`.
+
+Post-run DB checks:
+
+- Order generic `OrderTradeAppliedEvent` outbox rows for this market: `0`.
+- Wallet `trade_settlements` for this market: `SENT=500`, `PENDING=0`.
+- MatchEngine `trade_completion_markers` rows for this market: `0`.
+
+Updated integrated-stage lag:
+
+| Stage | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| Match persisted -> Order trade application | `0.722ms` | `0.959ms` | `0.968ms` | `0.975ms` |
+| Match persisted -> Wallet settlement inserted | `146.185ms` | `216.815ms` | `224.773ms` | `228.983ms` |
+| Match persisted -> durable convergence | `146.185ms` | `216.815ms` | `224.773ms` | `228.983ms` |
+
+10k light comparison:
+
+| Run | Events | Target input TPS | Actual input TPS | Result | Match trades | Order applied trades | Wallet settlements | Final queues/DLQ |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| `GLT_TPS111_MARKER_REMOVED_LIGHT_10K_R1` | `10000` | `10000` | `9967.13` | `REJECTED_ORDER_DURABLE_GAP` | `10000` | `9979` | `10000` | `0` |
+
+10k finding:
+
+- Removing Order/Wallet marker relay worked as intended:
+  - `matchEngine.orderTradeApplied.queue` stayed unused;
+  - `matchEngine.walletTradeSettled.queue` stayed unused;
+  - MatchEngine marker listener metrics stayed at `0`;
+  - final queues and DLQ were `0`.
+- The new durable-state gate exposed a real Order-side gap:
+  - `tradeExecutions=10000`;
+  - `walletTradeSettlements=10000`;
+  - `order_trade_applications=9979`;
+  - `order_matching_state MATCHED=19958`, `OPEN=42`;
+  - the 42 open rows map to 21 unique missing trades.
+- MatchEngine trade facts were clean:
+  - `10000` trade rows;
+  - `10000` distinct `trade_id`;
+  - `10000` distinct buyer orders;
+  - `10000` distinct seller orders.
+- Wallet settlement facts were also clean:
+  - `10000` settlement rows;
+  - all new rows used `event_status='SENT'`;
+  - no Wallet marker relay work remained.
+
+Interpretation:
+
+- The previous completion-marker path was not a good enough proof of Order durable application.
+- After marker removal, the correct business gate is now stricter and caught that Order can finish with `order.tradeExecuted.queue=0` while some `TradeExecuted` facts are not represented in `order_trade_applications`.
+- A temporary Order batch durability guard was tested and removed because it did not catch this failure mode; the missing work is not proven to be "batch SQL returned success but wrote fewer rows."
+- Setting Order `trade-executed.batch-size=1` was started as a probe but was too slow to be a practical fix. The solution should not be permanent single-message handling.
+
+Next ticket direction:
+
+- Add an Order-side durable inbound inbox for `TradeExecuted` before acking the RabbitMQ delivery, or add an equivalent replayable downstream delivery mechanism.
+- The inbox/replay should make these states distinguishable:
+  - received but not applied;
+  - applied;
+  - duplicate/redelivered;
+  - failed and retryable.
+- Completion consistency can then be verified cheaply by durable-state reconciliation without reintroducing per-trade callbacks from Order/Wallet to MatchEngine.
+
+### 2026-07-23 - TPS-112 Order `TradeExecuted` inbound inbox and manual ACK
+
+Status: completed and verified with 500 smoke + 10k light.
+
+Problem found by TPS-111:
+
+- After removing Order/Wallet per-trade completion-marker callbacks, the 10k durable gate exposed a real Order gap:
+  - MatchEngine had `trade_executions=10000`;
+  - Wallet had `trade_settlements=10000`;
+  - Order only had `order_trade_applications=9979`;
+  - final RabbitMQ queues and DLQ were still `0`.
+- That meant broker drain alone was not a sufficient proof that Order had durably applied every `TradeExecuted`.
+
+Implementation:
+
+- Added `order_service.order_trade_execution_inbox`:
+  - `trade_id` primary key;
+  - buyer/seller order IDs;
+  - deal price and quantity;
+  - raw payload text;
+  - `status IN ('RECEIVED', 'APPLIED', 'FAILED_RETRYABLE')`;
+  - `attempt_count`, `received_at`, `applied_at`, `last_error`, `updated_at`.
+- Changed `TradeExecutedListener` to manual RabbitMQ ACK:
+  - deserialize message batch;
+  - insert/upsert inbox rows as `RECEIVED`;
+  - apply Order trade state;
+  - mark inbox rows `APPLIED`;
+  - ACK only after durable apply succeeds.
+- On apply failure:
+  - mark inbox rows `FAILED_RETRYABLE`;
+  - `basicNack(..., requeue=true)`.
+- On payload deserialization failure:
+  - `basicNack(..., requeue=false)` so malformed messages can go to DLQ instead of looping.
+- Updated load-test cleanup to truncate the new inbox table.
+- Updated light diagnostics to emit `order-trade-executed-inbox-status.txt`.
+
+Additional bug fixed during smoke:
+
+- First smoke revealed retry was working but also exposed a fallback SQL bug:
+  - some singleton/fallback Order trade applies failed once with PostgreSQL `could not determine data type of parameter $27`;
+  - cause: after removing `OrderTradeAppliedEvent`, the individual trade-apply SQL still passed null outbox parameters without casts;
+  - fix: cast nullable outbox parameters in the SQL (`uuid`, `varchar`, `text`) before checking/inserting them.
+
+Verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-order ./gradlew --no-daemon test --tests com.eap.eap_order.application.TradeExecutedListenerTest` | PASS |
+| `eap-order ./gradlew --no-daemon testClasses` | PASS |
+| `bash -n scripts/load-test/collect-loadtest-diagnostics.sh scripts/load-test/run-2000-ticket-marker-repeat.sh scripts/load-test/summarize-write-costs.sh` | PASS |
+| `GLT_TPS111_ORDER_INBOX_SQLCAST_SMOKE_500` | PASS |
+| `GLT_TPS111_ORDER_INBOX_LIGHT_10K_R2` | PASS |
+
+500 smoke after SQL cast:
+
+| Run | Events | Actual input TPS | Completed trades | Business convergence TPS | Inbox status | Final queues/DLQ |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `GLT_TPS111_ORDER_INBOX_SQLCAST_SMOKE_500` | `500` | `1953.46` | `500` | `520.42` | `APPLIED=500`, `attempt_count=1..1`, `unapplied=0` | `0` |
+
+10k light after inbox/manual ACK:
+
+| Run | Events | Target input TPS | Actual input TPS | Completed trades | Business convergence TPS | Queue drain seconds | Final queues/DLQ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS111_ORDER_INBOX_LIGHT_10K_R2` | `10000` | `10000` | `9982.07` | `10000` | `974.85` | `10.26` | `0` |
+
+10k durable facts:
+
+- `tradeExecutions=10000`;
+- `orderCommandMatchedRows=20000`;
+- `completedTrades=10000`;
+- `walletTradeSettlements=10000`;
+- `activeReservations=0`;
+- Order inbox:
+  - `APPLIED=10000`;
+  - `min_attempt=1`;
+  - `max_attempt=1`;
+  - `unapplied=0`.
+- Marker callback queues stayed removed from the measured path:
+  - `maxOrderTradeAppliedQueueUnacked=0`;
+  - `maxWalletTradeSettledQueueUnacked=0`.
+
+10k integrated-stage lag:
+
+| Stage | Count | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Match persisted -> Order trade application | `10000` | `0.242ms` | `1.997ms` | `2.062ms` | `2.125ms` |
+| Match persisted -> Wallet settlement inserted | `10000` | `1468.590ms` | `1949.550ms` | `2097.470ms` | `2217.900ms` |
+| Match persisted -> durable convergence | `10000` | `1468.590ms` | `1949.550ms` | `2097.470ms` | `2217.900ms` |
+
+Interpretation:
+
+- The previous 10k `9979/10000` Order gap is fixed.
+- The new Order inbox is not a completion-marker replacement; it is an Order-owned inbound reliability boundary.
+- The current durable convergence bottleneck is no longer Order apply. Order reaches trade application within ~2ms p99 after Match persistence in this run.
+- The remaining durable convergence tail is dominated by Wallet settlement, which matches the previous attribution that final business TPS is limited by downstream durable settlement rather than Redis matching or Order state application.
+- A failed first 10k rerun was caused by local MatchEngine readiness timeout after seed, not by transaction correctness. The effective rerun used `LOADTEST_SERVICE_START_TIMEOUT_SECONDS=240`.
+
+### 2026-07-23/24 - TPS-113 to TPS-115 Wallet settlement SQL and Match outbox relay batch probe
+
+Status: partially completed.
+
+Problem:
+
+- After removing Order/Wallet completion-marker callbacks and adding the Order inbound inbox, the remaining durable tail was concentrated in the downstream durable write chain.
+- `wallet.tradeExecuted.queue` was repeatedly the last non-zero queue, but MatchEngine `trade_outbox_confirm_wall_duration_seconds` was also a large fixed cost in 10k runs.
+- The target was to reduce real durable write/relay cost, not to retune consumer concurrency.
+
+Implementation:
+
+- Wallet settlement appender:
+  - removed the batch-level `existing_settlements` preselect that made one duplicate force whole-batch fallback;
+  - changed batch insert to `ON CONFLICT (trade_id) DO NOTHING`;
+  - allowed mixed idempotent batches where existing settlements are skipped and new settlements update wallets;
+  - recorded duplicate skipped count when a batch contains already-settled trades.
+- Wallet settlement hot insert:
+  - stopped explicitly writing relay lifecycle columns that are not needed when `WalletTradeSettled` marker relay is disabled;
+  - `event_status`, `attempt_count`, and `updated_at` now use DB defaults;
+  - `next_retry_at` remains `NULL`;
+  - updated `WalletDbCeilingProbe` to match the production settlement SQL shape.
+- MatchEngine loadtest profile:
+  - added `EAP_MATCH_TRADE_OUTBOX_BATCH_SIZE` so the Match `TradeExecuted` outbox relay batch size can be A/B tested without changing source defaults.
+
+Verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-wallet ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.TradeExecutedListenerTest` | PASS |
+| `eap-wallet ./gradlew --no-daemon testClasses` | PASS |
+| `GLT_TPS113_WALLET_BATCH_IDEMPOTENT_SMOKE_500` | PASS |
+| `GLT_TPS114_WALLET_SETTLEMENT_DEFAULTS_SMOKE_500` | PASS |
+
+DB default check after TPS-114 smoke:
+
+| Run | Total settlements | `SENT` | `attempt_count=0` | `next_retry_at IS NULL` | `updated_at IS NOT NULL` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `GLT_TPS114_WALLET_SETTLEMENT_DEFAULTS_SMOKE_500` | `500` | `500` | `500` | `500` | `500` |
+
+10k light comparison:
+
+| Run | Notes | Actual input TPS | Completed trades | Business convergence TPS | Completion seconds | Last non-zero queue | Final queues/DLQ |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `GLT_TPS111_ORDER_INBOX_LIGHT_10K_R2` | Order inbox baseline | `9982.07` | `10000` | `974.85` | `10.26` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS113_WALLET_BATCH_IDEMPOTENT_LIGHT_10K_R1` | Wallet duplicate-safe batch | `9980.15` | `10000` | `865.58` | `11.55` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS113_WALLET_BATCH_IDEMPOTENT_LIGHT_10K_R2` | Wallet duplicate-safe batch | `9918.41` | `10000` | `910.82` | `11.29` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS114_WALLET_SETTLEMENT_DEFAULTS_LIGHT_10K_R1` | Wallet relay-field defaults | `9776.46` | `10000` | `734.75` | `13.79` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS115_MATCH_OUTBOX_BATCH1000_LIGHT_10K_R1` | Match outbox batch-size 1000 | `9980.36` | `10000` | `1154.89` | `8.66` | `order.tradeExecuted.queue` | `0` |
+| `GLT_TPS115_MATCH_OUTBOX_BATCH1000_LIGHT_10K_R2` | Match outbox batch-size 1000 | `9980.30` | `10000` | `814.45` | `12.28` | `wallet.tradeExecuted.queue` | `0` |
+
+Targeted timer comparison:
+
+| Run | Match outbox batches | Match confirm wall sum | Match mark-SENT sum | Wallet settlement batch sum | Wallet settlement CTE sum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `TPS113_R2` | `22` | `9.329s` | `0.258s` | `7.495s` | `5.700s` |
+| `TPS114_R1` | `21` | `11.450s` | `0.250s` | `8.751s` | `6.667s` |
+| `TPS115_R1` | `14` | `6.803s` | `0.089s` | `6.341s` | `5.221s` |
+| `TPS115_R2` | `13` | `10.060s` | `0.114s` | `6.795s` | `5.643s` |
+
+Interpretation:
+
+- Wallet duplicate-safe batch is a correctness and retry-path improvement. It removes unnecessary batch fallback when duplicates are present.
+- Wallet relay-field defaults are safe and keep settlement facts correct, but the 10k business TPS effect is small relative to local run noise.
+- Match outbox relay batch-size 1000 has a clear mechanism and one strong run:
+  - fewer relay batches;
+  - lower mark-SENT cost;
+  - potentially lower publisher confirm wall time.
+- The second batch-size 1000 run was much weaker, so `1000` should not become the default yet.
+- The reliable conclusion is that Match outbox publisher confirm is a major durable relay cost. The next performance ticket should run a controlled matrix for Match outbox batch size, for example `500/750/1000/1500`, with at least three 10k light runs per setting, and should compare confirm wall, tradeExecutionReachTps, business convergence, and duplicate replay blast radius.
+
+Current recommendation:
+
+- Keep `EAP_MATCH_TRADE_OUTBOX_BATCH_SIZE` as an A/B knob.
+- Do not claim stable 1150 TPS yet.
+- Treat the current stable local range as roughly 800-1000 completed trades/s under 10k offered-load, with a best observed 1154.89 TPS after reducing Match outbox relay batch boundaries.
+
+### 2026-07-24 - TPS-116 Match outbox relay confirm strategy check
+
+Status: completed.
+
+Question:
+
+- Earlier relay batching and publisher-confirm changes were introduced as plausible optimizations, but the current code path needed a direct A/B check.
+- The target was to validate MatchEngine `TradeExecuted` outbox relay cost, specifically:
+  - `batch-size=500` with the current per-message `CorrelationData` confirm wait;
+  - `batch-size=500` with `RabbitOperations.waitForConfirmsOrDie(...)` batch confirm;
+  - existing `batch-size=1000` per-message runs from TPS-115.
+
+Runs:
+
+| Run | Strategy | Actual input TPS | Valid capacity comparison | Completed trades | Business convergence TPS | Completion seconds | Last non-zero queue | Final backlog |
+| --- | --- | ---: | --- | ---: | ---: | ---: | --- | ---: |
+| `GLT_TPS116_MATCH_CONFIRM_B500_PERMSG_LIGHT_10K_R1` | batch 500, per-message confirm | `9967.27` | yes | `10000` | `974.50` | `10.26` | `order.tradeExecuted.queue` | `0` |
+| `GLT_TPS116_MATCH_CONFIRM_B500_BATCHCONFIRM_LIGHT_10K_R1` | batch 500, batch confirm | `9431.36` | no, driver under-offered | `10000` | `1111.31` | `9.00` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS116_MATCH_CONFIRM_B500_BATCHCONFIRM_LIGHT_10K_R2` | batch 500, batch confirm | `9707.55` | yes | `10000` | `965.26` | `10.36` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS115_MATCH_OUTBOX_BATCH1000_LIGHT_10K_R1` | batch 1000, per-message confirm | `9980.36` | yes | `10000` | `1154.89` | `8.66` | `order.tradeExecuted.queue` | `0` |
+| `GLT_TPS115_MATCH_OUTBOX_BATCH1000_LIGHT_10K_R2` | batch 1000, per-message confirm | `9980.30` | yes | `10000` | `814.45` | `12.28` | `wallet.tradeExecuted.queue` | `0` |
+
+Match relay timer comparison:
+
+| Run | Outbox batches | Batch duration sum | Confirm wall count | Confirm wall sum | Publish stage sum | Mark-SENT sum | Select sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `TPS116_B500_PERMSG_R1` | `21` | `9.685s` | `21` | `8.812s` | `0.501s` | `0.220s` | `0.455s` |
+| `TPS116_B500_BATCHCONFIRM_R1` | `21` | `8.478s` | `84` | `30.404s` | `8.117s` | `0.202s` | `0.440s` |
+| `TPS116_B500_BATCHCONFIRM_R2` | `21` | `9.875s` | `84` | `36.339s` | `9.578s` | `0.157s` | `0.436s` |
+| `TPS115_B1000_PERMSG_R1` | `14` | `7.752s` | `14` | `6.803s` | `0.661s` | `0.089s` | `0.558s` |
+| `TPS115_B1000_PERMSG_R2` | `13` | `11.486s` | `13` | `10.060s` | `0.966s` | `0.114s` | `0.815s` |
+
+Interpretation:
+
+- `batch-confirm=true` is not proven better on the current chain.
+  - R1 showed a higher completed TPS, but the load driver did not meet the offered-load threshold, so it is not a clean capacity comparison.
+  - R2 was valid and landed at `965.26` completed trades/s, effectively equal to the `500 + per-message` baseline (`974.50`).
+- Batch-confirm also changes timer semantics:
+  - `publish_stage` includes the batch-level confirm wait;
+  - `trade_outbox_confirm_wall_duration_seconds` count becomes chunk-oriented and should not be compared directly to per-message confirm wall count.
+- `batch-size=1000` still has a plausible mechanism:
+  - fewer relay batches;
+  - lower `mark-SENT` work;
+  - one strong run at `1154.89` completed trades/s.
+- However, `batch-size=1000` also produced a weak valid run at `814.45` completed trades/s with larger Match queue ready peaks, so it is not stable enough to promote as default.
+
+Decision:
+
+- Keep loadtest default at `batch-size=500` and `batch-confirm-enabled=false`.
+- Keep `EAP_MATCH_TRADE_OUTBOX_BATCH_SIZE` and `EAP_MATCH_TRADE_OUTBOX_BATCH_CONFIRM_ENABLED` as explicit A/B knobs.
+- Do not claim batch-confirm as an accepted optimization.
+- The durable relay cost remains real, but the next fix should not be "change confirm mode" by itself. The higher-value target is reducing how many durable relay publications the business flow requires, then retesting relay strategy after the chain is smaller.
+
+### 2026-07-24 - TPS-117/TPS-118 Reduce durable relay bookkeeping
+
+Status: first implementation completed; checkpoint relay smoke verified.
+
+Decision:
+
+- Do not remove the `TradeExecuted` business event.
+  - Order and Wallet still need it to update their own durable state.
+  - The event remains the integration contract from MatchEngine to downstream services.
+- Reduce durable bookkeeping around successful processing:
+  - Order success-path idempotency is represented by `order_trade_applications.trade_id`, not by a separate inbox `APPLIED` row.
+  - Match reliable publication can be tested with `trade_executions` as the append-only event log plus a relay checkpoint, instead of per-trade `trade_outbox` insert/update rows.
+
+TPS-117 implementation - Order inbox success-path slimming:
+
+- `TradeExecutedListener` now:
+  - deserializes the RabbitMQ batch;
+  - applies trades through `OrderEventSourcingService.applyTrades(...)`;
+  - ACKs only after the durable apply succeeds.
+- It no longer writes `order_trade_execution_inbox` on the successful path:
+  - no `RECEIVED` row per successful trade;
+  - no `APPLIED` update per successful trade.
+- `OrderTradeExecutedInbox` now acts as failure/retry diagnostics:
+  - `markFailed(...)` performs an upsert to `FAILED_RETRYABLE`;
+  - repeated failures increment `attempt_count`;
+  - successful processing remains proven by `order_trade_applications`.
+
+TPS-118 implementation - Match checkpoint relay candidate:
+
+- Added `match_engine.trade_publish_checkpoints`:
+  - one row per relay name;
+  - tracks `last_created_at` + `last_trade_id`;
+  - records batch failure attempts and last error without per-trade status rows.
+- Added `idx_trade_executions_created_trade_id` for checkpoint scans over durable trade facts.
+- Added `TradeExecutionCheckpointRelay` behind `eap.match-engine.trade-checkpoint-relay.enabled`.
+- Added `eap.match-engine.trade-outbox.write-enabled`.
+  - default remains `true`;
+  - checkpoint A/B can set it to `false`, so Match writes only `trade_executions`.
+- Loadtest profile can now switch modes:
+
+```bash
+EAP_MATCH_TRADE_OUTBOX_WRITE_ENABLED=false
+EAP_MATCH_TRADE_OUTBOX_RELAY_ENABLED=false
+EAP_MATCH_TRADE_CHECKPOINT_RELAY_ENABLED=true
+```
+
+Checkpoint relay semantics:
+
+- Relay reads unpublished rows from `match_engine.trade_executions` after the checkpoint cursor.
+- It publishes `TradeExecutedEvent` to the same trade exchange/routing key.
+- It advances the checkpoint only after the whole selected batch is broker-confirmed.
+- If publish/confirm fails, checkpoint does not advance; the next poll republishes the same batch.
+- Duplicate replay is expected and must be absorbed by downstream `trade_id` idempotency:
+  - Order: `order_trade_applications.trade_id`;
+  - Wallet: `trade_settlements.trade_id`.
+
+Verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-order ./gradlew --no-daemon test --tests com.eap.eap_order.application.TradeExecutedListenerTest` | PASS |
+| `eap-order ./gradlew --no-daemon testClasses` | PASS |
+| `eap-matchEngine ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.JpaTradeExecutionRecorderTest --tests com.eap.eap_matchengine.application.TradeOutboxRelayTest` | PASS |
+| `eap-matchEngine ./gradlew --no-daemon testClasses` | PASS |
+| `GLT_TPS117_118_CHECKPOINT_RELAY_SMOKE_500_R2` | PASS |
+
+Smoke result:
+
+| Run | Mode | Actual input TPS | Completed trades | Business convergence TPS | Completion seconds | Final backlog | Active reservations |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_TPS117_118_CHECKPOINT_RELAY_SMOKE_500_R2` | Match checkpoint relay, no Match outbox write | `1000.53` | `500` | `616.46` | `0.81` | `0` | `0` |
+
+Post-smoke DB checks:
+
+| Check | Value |
+| --- | ---: |
+| Match `trade_executions` | `500` |
+| Match `trade_outbox` | `0` |
+| Match `trade_publish_checkpoints` | `1` |
+| Match checkpoint `attempt_count` | `0` |
+| Order `order_trade_applications` | `500` |
+| Order `order_trade_execution_inbox` | `0` |
+
+Known constraints:
+
+- This is not yet the default production path.
+- The checkpoint relay is an A/B candidate for loadtest and needs a 10k comparison before acceptance.
+- Its current failure behavior is batch-level:
+  - a failed publish/confirm keeps the checkpoint fixed;
+  - successful messages in the failed batch may be replayed;
+  - this intentionally trades per-trade relay bookkeeping for downstream idempotent replay.
+- If this becomes the accepted path, add explicit diagnostics for checkpoint lag:
+  - latest `trade_executions.created_at` minus checkpoint `last_created_at`;
+  - count of rows after checkpoint;
+  - checkpoint attempt count and last error.
+
+Next validation:
+
+- Run 10k light A/B:
+  - current default: Match outbox write + outbox relay;
+  - candidate: no Match outbox write + checkpoint relay.
+- Compare:
+  - business convergence TPS;
+  - Match trade record transaction time;
+  - Match relay select/publish/confirm/checkpoint mark time;
+  - `trade_outbox` row count;
+  - downstream duplicate/failure counts;
+  - final queues/DLQ and durable state counts.
+
+10k light A/B result:
+
+| Run | Mode | Actual input TPS | Valid capacity comparison | Completed trades | Business convergence TPS | Completion seconds | Max Match ready | Last non-zero queue | Final backlog |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `GLT_TPS117_118_BASELINE_OUTBOX_LIGHT_10K_R1` | Default Match outbox relay, Order success inbox removed | `9981.10` | yes | `10000` | `1231.16` | `8.12` | `404` | `wallet.tradeExecuted.queue` | `0` |
+| `GLT_TPS117_118_CHECKPOINT_RELAY_LIGHT_10K_R1` | Match checkpoint relay, no Match outbox write | `7777.88` | no - driver under-offered | `10000` | `822.39` | `12.16` | `3107` | `wallet.tradeExecuted.queue` | `0` |
+
+Post-10k checkpoint DB checks:
+
+| Check | Value |
+| --- | ---: |
+| Match `trade_executions` | `10000` |
+| Match `trade_outbox` | `0` |
+| Match `trade_publish_checkpoints` | `1` |
+| Match checkpoint `attempt_count` | `0` |
+| Order `order_trade_applications` | `10000` |
+| Order `order_trade_execution_inbox` | `0` |
+
+Timer comparison:
+
+| Metric | Default outbox relay | Checkpoint relay candidate | Interpretation |
+| --- | ---: | ---: | --- |
+| Match `try_match` sum | `46.694s` | `68.794s` | Candidate put more pressure on MatchEngine. |
+| Match `trade_record.transaction_total` | `12.734s` | `28.244s` | Removing the outbox row did not reduce transaction wall time in the full chain. |
+| Match `trade_record.transaction_body` | `7.605s` | `18.891s` | Candidate was slower inside the transaction window. |
+| Match `trade_record.commit_gap` | `5.129s` | `9.353s` | Candidate also paid a larger commit/transaction gap. |
+| Match relay batch duration | `7.369s` | `11.357s` | Current checkpoint relay is not a faster publication path. |
+| Match relay confirm wall | `6.537s` | `9.479s` | Candidate confirm path is slower in this implementation. |
+| Wallet settlement batch | `6.479s` | `10.441s` | Downstream drain also worsened under candidate pressure. |
+| Order apply batch total | `7.086s` | `8.151s` | Order remained correct; cost was not the main regression. |
+
+Decision:
+
+- Accept TPS-117 as a promising hot-path simplification:
+  - Order no longer writes a success-path inbox row per `TradeExecuted`;
+  - the valid default-relay 10k run reached `1231.16` completed trades/s with `10000/10000` durable completion and zero final backlog.
+- Do not accept TPS-118 checkpoint relay as the default path:
+  - it is functionally correct in smoke and 10k;
+  - it eliminated `trade_outbox` rows as intended;
+  - however, the first 10k candidate under-delivered the input driver and completed materially slower than the default relay path.
+- Keep these default settings:
+  - `eap.match-engine.trade-outbox.write-enabled=true`;
+  - `eap.match-engine.trade-outbox-relay.enabled=true`;
+  - `eap.match-engine.trade-checkpoint-relay.enabled=false`.
+
+Current interpretation:
+
+- The separate Match `trade_outbox` row is still write amplification, but the current checkpoint relay implementation is not the right replacement.
+- The checkpoint candidate likely serializes too much relay work and increases Match-side pressure instead of reducing it.
+- If checkpoint relay is revisited, it needs partitioned or parallel checkpoint publishing plus clearer checkpoint-lag diagnostics before another 10k comparison.
+- The next useful measurement should either:
+  - repeat the default outbox path two more times to confirm the `~1231 TPS` result is stable after TPS-117; or
+  - continue with Wallet settlement / Redis reservation costs, because `wallet.tradeExecuted.queue` remained the last queue to drain in the accepted run.
+
+### 2026-07-24 - TPS-119 Remove retired Order trade-applied outbox shape
+
+Status: implemented; 500 smoke verified.
+
+Context:
+
+- TPS-111 removed the downstream-to-MatchEngine completion-marker callbacks from the business hot path.
+- TPS-117 changed Order success-path idempotency to rely on `order_trade_applications.trade_id` and made `order_trade_execution_inbox` failure diagnostics only.
+- After those changes, Order `TradeExecuted` application still carried old trade-applied outbox support in the SQL shape:
+  - `TradeApplicationBatchAppendCommand` still accepted an `OrderIntegrationEvent`;
+  - the batch CTE still created outbox arrays;
+  - the batch CTE still had an `inserted_outbox` branch;
+  - `OrderDbCeilingProbe` still measured the older `trade application + matching state + order_event_outbox` shape.
+
+Decision:
+
+- Do not revive `OrderTradeAppliedEvent` as a hot-path callback.
+- Keep Order completion represented by durable Order-owned facts:
+  - `order_service.order_trade_applications`;
+  - `order_service.order_matching_state`.
+- Keep the normal Order event outbox for command-side events such as order submission and asset-reservation flows.
+- Remove only the retired trade-applied marker outbox shape from the `TradeExecuted` application path.
+
+Implementation:
+
+- `OrderEventSourcingService` no longer carries a trade-applied integration event through `PreparedTrade`.
+- `OrderEventAppender.appendTradeMatchedFromCaughtUpProjectionIfTradeApplicationAbsent(...)` now takes only:
+  - buyer command;
+  - seller command;
+  - matched quantities;
+  - `OrderTradeApplication`.
+- The single-trade CTE now only:
+  - inserts `order_trade_applications`;
+  - updates two `order_matching_state` rows.
+- The batch CTE now only:
+  - checks existing trade applications;
+  - inserts `order_trade_applications`;
+  - updates buyer/seller `order_matching_state`.
+- Removed batch outbox arrays and dead helper code from the trade-application hot path.
+- Updated `OrderDbCeilingProbe` to measure the current production shape instead of the retired outbox-marker shape.
+- Updated Order event-store integration tests to expect no `order_event_outbox` rows from trade application.
+
+Smoke verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-order ./gradlew --no-daemon testClasses` | PASS |
+| `eap-order ./gradlew --no-daemon test --tests com.eap.eap_order.application.TradeExecutedListenerTest` | PASS |
+| `GLT_TPS119_ORDER_TRADE_NO_OUTBOX_SMOKE_500_R1` | PASS |
+
+Smoke result:
+
+| Run | Actual input TPS | Completed trades | Business convergence TPS | Completion seconds | Final backlog | Last non-zero queue |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS119_ORDER_TRADE_NO_OUTBOX_SMOKE_500_R1` | `999.99` | `500` | `545.43` | `0.92` | `0` | `wallet.tradeExecuted.queue` |
+
+Post-smoke DB checks:
+
+| Check | Value |
+| --- | ---: |
+| Match `trade_executions` | `500` |
+| Match `trade_outbox` | `500` |
+| Order `order_trade_applications` | `500` |
+| Order `order_matching_state MATCHED` | `1000` |
+| Order `order_event_outbox` | `0` |
+| Order `order_trade_execution_inbox` | `0` |
+| Wallet `trade_settlements` | `500` |
+
+Smoke timer notes:
+
+- Order remained correct:
+  - `completedTrades=500`;
+  - `orderCommandMatchedRows=1000`;
+  - final marker callback queues stayed unused.
+- Order apply timing in this 500 smoke:
+  - `eap_order_trade_apply_duration_seconds{phase="batch_total"}`: `37` batches, `0.595s` cumulative, `16.087ms` mean;
+  - `Match persisted -> Order trade application`: p99 `0.692ms`.
+- The smoke is not a capacity comparison. It only proves the slimmer Order trade-application SQL shape is functionally valid.
+
+Next validation:
+
+- Run the default 10k light path again with TPS-119 included.
+- Compare against `GLT_TPS117_118_BASELINE_OUTBOX_LIGHT_10K_R1`:
+  - business convergence TPS;
+  - Order `batch_total`, `batch_lock_heads`, and `batch_append`;
+  - `order_event_outbox` row count;
+  - final queues/DLQ and durable state counts.
+- If 10k remains stable, keep TPS-119 as accepted cleanup and continue with Wallet settlement / Redis reservation cost attribution.
+
+10k light validation:
+
+| Run | Actual input TPS | Valid capacity comparison | Completed trades | Business convergence TPS | Completion seconds | Final backlog | Last non-zero queue |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS117_118_BASELINE_OUTBOX_LIGHT_10K_R1` | `9981.10` | yes | `10000` | `1231.16` | `8.12` | `0` | `wallet.tradeExecuted.queue` |
+| `GLT_TPS119_ORDER_TRADE_NO_OUTBOX_LIGHT_10K_R1` | `9983.56` | yes | `10000` | `1125.85` | `8.88` | `0` | `wallet.tradeExecuted.queue` |
+
+Post-10k DB checks:
+
+| Check | Value |
+| --- | ---: |
+| Match `trade_executions` | `10000` |
+| Match `trade_outbox` | `10000` |
+| Order `order_trade_applications` | `10000` |
+| Order `order_matching_state MATCHED` | `20000` |
+| Order `order_event_outbox` | `0` |
+| Order `order_trade_execution_inbox` | `0` |
+| Wallet `trade_settlements` | `10000` |
+
+10k timer comparison:
+
+| Metric | TPS-117/118 baseline | TPS-119 | Interpretation |
+| --- | ---: | ---: | --- |
+| Order `batch_total` | `7.086s` | `7.920s` | No proven Order TPS win in this single run. |
+| Order `batch_append` | `3.371s` | `3.952s` | SQL shape is slimmer, but run-to-run noise still dominates. |
+| Order `batch_lock_heads` | `2.219s` | `2.524s` | Lock/read phase remains visible. |
+| Match persisted -> Order apply p99 | `0.768ms` | `0.923ms` | Still sub-millisecond class; Order is not the long-tail bottleneck. |
+| Wallet settlement batch | `6.479s` | `8.618s` | Wallet remains the downstream tail in this run. |
+| Match persisted -> Wallet settlement p99 | `2137.560ms` | `2057.550ms` | Durable convergence tail remains Wallet-dominated. |
+
+TPS-119 decision:
+
+- Accept as cleanup and write-model simplification, not as a proven throughput improvement.
+- The change removes a retired SQL/Java branch and makes the Order trade-application hot path match the current business definition:
+  - no per-trade Order marker callback;
+  - no `order_event_outbox` row from trade application;
+  - durable Order completion is `order_trade_applications + order_matching_state`.
+- The first 10k run landed lower than the previous best valid baseline (`1125.85` vs `1231.16`), so do not claim it increased TPS.
+- It is still valuable because it reduces model complexity and keeps future DB ceiling probes aligned with the actual production path.
+- Next TPS work should not stay on Order marker cleanup. Continue with:
+  - Wallet settlement SQL / batch shape;
+  - Match durable write + outbox confirm cost;
+  - Redis reservation cost attribution under the same 10k offered-load model.
+
+### 2026-07-24 - TPS-120 Retire Wallet settlement relay state from hot path
+
+Status: implemented; 500 smoke verified.
+
+Context:
+
+- TPS-111 removed per-trade `OrderTradeAppliedEvent` and `WalletTradeSettledEvent` callbacks to MatchEngine from the business completion definition.
+- After that change, Wallet completion is represented by Wallet-owned durable state:
+  - `wallet_service.trade_settlements`;
+  - buyer/seller wallet balance updates;
+  - final queue/DLQ drain and balance invariants in the load test.
+- `wallet_service.trade_settlements` still carried the older integrated `WalletTradeSettledEvent` relay shape:
+  - event payload reconstruction columns: buyer/seller/order IDs, price, quantity, settlement amounts;
+  - relay lifecycle columns: `event_status`, `attempt_count`, `next_retry_at`, `last_error`, `updated_at`;
+  - partial pending-event index.
+- The relay was disabled in default/loadtest config and no longer part of the current business hot path, but every settlement insert still paid the wider-row write cost.
+
+Decision:
+
+- Retire `WalletTradeSettlementRelay` instead of leaving a half-populated relay source.
+- Keep `trade_settlements.trade_id` as the Wallet settlement idempotency key and durable settlement fact.
+- Keep wallet balance updates in the same transaction as the settlement insert.
+- Do not publish `WalletTradeSettledEvent` as a MatchEngine completion callback.
+
+Implementation:
+
+- `WalletTradeSettlementAppender` now inserts only:
+  - `trade_id`;
+  - `legacy_match_id`;
+  - `settled_at`.
+- Batch settlement SQL still uses input buyer/seller IDs and settlement amounts for the wallet updates, but it no longer persists those relay payload fields into `trade_settlements`.
+- `TradeSettlementEntity` now maps only:
+  - `tradeId`;
+  - `legacyMatchId`;
+  - `settledAt`;
+  - `insertedAt`.
+- Added Liquibase changeset `wallet-018`:
+  - drops the pending-event partial index;
+  - drops the old relay payload/lifecycle columns.
+- Removed `WalletTradeSettlementRelay` and its focused test.
+- Removed dead Wallet relay metrics and loadtest config.
+- Updated `WalletDbCeilingProbe` to measure the current settlement fact + two wallet updates shape.
+- Updated integrated stage-lag diagnostics to use only immutable `trade_settlements.inserted_at` for Wallet settlement timing.
+
+Verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-wallet ./gradlew --no-daemon testClasses` | PASS |
+| `eap-wallet ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.TradeExecutedListenerTest` | PASS |
+| `GLT_TPS120_WALLET_SETTLEMENT_SLIM_SMOKE_500_R1` | PASS |
+
+Smoke result:
+
+| Run | Actual input TPS | Valid capacity comparison | Completed trades | Wallet settlements | Business convergence TPS | Completion seconds | Final backlog | Last non-zero queue |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS120_WALLET_SETTLEMENT_SLIM_SMOKE_500_R1` | `999.72` | yes | `500` | `500` | `545.11` | `0.92` | `0` | `wallet.tradeExecuted.queue` |
+
+Post-smoke correctness checks:
+
+| Check | Value |
+| --- | ---: |
+| `wallet_service.trade_settlements` rows | `500` |
+| `lockedCurrency` | `0` |
+| `lockedAmount` | `0` |
+| Final queue backlog | `0` |
+| Queue drain tail after completed trades | `0.00s` |
+
+Post-smoke schema check:
+
+`wallet_service.trade_settlements` now has only:
+
+| Column | Purpose |
+| --- | --- |
+| `trade_id` | Primary key and settlement idempotency key. |
+| `legacy_match_id` | Compatibility / attribution field. |
+| `settled_at` | Business/event settlement time. |
+| `inserted_at` | Immutable Wallet durable apply timestamp for lag attribution. |
+
+The only remaining index is `trade_settlements_pkey` on `trade_id`.
+
+Smoke timer notes:
+
+- The smoke is not a capacity comparison against the 10k baseline.
+- It proves the slimmer Wallet settlement schema is compatible with service startup, Liquibase migration, settlement idempotency, wallet balance updates, and the current completion gate.
+- In this 500 smoke, Wallet remained the final durable tail:
+  - `Match persisted -> Wallet settlement inserted` p99 `236.542ms`;
+  - `Match persisted -> durable convergence` p99 `236.542ms`.
+
+10k light validation:
+
+| Run | Actual input TPS | Valid capacity comparison | Completed trades | Business convergence TPS | Completion seconds | Final backlog | Last non-zero queue |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS117_118_BASELINE_OUTBOX_LIGHT_10K_R1` | `9981.10` | yes | `10000` | `1231.16` | `8.12` | `0` | `wallet.tradeExecuted.queue` |
+| `GLT_TPS119_ORDER_TRADE_NO_OUTBOX_LIGHT_10K_R1` | `9983.56` | yes | `10000` | `1125.85` | `8.88` | `0` | `wallet.tradeExecuted.queue` |
+| `GLT_TPS120_WALLET_SETTLEMENT_SLIM_LIGHT_10K_R1` | `9964.05` | yes | `10000` | `1309.83` | `7.63` | `0` | `order.tradeExecuted.queue` |
+| `GLT_TPS120_WALLET_SETTLEMENT_SLIM_LIGHT_10K_R2` | `9871.39` | yes | `10000` | `815.44` | `12.62` | `0` | `order.tradeExecuted.queue` |
+| `GLT_TPS120_WALLET_SETTLEMENT_SLIM_LIGHT_10K_R3` | `9963.34` | yes | `10000` | `1172.64` | `8.53` | `0` | `order.tradeExecuted.queue` |
+
+TPS-120 repeat summary:
+
+| Metric | Value |
+| --- | ---: |
+| Runs | `3` |
+| Completed trades per run | `10000/10000` |
+| Valid capacity comparisons | `3/3` |
+| Actual input TPS avg | `9932.93` |
+| Business convergence TPS avg | `1099.30` |
+| Business convergence TPS median | `1172.64` |
+| Business convergence TPS min / max | `815.44` / `1309.83` |
+| Completion seconds avg | `9.59s` |
+| Completion seconds min / max | `7.63s` / `12.62s` |
+
+Post-10k correctness checks:
+
+| Check | Value |
+| --- | ---: |
+| Match `trade_executions` | `10000` |
+| Order `order_trade_applications` / command matched rows | `10000` / `20000` |
+| Wallet `trade_settlements` | `10000` |
+| Wallet `lockedCurrency` / `lockedAmount` | `0` / `0` |
+| Final queues / DLQ | `0` |
+| Queue drain tail after completed trades | `0.00s` |
+
+10k timer comparison:
+
+| Metric | TPS-119 | TPS-120 | Interpretation |
+| --- | ---: | ---: | --- |
+| Business completion seconds | `8.88s` | `7.63s` | Full durable convergence improved in this run. |
+| Business convergence TPS | `1125.85` | `1309.83` | `+16.3%` versus TPS-119; `+6.4%` versus TPS-117/118 baseline. |
+| Match `try_match` sum | `41.273s` | `33.419s` | Match-side work also improved in this run; do not attribute the full gain only to Wallet schema slimming. |
+| Match `trade_record.transaction_total` | `14.417s` | `10.112s` | Lower transaction wall time helped the whole chain. |
+| Wallet settlement batch sum | `8.618s` | `14.378s` | Batch wall-clock cumulative increased, so this timer alone does not explain the TPS win. |
+| Wallet settlement CTE sum | `6.993s` | `8.412s` | Cumulative SQL timer did not fall; mean changed with the observed count. Treat with caution. |
+| Match persisted -> Wallet settlement p99 | `2057.550ms` | `1881.940ms` | Wallet durable tail improved but still dominates durable convergence. |
+| Match persisted -> Order trade application p99 | `0.923ms` | `1.548ms` | Order remains sub-2ms from Match persistence in this run. |
+
+TPS-120 decision:
+
+- Accept as an architecture and write-model cleanup.
+- Correctness held across all three 10k light repeats:
+  - `10000/10000` completed every run;
+  - input driver valid every run;
+  - final queues/DLQ drained every run;
+  - Wallet balance invariants held every run.
+- Do not claim a stable `1300 TPS` result:
+  - R1 reached `1309.83 TPS`;
+  - R2 fell to `815.44 TPS`;
+  - R3 recovered to `1172.64 TPS`;
+  - the three-run average is `1099.30 TPS`, with median `1172.64 TPS`.
+- The repeat result shows the current 10k burst workload still has significant run-to-run noise.
+- R2's outlier had `maxMatchEngineQueueReady=3501`, pointing to MatchEngine input/matching backlog rather than Wallet settlement loss or broken correctness.
+- The important durable-state model improvement should stay regardless of repeat-run noise:
+  - Wallet settlement is now one idempotency/fact row plus two wallet balance updates;
+  - the retired `WalletTradeSettledEvent` relay source is gone from the hot path;
+  - completion is verified by durable state and final queue/DLQ drain, not another callback loop.
+
+Next validation:
+
+- Do not publish the single-run `1309.83 TPS` as a stable benchmark.
+- For public/performance-report numbers, prefer median/range or a longer steady-state workload.
+- Continue attribution on the remaining variable tail:
+  - Wallet listener batch fragmentation and transaction wall time;
+  - Match `trade_outbox` confirm wall;
+  - Redis reservation/completion eval cost under 10k offered load.
+
+100k / 10s long-pressure probe:
+
+| Run | Target input TPS | Actual input TPS | Valid capacity comparison | Completed trades | Business convergence TPS | Completion seconds | Final backlog |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `GLT_TPS120_WALLET_SETTLEMENT_SLIM_LIGHT_100K_R1` | `10000` | `7267.42` | no: `driver_offered_tps_below_threshold` | `100000` | `1122.11` | `89.51` | `0` |
+
+Correctness result:
+
+- `100000/100000` trades completed.
+- Match `trade_executions=100000`.
+- Order command matched rows `200000`.
+- Wallet `trade_settlements=100000`.
+- Wallet `lockedCurrency=0`, `lockedAmount=0`.
+- Final queues and DLQ drained to `0`.
+
+Capacity interpretation:
+
+- This is not a valid `10k input TPS` capacity result because the publisher only achieved `7267.42/s`.
+- The run is still useful as a long-pressure diagnostic because the offered load was far above the completed-business rate.
+- `matchEngine.orderConfirmed.queue` peaked at `87847` ready messages and was the first large backlog.
+- `tradeExecutionReachTps=1313.97`, while durable business convergence was `1122.11`.
+- The long-pressure result supports this current capacity model:
+  - MatchEngine can persist `TradeExecuted` faster than the full business chain can converge.
+  - Order application is not the long tail: `Match persisted -> Order trade application` p99 was `0.949ms`.
+  - Wallet settlement remains the durable convergence tail after Match persistence: `Match persisted -> Wallet settlement inserted` p99 was `17821.000ms`.
+  - The first large queue backlog is before MatchEngine processing, so the next throughput work should start with MatchEngine intake/matching cost, not downstream marker callbacks.
+
+100k app timer highlights:
+
+| Rank | Timer | Count | Cumulative seconds | Mean ms | Interpretation |
+| ---: | --- | ---: | ---: | ---: | --- |
+| 1 | `match_engine_try_match_duration` | `200000` | `566.575s` | `2.833` | Main MatchEngine intake/matching work. |
+| 2 | `match_engine_try_match_outcome{fully_matched}` | `100000` | `464.774s` | `4.648` | Incoming BUY matched path is expensive under long pressure. |
+| 3 | `match_engine_reserve_order` | `200000` | `245.346s` | `1.227` | Reservation / add path cost. |
+| 4 | `match_engine_reserve_order_phase{redis_eval}` | `200000` | `239.505s` | `1.198` | Redis Lua eval dominates reserve/add. |
+| 5 | `match_engine_complete_reservation` | `100000` | `181.620s` | `1.816` | Second Redis Lua call after durable trade insert. |
+| 7 | `match_engine_complete_reservation_phase{redis_eval}` | `100000` | `180.551s` | `1.806` | Completion Lua eval is also a major fixed cost. |
+| 13 | `match_engine_trade_record.transaction_total` | `100000` | `136.009s` | `1.360` | Durable trade execution + outbox transaction. |
+| 20 | `trade_outbox_confirm_wall` | `219` | `69.844s` | `318.922` | Broker confirm wall-clock remains visible. |
+
+Next fix candidates from the long-pressure probe:
+
+1. Review MatchEngine Redis orderbook mutation shape:
+   - `reserveBestMatchOrAddOrderWithSequenceLua(...)` currently serializes the incoming order and executes one reserve/add Lua call for every OrderConfirmed event.
+   - Fully matched trades then execute `completeReservedOrder(...)`, adding a second Redis Lua eval per trade.
+   - Investigate whether fully matched resting orders can be finalized inside the same atomic reservation/match script after durable persistence constraints are reconsidered, or whether a cheaper post-trade Redis cleanup model is acceptable.
+2. Review Match `trade_executions + trade_outbox` transaction:
+   - `JpaTradeExecutionRecorder` writes the durable trade fact and one `trade_outbox` row per trade.
+   - The row is still needed to publish to Order/Wallet, but the transaction and relay confirm wall are now a visible fixed cost.
+   - Check whether publication can be made cheaper without losing retry/reconciliation guarantees.
+3. Improve the long-load test driver before claiming 10k sustained input:
+   - The 100k run only offered `7267.42/s`;
+   - publisher acquire/send times were high;
+   - future `100k` benchmark claims need either a stronger driver mode or a lower target that the driver can actually sustain.
+
+### 2026-07-24 - TPS-122 Friday wrap-up: Wallet batch SQL fix and 1200 TPS boundary
+
+Status: implemented; focused tests and three 10k light runs completed.
+
+Context:
+
+- After TPS-120/TPS-121, the current goal was to push correctness-gated completed-business TPS toward `1200`.
+- The next suspected tail was still durable write / relay cost, but Wallet batch metrics showed a concrete defect:
+  - `eap_wallet_trade_settlement_batch_applied_total=0`;
+  - `eap_wallet_trade_settlement_batch_fallback_total=940`;
+  - `data_integrity` fallback dominated the batch path.
+- This meant the Wallet listener was receiving batches but most batches first failed the batch SQL path and then fell back to single-event settlement.
+
+Root cause:
+
+- `WalletTradeSettlementAppender.APPEND_BATCH_SQL` declared 9 input columns but the `unnest(...)` expression only contained 8 placeholders.
+- Java bound 9 JDBC arrays, so the SQL shape was invalid for the current batch settlement path.
+- The failure was hidden by the designed fallback behavior:
+  - correctness remained intact;
+  - throughput paid for one failed batch attempt plus many single-event settlement transactions.
+
+Implementation:
+
+- Fixed the Wallet batch SQL placeholder list so it matches the 9 bound arrays.
+- Added `WalletTradeSettlementAppenderTest` to assert the batch SQL keeps 9 JDBC placeholders.
+- Kept the fallback path intact for singleton batches and exceptional cases.
+- Added a small Order listener optimization:
+  - successful TradeExecuted batches now use `basicAck(lastDeliveryTag, multiple=true)`;
+  - failed batches use `basicNack(lastDeliveryTag, multiple=true, requeue=true)`;
+  - single-message behavior remains single-message ACK/NACK.
+
+Verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-wallet ./gradlew --no-daemon test --tests com.eap.eap_wallet.application.TradeExecutedListenerTest --tests com.eap.eap_wallet.application.WalletTradeSettlementAppenderTest` | PASS |
+| `eap-order ./gradlew --no-daemon test --tests com.eap.eap_order.application.TradeExecutedListenerTest` | PASS |
+| `GLT_TPS122_WALLET_BATCH_SQL_FIX_10K_R1` | PASS |
+| `GLT_TPS122_WALLET_BATCH_SQL_FIX_ORDER_BATCH_ACK_10K_R2` | PASS |
+| `GLT_TPS122_WALLET_BATCH_SQL_FIX_ORDER_BATCH_ACK_10K_R3` | PASS |
+
+10k light results:
+
+| Run | Actual input TPS | Valid capacity comparison | Completed trades | TradeExecuted reach TPS | Business convergence TPS | Completion seconds | Final backlog | Last non-zero queue |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_TPS122_WALLET_BATCH_SQL_FIX_10K_R1` | `9975.65` | yes | `10000` | `1224.71` | `1173.58` | `8.52` | `0` | `order.tradeExecuted.queue` |
+| `GLT_TPS122_WALLET_BATCH_SQL_FIX_ORDER_BATCH_ACK_10K_R2` | `9966.80` | yes | `10000` | `840.17` | `796.77` | `12.55` | `0` | `wallet.tradeExecuted.queue` |
+| `GLT_TPS122_WALLET_BATCH_SQL_FIX_ORDER_BATCH_ACK_10K_R3` | `9933.61` | yes | `10000` | `1098.90` | `1017.09` | `9.83` | `0` | `wallet.tradeExecuted.queue` |
+
+Correctness checks across all three runs:
+
+- `completedTrades=10000`.
+- `tradeExecutions=10000`.
+- `walletTradeSettlements=10000`.
+- `lockedCurrency=0`.
+- `lockedAmount=0`.
+- Final measured queues and DLQ drained to `0`.
+
+Wallet batch validation:
+
+| Metric | Before fix | After fix examples |
+| --- | ---: | ---: |
+| Batch applied count | `0` | `746` to `912` |
+| Batch fallback reason `data_integrity` | high | `0` |
+| Remaining fallback reason | `data_integrity`, `singleton_batch` | `singleton_batch` only |
+
+Interpretation:
+
+- Accept the Wallet batch SQL fix as a real hot-path improvement:
+  - it removes failed batch attempts;
+  - it restores the intended set-based settlement path;
+  - it keeps settlement idempotency and wallet invariants intact.
+- Do not claim stable `1200` completed-business TPS yet:
+  - the best run reached `1173.58`, close to the target;
+  - repeat runs still ranged from `796.77` to `1173.58`;
+  - MatchEngine input / durable publication showed large run-to-run variance.
+- The Order batch ACK change is acceptable as a small RabbitMQ fixed-cost cleanup, but it is not proven to be the TPS driver.
+
+Monday resume target:
+
+1. Continue from MatchEngine durable publication, not consumer concurrency:
+   - `match_engine_trade_record.transaction_total`;
+   - `insert_trade_outbox`;
+   - `trade_outbox_confirm_wall`;
+   - RabbitMQ publisher confirm behavior under burst load.
+2. Do not accept the current checkpoint relay as a replacement yet:
+   - the earlier checkpoint relay 10k probe skipped a trade under active writes;
+   - cursor advancement over `(created_at, trade_id)` is unsafe without a stable watermark or gap-handling strategy.
+3. Keep the 1200 TPS target, but judge it by repeated valid runs:
+   - at least 3 valid 10k light runs;
+   - all durable correctness checks must pass;
+   - final measured queues and DLQ must drain to zero.

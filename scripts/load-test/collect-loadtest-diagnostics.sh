@@ -134,8 +134,24 @@ ORDER BY sessions DESC, wait_event_type, wait_event, state;
 
 snapshot_all() {
   snapshot_db order "${ORDER_DB_CONTAINER}" eap_order_db "schemaname IN ('order_service', 'public')"
+  snapshot_order_trade_executed_inbox
   snapshot_db wallet "${WALLET_DB_CONTAINER}" eap_wallet_db "schemaname IN ('wallet_service', 'public')"
   snapshot_db match "${MATCH_DB_CONTAINER}" eap_match_db "schemaname IN ('match_engine', 'public')"
+}
+
+snapshot_order_trade_executed_inbox() {
+  safe_psql_exec "order trade-executed inbox status" "${ORDER_DB_CONTAINER}" eap_order_db "
+SELECT status,
+       count(*) AS rows,
+       min(attempt_count) AS min_attempt,
+       max(attempt_count) AS max_attempt,
+       count(*) FILTER (WHERE applied_at IS NULL) AS unapplied,
+       min(received_at) AS first_received_at,
+       max(updated_at) AS last_updated_at
+FROM order_service.order_trade_execution_inbox
+GROUP BY status
+ORDER BY status;
+" "${DIAG_DIR}/order-trade-executed-inbox-status.txt"
 }
 
 rabbitmq_queue_lines_http() {
@@ -341,34 +357,22 @@ WHERE market_id = '${MARKET_ID}';
   fi
 
   if ! psql_tsv_exec "${ORDER_DB_CONTAINER}" eap_order_db "
-SELECT payload::jsonb ->> 'tradeId',
-       EXTRACT(EPOCH FROM created_at) * 1000,
-       EXTRACT(EPOCH FROM published_at) * 1000
-FROM order_service.order_event_outbox
-WHERE message_type = 'com.eap.common.event.OrderTradeAppliedEvent'
-  AND payload LIKE '%${MARKET_ID}-%';
-" > "${lag_dir}/order-trade-applied-outbox.tsv" 2> "${lag_dir}/order-trade-applied-outbox.err"; then
-    echo "[WARN] integrated stage lag unavailable: failed to read order trade-applied outbox" > "${summary_file}"
+SELECT trade_id,
+       EXTRACT(EPOCH FROM applied_at) * 1000
+FROM order_service.order_trade_applications
+WHERE trade_id LIKE '${MARKET_ID}-%';
+" > "${lag_dir}/order-trade-applications.tsv" 2> "${lag_dir}/order-trade-applications.err"; then
+    echo "[WARN] integrated stage lag unavailable: failed to read order trade applications" > "${summary_file}"
     return
   fi
 
   if ! psql_tsv_exec "${WALLET_DB_CONTAINER}" eap_wallet_db "
 SELECT trade_id,
-       EXTRACT(EPOCH FROM inserted_at) * 1000,
-       EXTRACT(EPOCH FROM updated_at) * 1000
+       EXTRACT(EPOCH FROM inserted_at) * 1000
 FROM wallet_service.trade_settlements
 WHERE trade_id LIKE '${MARKET_ID}-%';
 " > "${lag_dir}/wallet-trade-settlement-times.tsv" 2> "${lag_dir}/wallet-trade-settlement-times.err"; then
     echo "[WARN] integrated stage lag unavailable: failed to read wallet trade settlements" > "${summary_file}"
-    return
-  fi
-
-  if ! psql_tsv_exec "${MATCH_DB_CONTAINER}" eap_match_db "
-SELECT trade_id, marker_type, EXTRACT(EPOCH FROM created_at) * 1000
-FROM match_engine.trade_completion_markers
-WHERE trade_id LIKE '${MARKET_ID}-%';
-" > "${lag_dir}/match-completion-markers.tsv" 2> "${lag_dir}/match-completion-markers.err"; then
-    echo "[WARN] integrated stage lag unavailable: failed to read match completion markers" > "${summary_file}"
     return
   fi
 
@@ -377,85 +381,45 @@ WHERE trade_id LIKE '${MARKET_ID}-%';
       matchCreated[$1] = $2
       next
     }
-    FILENAME ~ /order-trade-applied-outbox.tsv$/ {
-      orderOutboxCreated[$1] = $2
-      orderOutboxPublished[$1] = $3
+    FILENAME ~ /order-trade-applications.tsv$/ {
+      orderApplied[$1] = $2
       next
     }
     FILENAME ~ /wallet-trade-settlement-times.tsv$/ {
       walletSettlementInserted[$1] = $2
-      walletSettlementSent[$1] = $3
-      next
-    }
-    FILENAME ~ /match-completion-markers.tsv$/ {
-      if ($2 == "ORDER_APPLIED") orderMarker[$1] = $3
-      if ($2 == "WALLET_SETTLED") walletMarker[$1] = $3
       next
     }
     END {
       print "trade_id",
             "match_created_ms",
-            "order_outbox_created_ms",
-            "order_outbox_mark_sent_ms",
+            "order_application_applied_ms",
             "wallet_settlement_inserted_ms",
-            "wallet_settlement_mark_sent_ms",
-            "order_marker_created_ms",
-            "wallet_marker_created_ms",
-            "match_to_order_outbox_created_ms",
-            "order_outbox_created_to_mark_sent_ms",
-            "order_outbox_created_to_marker_ms",
+            "match_to_order_application_ms",
             "match_to_wallet_settlement_inserted_ms",
-            "wallet_settlement_inserted_to_mark_sent_ms",
-            "wallet_settlement_inserted_to_marker_ms",
-            "match_to_wallet_settlement_mark_sent_ms",
-            "match_to_wallet_marker_created_ms",
-            "marker_convergence_ms",
-            "order_wallet_marker_skew_ms"
+            "durable_convergence_ms",
+            "order_wallet_durable_skew_ms"
       for (tradeId in matchCreated) {
-        if (!(tradeId in orderOutboxCreated) || !(tradeId in walletSettlementInserted)) {
+        if (!(tradeId in orderApplied) || !(tradeId in walletSettlementInserted)) {
           continue
         }
-        orderMarkerValue = (tradeId in orderMarker) ? orderMarker[tradeId] : ""
-        walletMarkerValue = (tradeId in walletMarker) ? walletMarker[tradeId] : ""
-        orderMarkSentLag = orderOutboxPublished[tradeId] == "" ? "" : orderOutboxPublished[tradeId] - orderOutboxCreated[tradeId]
-        orderMarkerLag = orderMarkerValue == "" ? "" : orderMarkerValue - orderOutboxCreated[tradeId]
-        walletMarkSentLag = walletSettlementSent[tradeId] == "" ? "" : walletSettlementSent[tradeId] - walletSettlementInserted[tradeId]
-        walletMarkerFromInsertedLag = walletMarkerValue == "" ? "" : walletMarkerValue - walletSettlementInserted[tradeId]
-        walletMarkSentFromMatchLag = walletSettlementSent[tradeId] == "" ? "" : walletSettlementSent[tradeId] - matchCreated[tradeId]
-        walletMarkerLag = walletMarkerValue == "" ? "" : walletMarkerValue - matchCreated[tradeId]
-        convergence = ""
-        markerSkew = ""
-        if (orderMarkerValue != "" && walletMarkerValue != "") {
-          maxMarker = orderMarkerValue > walletMarkerValue ? orderMarkerValue : walletMarkerValue
-          convergence = maxMarker - matchCreated[tradeId]
-          markerSkew = orderMarkerValue > walletMarkerValue \
-            ? orderMarkerValue - walletMarkerValue \
-            : walletMarkerValue - orderMarkerValue
-        }
+        maxDurable = orderApplied[tradeId] > walletSettlementInserted[tradeId] ? orderApplied[tradeId] : walletSettlementInserted[tradeId]
+        convergence = maxDurable - matchCreated[tradeId]
+        durableSkew = orderApplied[tradeId] > walletSettlementInserted[tradeId] \
+          ? orderApplied[tradeId] - walletSettlementInserted[tradeId] \
+          : walletSettlementInserted[tradeId] - orderApplied[tradeId]
         print tradeId,
               matchCreated[tradeId],
-              orderOutboxCreated[tradeId],
-              orderOutboxPublished[tradeId],
+              orderApplied[tradeId],
               walletSettlementInserted[tradeId],
-              walletSettlementSent[tradeId],
-              orderMarkerValue,
-              walletMarkerValue,
-              orderOutboxCreated[tradeId] - matchCreated[tradeId],
-              orderMarkSentLag,
-              orderMarkerLag,
+              orderApplied[tradeId] - matchCreated[tradeId],
               walletSettlementInserted[tradeId] - matchCreated[tradeId],
-              walletMarkSentLag,
-              walletMarkerFromInsertedLag,
-              walletMarkSentFromMatchLag,
-              walletMarkerLag,
               convergence,
-              markerSkew
+              durableSkew
       }
     }
   ' "${lag_dir}/match-trade-created.tsv" \
-    "${lag_dir}/order-trade-applied-outbox.tsv" \
-    "${lag_dir}/wallet-trade-settlement-times.tsv" \
-    "${lag_dir}/match-completion-markers.tsv" > "${rows_file}"
+    "${lag_dir}/order-trade-applications.tsv" \
+    "${lag_dir}/wallet-trade-settlement-times.tsv" > "${rows_file}"
 
   {
     echo "# Integrated Stage Lag"
@@ -469,23 +433,16 @@ WHERE trade_id LIKE '${MARKET_ID}-%';
     echo "Notes:"
     echo
     echo '- Match time uses `trade_executions.created_at`.'
-    echo '- Order time uses `OrderTradeAppliedEvent` outbox `created_at` and mark-SENT `published_at`, not the event `applied_at` business timestamp.'
-    echo '- Wallet settlement apply time uses `trade_settlements.inserted_at`; Wallet relay mark-SENT time uses settlement row `updated_at` after RabbitMQ confirm.'
-    echo '- Relay mark-SENT timestamps happen after RabbitMQ confirm and can be later than downstream marker creation; they are attribution points, not delivery-before-consume ordering.'
-    echo '- Completion marker timing uses `trade_completion_markers.created_at`, not `marker_at` from the business event payload.'
+    echo '- Order time uses `order_trade_applications.applied_at`, the durable command-side trade-application fact.'
+    echo '- Wallet settlement apply time uses `trade_settlements.inserted_at`, the durable settlement fact insert time.'
+    echo '- Completion marker timing is intentionally absent because Order/Wallet no longer publish per-trade marker events to MatchEngine.'
     echo
     echo "| Stage | Count | p50 ms | p95 ms | p99 ms | max ms |"
     echo "|---|---:|---:|---:|---:|---:|"
-    emit_lag_summary_row "${rows_file}" "Match persisted -> Order outbox created" 9
-    emit_lag_summary_row "${rows_file}" "Order outbox created -> relay mark-SENT" 10
-    emit_lag_summary_row "${rows_file}" "Order outbox created -> ORDER_APPLIED marker" 11
-    emit_lag_summary_row "${rows_file}" "Match persisted -> Wallet settlement inserted" 12
-    emit_lag_summary_row "${rows_file}" "Wallet settlement inserted -> relay mark-SENT" 13
-    emit_lag_summary_row "${rows_file}" "Wallet settlement inserted -> WALLET_SETTLED marker" 14
-    emit_lag_summary_row "${rows_file}" "Match persisted -> Wallet settlement relay mark-SENT" 15
-    emit_lag_summary_row "${rows_file}" "Match persisted -> WALLET_SETTLED marker" 16
-    emit_lag_summary_row "${rows_file}" "Match persisted -> both completion markers" 17
-    emit_lag_summary_row "${rows_file}" "Order/Wallet marker skew" 18
+    emit_lag_summary_row "${rows_file}" "Match persisted -> Order trade application" 5
+    emit_lag_summary_row "${rows_file}" "Match persisted -> Wallet settlement inserted" 6
+    emit_lag_summary_row "${rows_file}" "Match persisted -> durable convergence" 7
+    emit_lag_summary_row "${rows_file}" "Order/Wallet durable skew" 8
   } > "${summary_file}"
 }
 
@@ -604,6 +561,7 @@ case "${PHASE}" in
     ;;
   after-run-light)
     snapshot_runtime_light
+    snapshot_order_trade_executed_inbox
     snapshot_integrated_stage_lag
     ;;
   stage-lag)

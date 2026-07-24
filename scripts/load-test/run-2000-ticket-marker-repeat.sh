@@ -183,6 +183,7 @@ jq -s \
       tradeExecutionReachTps,
       orderCommandMatchReachTps,
       walletSettlementReachTps,
+      businessConvergenceReachTps: (.businessConvergenceReachTps // .completionMarkerReachTps),
       completionMarkerReachTps,
       completedTrades,
       tradeExecutions,
@@ -204,6 +205,7 @@ jq -s \
         tradeExecutionReachTps: ($runs | stat("tradeExecutionReachTps")),
         orderCommandMatchReachTps: ($runs | stat("orderCommandMatchReachTps")),
         walletSettlementReachTps: ($runs | stat("walletSettlementReachTps")),
+        businessConvergenceReachTps: ($runs | map(.businessConvergenceReachTps = (.businessConvergenceReachTps // .completionMarkerReachTps)) | stat("businessConvergenceReachTps")),
         completionMarkerReachTps: ($runs | stat("completionMarkerReachTps")),
         maxMatchEngineQueueUnacked: ($runs | stat("maxMatchEngineQueueUnacked"))
       },
@@ -217,6 +219,7 @@ jq -s \
         tradeExecutionReachTps: ($validRuns | stat("tradeExecutionReachTps")),
         orderCommandMatchReachTps: ($validRuns | stat("orderCommandMatchReachTps")),
         walletSettlementReachTps: ($validRuns | stat("walletSettlementReachTps")),
+        businessConvergenceReachTps: ($validRuns | map(.businessConvergenceReachTps = (.businessConvergenceReachTps // .completionMarkerReachTps)) | stat("businessConvergenceReachTps")),
         completionMarkerReachTps: ($validRuns | stat("completionMarkerReachTps")),
         maxMatchEngineQueueUnacked: ($validRuns | stat("maxMatchEngineQueueUnacked"))
       }
