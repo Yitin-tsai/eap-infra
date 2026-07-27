@@ -10,6 +10,9 @@ TARGET_TPS="${TARGET_TPS:-2000}"
 DURATION_SECONDS="${DURATION_SECONDS:-15}"
 EVENTS="${EVENTS:-$((TARGET_TPS * DURATION_SECONDS))}"
 PUBLISHERS="${PUBLISHERS:-128}"
+PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE:-}"
+PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT:-}"
+PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS:-}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-$((DURATION_SECONDS + 420))}"
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-baseline}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-true}"
@@ -30,6 +33,7 @@ mkdir -p "${REPORT_DIR}"
 echo "[INFO] repeated 2000 TPS marker load test"
 echo "[INFO] runPrefix=${RUN_PREFIX}"
 echo "[INFO] repeats=${REPEATS}, targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, publishers=${PUBLISHERS}"
+echo "[INFO] publisherConnectionCacheSize=${PUBLISHER_CONNECTION_CACHE_SIZE:-default}, publisherMaxInFlight=${PUBLISHER_MAX_IN_FLIGHT:-default}, publisherConfirmTimeoutMs=${PUBLISHER_CONFIRM_TIMEOUT_MS:-default}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}, timeoutSeconds=${TIMEOUT_SECONDS}, minOfferedTpsRatio=${MIN_OFFERED_TPS_RATIO}"
 
 RESULT_FILES=()
@@ -43,6 +47,9 @@ for run_index in $(seq 1 "${REPEATS}"); do
   DURATION_SECONDS="${DURATION_SECONDS}" \
   EVENTS="${EVENTS}" \
   PUBLISHERS="${PUBLISHERS}" \
+  PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE}" \
+  PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT}" \
+  PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS}" \
   TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" \
   DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
   MIN_OFFERED_LOAD_RATIO="${MIN_OFFERED_TPS_RATIO}" \
@@ -194,17 +201,28 @@ jq -s \
       metaTxt: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-meta.txt"),
       runLog: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-run.log"),
       benchmarkSchemaVersion,
+      publisherMode,
+      publisherConnectionCacheSize,
+      publisherMaxInFlight,
+      businessInputAttemptedOrderTps,
+      businessInputBrokerAckedOrderTps,
       businessInputOrderTps,
+      buyPublishSendWindowSeconds,
       buyPublishAttempts,
       buyPublishBrokerAcked,
       buyPublishBrokerNacked,
       buyPublishReturned,
       buyPublishConfirmTimedOut,
+      buyPublishConfirmWaitSeconds,
+      buyPublishMaxConfirmWaitMs,
+      sellPublishSendWindowSeconds,
       sellPublishAttempts,
       sellPublishBrokerAcked,
       sellPublishBrokerNacked,
       sellPublishReturned,
       sellPublishConfirmTimedOut,
+      sellPublishConfirmWaitSeconds,
+      sellPublishMaxConfirmWaitMs,
       businessOrderbookAdmissionTps,
       orderbookAdmissionSeconds,
       businessCompletedTradeTps,
@@ -238,7 +256,12 @@ jq -s \
     })),
     metrics: {
       allRuns: {
+        businessInputAttemptedOrderTps: ($runs | stat("businessInputAttemptedOrderTps")),
+        businessInputBrokerAckedOrderTps: ($runs | stat("businessInputBrokerAckedOrderTps")),
         businessInputOrderTps: ($runs | stat("businessInputOrderTps")),
+        buyPublishSendWindowSeconds: ($runs | stat("buyPublishSendWindowSeconds")),
+        buyPublishConfirmWaitSeconds: ($runs | stat("buyPublishConfirmWaitSeconds")),
+        buyPublishMaxConfirmWaitMs: ($runs | stat("buyPublishMaxConfirmWaitMs")),
         businessOrderbookAdmissionTps: ($runs | stat("businessOrderbookAdmissionTps")),
         businessCompletedTradeTps: ($runs | stat("businessCompletedTradeTps")),
         businessMarketFlowTps: ($runs | stat("businessMarketFlowTps")),
@@ -250,7 +273,12 @@ jq -s \
         maxMatchEngineQueueUnacked: ($runs | stat("maxMatchEngineQueueUnacked"))
       },
       validRunsOnly: {
+        businessInputAttemptedOrderTps: ($validRuns | stat("businessInputAttemptedOrderTps")),
+        businessInputBrokerAckedOrderTps: ($validRuns | stat("businessInputBrokerAckedOrderTps")),
         businessInputOrderTps: ($validRuns | stat("businessInputOrderTps")),
+        buyPublishSendWindowSeconds: ($validRuns | stat("buyPublishSendWindowSeconds")),
+        buyPublishConfirmWaitSeconds: ($validRuns | stat("buyPublishConfirmWaitSeconds")),
+        buyPublishMaxConfirmWaitMs: ($validRuns | stat("buyPublishMaxConfirmWaitMs")),
         businessOrderbookAdmissionTps: ($validRuns | stat("businessOrderbookAdmissionTps")),
         businessCompletedTradeTps: ($validRuns | stat("businessCompletedTradeTps")),
         businessMarketFlowTps: ($validRuns | stat("businessMarketFlowTps")),

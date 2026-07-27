@@ -8,6 +8,9 @@ REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
 
 EVENTS="${EVENTS:-1000}"
 PUBLISHERS="${PUBLISHERS:-32}"
+PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE:-}"
+PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT:-}"
+PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS:-}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
 TARGET_TPS="${TARGET_TPS:-0}"
 DURATION_SECONDS="${DURATION_SECONDS:-0}"
@@ -31,4 +34,24 @@ trap cleanup EXIT INT TERM
 cd "${ROOT_DIR}/eap-order"
 echo "[INFO] marketId=${MARKET_ID}"
 echo "[INFO] report=${REPORT_FILE}"
-GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon matchedE2eLoadTest --args="--phase ${PHASE} --events ${EVENTS} --publishers ${PUBLISHERS} --timeout-seconds ${TIMEOUT_SECONDS} --market-id ${MARKET_ID} --target-tps ${TARGET_TPS} --duration-seconds ${DURATION_SECONDS} --min-offered-load-ratio ${MIN_OFFERED_LOAD_RATIO}" | tee "${REPORT_FILE}"
+GENERATOR_ARGS=(
+  "--phase" "${PHASE}"
+  "--events" "${EVENTS}"
+  "--publishers" "${PUBLISHERS}"
+  "--timeout-seconds" "${TIMEOUT_SECONDS}"
+  "--market-id" "${MARKET_ID}"
+  "--target-tps" "${TARGET_TPS}"
+  "--duration-seconds" "${DURATION_SECONDS}"
+  "--min-offered-load-ratio" "${MIN_OFFERED_LOAD_RATIO}"
+)
+if [[ -n "${PUBLISHER_MAX_IN_FLIGHT}" ]]; then
+  GENERATOR_ARGS+=("--publisher-max-in-flight" "${PUBLISHER_MAX_IN_FLIGHT}")
+fi
+if [[ -n "${PUBLISHER_CONNECTION_CACHE_SIZE}" ]]; then
+  GENERATOR_ARGS+=("--publisher-connection-cache-size" "${PUBLISHER_CONNECTION_CACHE_SIZE}")
+fi
+if [[ -n "${PUBLISHER_CONFIRM_TIMEOUT_MS}" ]]; then
+  GENERATOR_ARGS+=("--publisher-confirm-timeout-ms" "${PUBLISHER_CONFIRM_TIMEOUT_MS}")
+fi
+
+GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon matchedE2eLoadTest --args="${GENERATOR_ARGS[*]}" | tee "${REPORT_FILE}"
