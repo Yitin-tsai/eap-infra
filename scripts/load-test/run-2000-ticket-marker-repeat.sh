@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
 
-RUN_PREFIX="${1:-GLT_$(date +%Y%m%d)_MARKER_REPEAT}"
+RUN_PREFIX="${1:-GLT_$(date +%Y%m%d)_MATCHED_TRADE_COMPLETION_REPEAT}"
 REPEATS="${REPEATS:-3}"
 TARGET_TPS="${TARGET_TPS:-2000}"
 DURATION_SECONDS="${DURATION_SECONDS:-15}"
@@ -30,7 +30,7 @@ fi
 
 mkdir -p "${REPORT_DIR}"
 
-echo "[INFO] repeated 2000 TPS marker load test"
+echo "[INFO] repeated matched-trade completion load test"
 echo "[INFO] runPrefix=${RUN_PREFIX}"
 echo "[INFO] repeats=${REPEATS}, targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, publishers=${PUBLISHERS}"
 echo "[INFO] publisherConnectionCacheSize=${PUBLISHER_CONNECTION_CACHE_SIZE:-default}, publisherMaxInFlight=${PUBLISHER_MAX_IN_FLIGHT:-default}, publisherConfirmTimeoutMs=${PUBLISHER_CONFIRM_TIMEOUT_MS:-default}"
@@ -54,7 +54,7 @@ for run_index in $(seq 1 "${REPEATS}"); do
   DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
   MIN_OFFERED_LOAD_RATIO="${MIN_OFFERED_TPS_RATIO}" \
   RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN}" \
-    bash "${ROOT_DIR}/scripts/load-test/run-2000-ticket-marker-10k.sh" "${MARKET_ID}"
+    bash "${ROOT_DIR}/scripts/load-test/run-matched-trade-completion-10k.sh" "${MARKET_ID}"
 
   if [[ ! -s "${RESULT_JSON}" ]]; then
     echo "[ERROR] expected result json was not created: ${RESULT_JSON}" >&2

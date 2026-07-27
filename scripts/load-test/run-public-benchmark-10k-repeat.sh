@@ -39,4 +39,4 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" \
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
 MIN_OFFERED_TPS_RATIO="${MIN_OFFERED_TPS_RATIO}" \
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN}" \
-  bash "${ROOT_DIR}/scripts/load-test/run-2000-ticket-marker-repeat.sh" "${RUN_PREFIX}"
+  bash "${ROOT_DIR}/scripts/load-test/run-matched-trade-completion-repeat.sh" "${RUN_PREFIX}"

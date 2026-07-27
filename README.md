@@ -6,13 +6,14 @@ EAP is a production-style electricity market backend built with Java / Spring Bo
 
 ## Latest Benchmark Summary
 
-> The project does not claim 2000 completed TPS yet. The load generator can offer about 2000 order confirmations/s, while fully business-gated completed trades/s is still limited by database write amplification and outbox relay cost.
+> The project does not claim 2000 completed TPS yet. The current benchmark contract separates client-side input attempts, RabbitMQ broker-confirmed input, and fully business-gated completed trades. A run is not valid for capacity comparison unless every input message is broker-confirmed and the Order / Wallet / MatchEngine durable trade ID sets are identical.
 
 | Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
 | --- | ---: | ---: | --- | --- |
 | Redis matching core | N/A | `18,388.25 ops/s` | Redis Lua atomic matching | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` |
-| Current global 10k business-gated E2E, TPS93 repeat | median `1,999.22 order confirmations/s` | median `833.58 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 3/3 valid runs, range `729.71-940.93`, final queues / DLQ `0`; current local interview benchmark, not yet a pinned public artifact bundle |
-| Global 10k business-gated E2E, TPS55 repeat | median `1,998.94 order confirmations/s` | median `582.73 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + completion marker + final queue drain | 4/5 valid runs, range `503.11-662.17`, final queues / DLQ `0` |
+| Current contract-v2 10k diagnostic run, TPS126 | `1,377.80 broker-confirmed input orders/s` | `1,234.47 completed trades/s` | identical `trade_id` sets across `trade_executions`, `order_trade_applications`, `trade_settlements` + final queue drain | Correctness passed, broker acks `10000/10000`, final queues / DLQ `0`, but not a valid 2000-input capacity run because broker-confirmed input did not reach the 95% offered-load threshold |
+| Previous local 10k business-gated repeat, TPS93 | median `1,999.22 client-side input attempts/s` | median `833.58 completed trades/s` | count-based durable facts + legacy marker gate + final queue drain | Useful performance-improvement history, but superseded by contract-v2 broker-confirmed input semantics |
+| Pinned public 10k repeat, 2026-07-13 | median `1,998.94 client-side input attempts/s` | median `582.73 completed trades/s` | count-based durable facts + legacy marker gate + final queue drain | 4/5 valid runs under the older benchmark contract |
 | Current bottleneck | N/A | N/A | correctness preserved | DB write amplification and outbox relay cost in Match / Order / Wallet |
 
 See [docs/performance-report.md](docs/performance-report.md) for the curated report. The raw engineering log is preserved in [docs/features/2026-06-global-loadtest-2000-tps.md](docs/features/2026-06-global-loadtest-2000-tps.md).
@@ -22,24 +23,28 @@ See [docs/performance-report.md](docs/performance-report.md) for the curated rep
 - The current global 10k load-test is a matched-trade scenario, not a generic mixed production workload.
 - One expected completed trade requires matched buy/sell-side processing plus downstream Order and Wallet consumers.
 - `EVENTS=10000` means the run expects `10000` completed trades after the seeded sell-side liquidity is prepared.
-- Offered load is measured as order confirmations published toward the match path; it is not the same unit as completed trades/s.
-- Business timing ends only after completion markers converge and measured RabbitMQ queues drain to zero.
+- Input pressure is reported in two layers:
+  - `businessInputAttemptedOrderTps`: client-side publish attempts during the scheduled BUY send window.
+  - `businessInputBrokerAckedOrderTps`: BUY messages confirmed by RabbitMQ publisher confirms over the full confirm window.
+- Business timing ends only after MatchEngine, Order, and Wallet durable facts converge and measured RabbitMQ queues drain to zero.
 
 Business E2E TPS formula:
 
 ```text
 businessCompletedTradeTps =
   completedTrades /
-  (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
+  (max(durableTradeFactConvergedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)
 ```
 
 The current benchmark also reports:
 
 - `orderbookAdmissionTps`: resting SELL confirmations admitted into Redis order book.
+- `businessInputAttemptedOrderTps`: scheduled client-side BUY publish attempts/s.
+- `businessInputBrokerAckedOrderTps`: RabbitMQ-confirmed BUY input/s.
 - `businessCompletedTradeTps`: fully correctness-gated completed trades.
 - `blendedMarketFlowTps`: total SELL+BUY order confirmations processed across the full two-phase benchmark window.
 
-`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window; in the latest TPS93 repeat set, the median completion window was `12.00s`, so `10000 / 12.00 ~= 833.58 completed trades/s`.
+`DURATION_SECONDS=5` is the scheduled BUY publish window. It is not the completed-business timing window. In the latest TPS126 diagnostic run, the business completion window was `8.10s`, so `10000 / 8.10 ~= 1234.47 completed trades/s`.
 
 ## Benchmark Environment
 
@@ -54,7 +59,7 @@ The current benchmark also reports:
 | Redis | `redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99`, append-only disabled for load-test profile |
 | Load generator | runs on the same local machine as services and containers |
 
-The latest 10k repeat result was run against benchmark code/config commit `2252e54738d10683894b965c93d93bff32fd8c08` with service commits recorded in `build/load-test-reports/EAP_PUBLIC_10K_20260713-snapshot.json`. The repository still needs a pushed public artifact bundle before this can be treated as externally reproducible by a third party.
+The latest contract-v2 benchmark tooling was pushed at infra commit `b4872054cc3f8dae04eaedd3bbf5d1adf5344fc5` and `eap-order` commit `ca8668faa363c7803a09711c0862c7217fe4232a`. The repository still needs a clean five-run repeat bundle on this contract before the current `1200/s` class result can be treated as an externally reproducible public claim.
 
 ## What The System Does
 
@@ -70,7 +75,7 @@ Order API
   -> MatchEngine persists TradeExecuted + outbox
   -> Order Service applies trade result
   -> Wallet Service settles trade
-  -> MatchEngine completion view receives Order/Wallet markers
+  -> Benchmark verifies the same trade IDs exist in MatchEngine, Order, and Wallet durable tables
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture overview.
@@ -90,7 +95,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture overv
 | --- | --- | --- |
 | `eap-order` | Order command lifecycle | order submission, command-side event store, order trade application, query projection |
 | `eap-wallet` | Wallet balance and settlement | asset reservation, settlement, idempotent wallet ledger, wallet outbox |
-| `eap-matchEngine` | Matching and trade fact | Redis order book, `TradeExecuted` fact, trade outbox, completion markers |
+| `eap-matchEngine` | Matching and trade fact | Redis order book, `TradeExecuted` fact, trade outbox |
 | `eap-common` | Shared contracts | DTOs, events, shared integration contracts |
 | `eap-mcp` / `eap-ai-client` | Control-plane extension | backend tools for controlled AI-agent experiments |
 | `eap-trigger` | Future trigger module | Go-based conditional-order trigger service |
@@ -100,7 +105,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture overv
 - Message delivery: RabbitMQ at-least-once.
 - Publish reliability: transactional outbox per owning service.
 - Consumer safety: idempotency tables / unique keys / local DB transactions.
-- Completion definition: a trade is business-complete only after MatchEngine has `TradeExecuted`, Order has applied the trade, Wallet has settled it, completion markers converge, and queues drain.
+- Completion definition: a trade is business-complete only after MatchEngine has `TradeExecuted`, Order has applied the trade, Wallet has settled it, all three services contain the same completed `trade_id` set, and measured queues drain.
 - Read models: projections are rebuildable and measured as lag, not used as the command-side source of truth.
 
 ## Reproduce Locally
@@ -126,13 +131,22 @@ TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline MIN_OFFERED_TPS_RATIO=0.95 \
 REPEATS=5 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
 ```
 
+The direct benchmark entrypoint is:
+
+```bash
+TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=128 \
+TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=light \
+bash scripts/load-test/run-matched-trade-completion-10k.sh GLT_MATCHED_TRADE_COMPLETION_10K
+```
+
 See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 
 ## Current Validation Gaps
 
 - The latest global E2E report does not yet include API p95/p99 or end-to-end p95/p99 latency.
 - The latest 10k result is a short benchmark run, not a 30-minute soak claim.
-- The latest 10k repeat has 4 valid public samples out of 5; one run was excluded because the local driver did not maintain the required offered TPS.
+- The latest contract-v2 result is a single diagnostic 10k run. It passed correctness but is not a valid 2000-input capacity comparison because broker-confirmed input reached `1377.80/s`, below the configured threshold.
+- A contract-v2 five-run repeat is still needed before updating the public benchmark median/range.
 - A first 15-minute steady-state attempt was rejected because the environment used an evicting development Redis. After switching to clean `noeviction` Redis, near-500 offered-load repeats produced 2 valid 450k runs with valid-sample median `487.66` fully gated completed trades/s; a third repeat exposed a 19-trade correctness miss and is the next investigation target.
 - The benchmark result artifact is local under `build/load-test-reports/`; it still needs to be published or attached to a release for third-party reproduction.
 - The current valid steady-state evidence is near-500 offered order confirmations/s, not a 2000 completed TPS claim, and not yet a three-run stable correctness claim.

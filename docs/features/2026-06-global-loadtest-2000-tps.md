@@ -11216,3 +11216,58 @@ Next action:
    - singleton/fallback returned to `67`.
 3. Keep Match outbox confirm as a secondary target:
    - confirm wall is expensive, but it did not alone explain the TPS-125 drop.
+
+### 2026-07-27 - TPS-126 Benchmark contract v2 and broker-confirmed input
+
+Status: implemented; pushed.
+
+Context:
+
+- GPT Pro review pointed out that the latest script and report names still implied the old completion-marker contract, while the code had moved to a durable-fact gate.
+- The load generator previously counted a publish as input after `RabbitTemplate.convertAndSend()` returned.
+- That was only a client-side send attempt, not proof that RabbitMQ accepted the message.
+- Public benchmark claims need a stricter input boundary before discussing 2000 TPS.
+
+Changes:
+
+- Added RabbitMQ publisher-confirm accounting to the matched-trade load generator.
+- Replaced the load generator hot publish path with RabbitMQ Java client direct publishing:
+  - one fixed publisher channel;
+  - asynchronous confirm listener;
+  - bounded in-flight publishes;
+  - mandatory publish returns counted as invalid input.
+- Split input metrics:
+  - `businessInputAttemptedOrderTps`: client-side BUY send-window attempts/s;
+  - `businessInputBrokerAckedOrderTps`: RabbitMQ-confirmed BUY input/s;
+  - `businessInputOrderTps`: retained as a compatibility alias for broker-confirmed input.
+- Added `publisherMode`, `publisherMaxInFlight`, send-window, and confirm-wait metrics.
+- Repeat summary now reports the contract-v2 input metrics and confirm timings.
+- Added new neutral script names:
+  - `scripts/load-test/run-matched-trade-completion-10k.sh`;
+  - `scripts/load-test/run-matched-trade-completion-repeat.sh`.
+- Kept the old `run-2000-ticket-marker-*` names only as legacy aliases.
+- Updated README, performance report, and public benchmark runbook so current completion semantics are:
+  - MatchEngine `trade_executions`;
+  - Order `order_trade_applications`;
+  - Wallet `trade_settlements`;
+  - identical `trade_id` sets across the three services;
+  - final measured RabbitMQ queue drain.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| `eap-order` `testClasses` | PASS |
+| load-test script syntax | PASS |
+| 500 direct-confirm smoke, `GLT_TPS126_DIRECT_CONFIRM_FIELDS_SMOKE_500_R1` | Completed with broker acks `500/500` BUY and SELL, no nack/return/timeout, equal trade-ID sets, final queues/DLQ `0`; rejected for capacity comparison because the short-window broker-confirmed input was only `797.33/s` against a `1000/s` target. |
+| 10k direct-confirm light, `GLT_TPS126_DIRECT_CONFIRM_LIGHT_10K_R1` | Completed with broker acks `10000/10000` BUY and SELL, no nack/return/timeout, equal trade-ID sets, final queues/DLQ `0`; `businessCompletedTradeTps=1234.47`; rejected for 2000-input capacity comparison because `businessInputBrokerAckedOrderTps=1377.80`. |
+
+Interpretation:
+
+- The current `1200/s` class result is not a local-only "send and hope" number; it is backed by broker acks, durable facts in all three services, trade-ID equality, wallet balance checks, and final queue drain.
+- It is still not a valid `2000/s` broker-confirmed capacity result.
+- The older TPS93 repeat remains useful performance-history evidence, but public claims should move to contract v2.
+- Next publishable benchmark step:
+  1. run a clean five-repeat contract-v2 10k benchmark;
+  2. report median/range for attempted input, broker-confirmed input, and completed business TPS;
+  3. only then decide whether to continue TPS tuning or move to steady-state / cloud portability.

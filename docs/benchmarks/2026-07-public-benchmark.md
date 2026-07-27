@@ -12,12 +12,13 @@ The goal is not to claim 2000 completed TPS. The goal is to publish repeatable e
 
 | Metric | Definition |
 | --- | --- |
-| Offered load | order confirmations published toward the match path |
-| Completed trade | `TradeExecuted` persisted, Order applied, Wallet settled, completion markers converged, measured queues drained |
-| Business E2E TPS | `completedTrades / (max(completionMarkerReachedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)` |
-| Valid run | completed counts match target, final queue backlog is zero, publish failures are zero, and offered TPS reaches the configured threshold |
+| Input attempted load | client-side BUY order confirmations sent toward the match path during the scheduled send window |
+| Broker-confirmed input load | BUY order confirmations acknowledged by RabbitMQ publisher confirms |
+| Completed trade | `TradeExecuted` persisted, Order applied, Wallet settled, the three durable trade-ID sets are identical, and measured queues drained |
+| Business E2E TPS | `completedTrades / (max(durableTradeFactConvergedAt, finalMeasuredQueueDrainedAt) - runPhaseStartedAt)` |
+| Valid run | completed counts match target, Match/Order/Wallet trade-ID sets are identical, final queue backlog is zero, publish failures/returns/nacks/timeouts are zero, and broker-confirmed input TPS reaches the configured threshold |
 
-`DURATION_SECONDS=5` is the offered-load publishing window. It is not the completed-business timing window.
+`DURATION_SECONDS=5` is the scheduled BUY publishing window. It is not the completed-business timing window.
 
 ## Pinned Environment
 
@@ -90,7 +91,33 @@ The summary JSON reports:
 - valid-runs-only statistics;
 - avg / median / min / max / spread.
 
+## Current Contract-v2 Status
+
+The benchmark contract was hardened after the 2026-07-13 public repeat to add:
+
+- RabbitMQ publisher confirms for load-generator input.
+- Separate `businessInputAttemptedOrderTps` and `businessInputBrokerAckedOrderTps`.
+- `completedTradeIdSetsEqual` and missing-ID diagnostics across MatchEngine, Order, and Wallet.
+- Fail-closed queue metric handling through `queueMetricsReadFailures`.
+- New entrypoint names: `run-matched-trade-completion-10k.sh` and `run-matched-trade-completion-repeat.sh`.
+
+Latest diagnostic run:
+
+| Metric | Value |
+| --- | ---: |
+| Run ID | `GLT_TPS126_DIRECT_CONFIRM_LIGHT_10K_R1` |
+| Broker-confirmed BUY input | `1377.80/s` |
+| BUY broker acks | `10000/10000` |
+| Business completed trade TPS | `1234.47/s` |
+| Completed trade-ID set equality | `true` |
+| Final measured queues / DLQ | `0 / 0` |
+| Public capacity validity | rejected: `driver_offered_tps_below_threshold` |
+
+Interpretation: this run proves the hardened correctness gate on a 10k sample, but it does not replace the public benchmark median because broker-confirmed input did not reach the configured `95%` threshold for a `2000/s` target. The next publishable benchmark should be a clean five-run repeat under contract v2.
+
 ## 2026-07-13 Official 10k Repeat Result
+
+This is the pinned public result under the older input-attempt contract. It remains useful history, but it should not be used as proof of 2000/s broker-confirmed input.
 
 Command prefix:
 
@@ -140,7 +167,7 @@ Per-run business TPS:
 
 ## Post-Public Local Improvement: TPS93
 
-The 2026-07-13 repeat remains the pinned public benchmark result. A later local run set, `GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3`, is useful interview material because it shows a concrete performance improvement after the Order / Wallet batch-path work and the TPS semantic split. It should not replace the public benchmark until it is rerun on a clean commit snapshot with a published artifact bundle.
+The 2026-07-13 repeat remains the pinned public benchmark result. A later local run set, `GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3`, is useful interview material because it shows a concrete performance improvement after the Order / Wallet batch-path work and the TPS semantic split. It should not replace the public benchmark until it is rerun on a clean contract-v2 commit snapshot with a published artifact bundle.
 
 Command prefix:
 
@@ -148,7 +175,7 @@ Command prefix:
 REPEATS=3 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
 PUBLISHERS=128 TIMEOUT_SECONDS=360 DIAGNOSTICS_LEVEL=light \
 RESET_PG_STATS_BEFORE_RUN=true \
-bash scripts/load-test/run-2000-ticket-marker-repeat.sh \
+bash scripts/load-test/run-matched-trade-completion-repeat.sh \
   GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3
 ```
 
@@ -182,15 +209,26 @@ Why this matters:
 
 A run is valid for public summary only if:
 
-- `actualBuyPublishTps >= TARGET_TPS * MIN_OFFERED_TPS_RATIO`;
+- `businessInputBrokerAckedOrderTps >= TARGET_TPS * MIN_OFFERED_TPS_RATIO`;
 - `buyPublishFailures == 0`;
 - `sellPublishFailures == 0`;
+- `buyPublishBrokerAcked == EVENTS`;
+- `sellPublishBrokerAcked == EVENTS`;
+- `buyPublishBrokerNacked == 0`;
+- `sellPublishBrokerNacked == 0`;
+- `buyPublishReturned == 0`;
+- `sellPublishReturned == 0`;
+- `buyPublishConfirmTimedOut == 0`;
+- `sellPublishConfirmTimedOut == 0`;
 - `completedTrades == EVENTS`;
 - `tradeExecutions == EVENTS`;
 - `walletTradeSettlements == EVENTS`;
 - `orderCommandMatchedRows == EVENTS * 2`;
+- `completedTradeIdSetsEqual == true`;
 - `remainingSellOrders == 0`;
 - `remainingBuyOrders == 0`;
+- `activeReservations == 0`;
+- `queueMetricsReadFailures == 0`;
 - final measured ready/unacked queue backlog is zero.
 
 Invalid runs are kept in the result bundle but excluded from the public median.
