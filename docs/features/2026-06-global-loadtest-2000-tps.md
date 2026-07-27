@@ -11125,3 +11125,94 @@ Next action:
    - Order trade application reach;
    - Wallet trade settlement reach;
    - MatchEngine trade outbox relay stages.
+
+### 2026-07-27 - TPS-125 10k light run with canonical metric names
+
+Status: completed; correctness passed, throughput regressed versus TPS-124.
+
+Run:
+
+- `GLT_TPS125_METRIC_NAMING_LIGHT_10K_R1`
+- `TARGET_TPS=10000`
+- `DURATION_SECONDS=1`
+- `EVENTS=10000`
+- `PUBLISHERS=128`
+- `DIAGNOSTICS_LEVEL=light`
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| `businessInputOrderTps` | `9978.95` |
+| `businessOrderbookAdmissionTps` | `3243.75` |
+| `businessCompletedTradeTps` | `838.75` |
+| `businessMarketFlowTps` | `1332.86` |
+| `businessCompletionSeconds` | `11.92` |
+| `matchEngineTradeExecutionReachTps` | `962.13` |
+| `orderTradeApplicationReachTps` | `838.75` |
+| `walletTradeSettlementReachTps` | `838.75` |
+| `businessConvergenceReachTps` | `838.75` |
+| `queueFullyDrainedSeconds` | `11.92` |
+| `lastNonZeroQueue` | `wallet.tradeExecuted.queue` |
+| `reservationCleanupReachedSeconds` | `15.34` |
+| `reservationCleanupTailAfterBusinessSeconds` | `3.42` |
+
+Correctness:
+
+- `completedTrades=10000`.
+- `tradeExecutions=10000`.
+- `orderCommandMatchedRows=20000`.
+- `walletTradeSettlements=10000`.
+- `lockedCurrency=0`.
+- `lockedAmount=0`.
+- final measured queues and DLQ drained to `0`.
+- Redis orderbook ended with `remainingSellOrders=0`, `remainingBuyOrders=0`, and `activeReservations=0`.
+
+Comparison with TPS-124:
+
+| Metric | TPS-124 env 75ms | TPS-124 default 75ms | TPS-125 canonical names |
+| --- | ---: | ---: | ---: |
+| completed-business TPS | `1292.98` | `1206.37` | `838.75` |
+| TradeExecuted reach TPS | `1472.55` | `1472.57` | `962.13` |
+| business completion seconds | `7.73` | `8.29` | `11.92` |
+| Match reserve Redis eval sum | `14.923s` | `16.471s` | `30.610s` |
+| Match trade record transaction total | `17.172s` | `18.524s` | `21.650s` |
+| Match trade insert phase | `7.021s` | `7.481s` | `8.730s` |
+| Match outbox confirm wall | `5.970s` | `6.825s` | `8.919s` |
+| Wallet settlement batch count | `265` | `325` | `565` |
+| Wallet settlement CTE sum | `2.738s` | `3.493s` | `4.809s` |
+| Wallet singleton/fallback count | `0` | `0` | `67` |
+
+Interpretation:
+
+- This is a valid correctness run, but it is not a new performance improvement.
+- The main regression starts before downstream completion:
+  - `matchEngineTradeExecutionReachTps` fell from the TPS-124 `1472/s` class to `962/s`;
+  - `businessCompletedTradeTps` then followed the slower Match reach rate.
+- The largest new Match-side delta is `reserve_order.redis_eval`:
+  - TPS-124 env `75ms`: `14.923s / 20000`;
+  - TPS-124 default `75ms`: `16.471s / 20000`;
+  - TPS-125: `30.610s / 20000`.
+- Match durable trade record also worsened, but less dramatically:
+  - transaction total rose to `21.650s`;
+  - insert fact + outbox rose to `8.730s`;
+  - commit gap rose to `5.807s`.
+- Match outbox confirm wall also worsened to `8.919s`, but the first-order regression is visible in Match processing before downstream settlement.
+- Wallet still forms the final convergence tail:
+  - last non-zero queue was `wallet.tradeExecuted.queue`;
+  - Match -> Wallet p95 was `2277.920ms`;
+  - Wallet batch shape regressed from `265-325` batches to `565` batches, with `67` singleton/fallback events.
+- Reservation cleanup is not in the strict business completion gate, but TPS-125 exposed a cleanup tail:
+  - active reservations at business completion: `7171`;
+  - cleanup reached zero `3.42s` after business completion.
+
+Next action:
+
+1. Inspect Match Redis reserve-or-add path variability first:
+   - same workload class, but Redis eval cost doubled;
+   - check Lua script path, Redis command contention, key cleanup timing, and whether reservation cleanup overlaps with active matching.
+2. Inspect why Wallet batch shape regressed despite the `75ms` loadtest receive window:
+   - batch count rose to `565`;
+   - singleton/fallback returned to `67`.
+3. Keep Match outbox confirm as a secondary target:
+   - confirm wall is expensive, but it did not alone explain the TPS-125 drop.
