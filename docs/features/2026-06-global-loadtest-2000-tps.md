@@ -10780,3 +10780,348 @@ Monday resume target:
    - at least 3 valid 10k light runs;
    - all durable correctness checks must pass;
    - final measured queues and DLQ must drain to zero.
+
+### 2026-07-27 - TPS-123 Match outbox relay attribution
+
+Status: implemented; focused test and one 10k light attribution run completed.
+
+Context:
+
+- The TPS-122 best run reached `1173.58` completed-business TPS but repeatability was still noisy.
+- Recent 10k/100k runs repeatedly showed Match `trade_outbox_confirm_wall` as a visible fixed cost.
+- The next question was whether Match `TradeExecuted` relay cost came from:
+  - selecting and mapping pending outbox rows;
+  - rebuilding JSON payload from `trade_executions`;
+  - building RabbitMQ messages;
+  - waiting for publisher confirms;
+  - marking outbox rows `SENT`.
+
+Implementation:
+
+- Added fixed-name Match outbox relay metrics:
+  - `trade_outbox_batch_size`;
+  - `trade_outbox_confirmed_batch_size`;
+  - `trade_outbox_row_mapping_duration`;
+  - `trade_outbox_payload_rebuild_duration`;
+  - `trade_outbox_message_build_duration`;
+  - `trade_outbox_first_confirm_duration`;
+  - `trade_outbox_remaining_confirm_duration`.
+- Kept existing behavior unchanged:
+  - `trade_executions` and `trade_outbox` are still committed together;
+  - relay still publishes persistent `TradeExecutedEvent`;
+  - relay still waits for broker confirmation before marking rows `SENT`.
+- Updated `summarize-write-costs.sh` to emit `Match Trade Outbox Relay Breakdown`.
+
+Verification:
+
+| Command / run | Result |
+| --- | --- |
+| `eap-matchEngine ./gradlew --no-daemon test --tests com.eap.eap_matchengine.application.TradeOutboxRelayTest` | PASS |
+| `GLT_TPS123_MATCH_OUTBOX_ATTR_LIGHT_10K_R1` | PASS |
+
+10k light result:
+
+| Metric | Value |
+| --- | ---: |
+| actualBuyPublishTps | `9972.96` |
+| validForCapacityComparison | `true` |
+| orderbookAdmissionTps | `4290.91` |
+| tradeExecutionReachTps | `1452.25` |
+| businessCompletedTradeTps | `1352.14` |
+| businessCompletionSeconds | `7.40` |
+| completedTrades | `10000` |
+| tradeExecutions | `10000` |
+| walletTradeSettlements | `10000` |
+| finalQueueBacklog | `0` |
+| lastNonZeroQueue | `wallet.tradeExecuted.queue` |
+
+Correctness:
+
+- `completedTrades=10000`.
+- `tradeExecutions=10000`.
+- `walletTradeSettlements=10000`.
+- `lockedCurrency=0`.
+- `lockedAmount=0`.
+- Final measured queues and DLQ drained to `0`.
+
+Match outbox relay attribution:
+
+| Metric | Count | Sum | Max | Mean |
+| --- | ---: | ---: | ---: | ---: |
+| `batch_size` | `21` | `10000.000000` | `500.000000` | `476.190476` |
+| `confirmed_batch_size` | `21` | `10000.000000` | `500.000000` | `476.190476` |
+| `batch_duration_seconds` | `21` | `6.508267` | `0.544472` | `0.309917` |
+| `select_duration_seconds` | `327` | `0.395980` | `0.044280` | `0.001211` |
+| `publish_stage_duration_seconds` | `21` | `0.470856` | `0.283791` | `0.022422` |
+| `publish_enqueue_duration_seconds` | `10000` | `0.736596` | `0.003981` | `0.000074` |
+| `message_build_duration_seconds` | `10000` | `0.054151` | `0.001241` | `0.000005` |
+| `payload_rebuild_duration_seconds` | `10000` | `0.045952` | `0.001208` | `0.000005` |
+| `confirm_wall_duration_seconds` | `21` | `5.721056` | `0.511395` | `0.272431` |
+| `confirm_duration_seconds` | `10000` | `5.717140` | `0.362514` | `0.000572` |
+| `first_confirm_duration_seconds` | `21` | `4.426251` | `0.362514` | `0.210774` |
+| `remaining_confirm_duration_seconds` | `9979` | `1.290889` | `0.125266` | `0.000129` |
+| `mark_sent_duration_seconds` | `21` | `0.194316` | `0.025190` | `0.009253` |
+
+Interpretation:
+
+- This run crossed the previous 1200 TPS target with `1352.14` completed-business TPS, but it is one attribution run, not a new stable capacity claim.
+- JSON payload rebuild is not the bottleneck:
+  - `10000` rebuilds took only `0.045952s` total;
+  - `10000` message builds took only `0.054151s` total.
+- Marking outbox rows `SENT` is also not the dominant relay cost:
+  - `21` grouped updates took `0.194316s` total.
+- The dominant Match relay cost is RabbitMQ publisher-confirm waiting:
+  - confirm wall took `5.721056s` of the `6.508267s` relay batch time;
+  - the first confirm in each relay batch/chunk accounted for `4.426251s`.
+- This means the current relay spends most of its visible relay time waiting for the broker to durably accept published `TradeExecutedEvent`s, not rebuilding payloads or updating relay state.
+
+Next fix candidates:
+
+1. Repeat the 10k light run at least two more times before accepting `1350+` as a stable class.
+2. Investigate Match reliable publication strategy:
+   - current per-trade outbox reliability is correct but confirm waiting is still a fixed cost;
+   - earlier batch-confirm A/B was worse, so do not blindly switch it on;
+   - any replacement must preserve retry/reconciliation and avoid the unsafe checkpoint cursor bug.
+3. Keep Wallet as a convergence tail candidate:
+   - `Match persisted -> Wallet settlement inserted` p95 was `1663.550ms`;
+   - `wallet.tradeExecuted.queue` was the last non-zero queue in this run.
+
+### 2026-07-27 - TPS-123 repeated 10k light confirmation
+
+Status: completed; two additional 10k light runs completed.
+
+Context:
+
+- TPS-123 R1 produced a strong single-run result: `1352.14` completed-business TPS.
+- Before accepting that as a stable capacity class, the same workload was repeated twice with unchanged settings:
+  - `TARGET_TPS=10000`;
+  - `DURATION_SECONDS=1`;
+  - `EVENTS=10000`;
+  - `PUBLISHERS=128`;
+  - `DIAGNOSTICS_LEVEL=light`.
+
+Result summary:
+
+| Run | Actual input TPS | Orderbook admission TPS | TradeExecuted reach TPS | Business completed TPS | Completion seconds | Last non-zero queue | Last non-zero seconds |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| `GLT_TPS123_MATCH_OUTBOX_ATTR_LIGHT_10K_R1` | `9972.96` | `4290.91` | `1452.25` | `1352.14` | `7.40` | `wallet.tradeExecuted.queue` | `7.08` |
+| `GLT_TPS123_MATCH_OUTBOX_ATTR_LIGHT_10K_R2` | `9960.92` | `4331.69` | `1159.43` | `1100.55` | `9.09` | `wallet.tradeExecuted.queue` | `8.62` |
+| `GLT_TPS123_MATCH_OUTBOX_ATTR_LIGHT_10K_R3` | `9926.81` | `3998.54` | `1234.77` | `1112.06` | `8.99` | `wallet.tradeExecuted.queue` | `8.56` |
+
+Aggregate:
+
+- Mean completed-business TPS: `1188.25`.
+- Median completed-business TPS: `1112.06`.
+- Range: `1100.55` to `1352.14`.
+- Mean TradeExecuted reach TPS: `1282.15`.
+- All three runs were valid capacity comparisons.
+- All three runs completed `10000/10000` trades.
+- All three runs ended with final measured queues and DLQ drained to `0`.
+
+Correctness checks across all three runs:
+
+- `completedTrades=10000`.
+- `tradeExecutions=10000`.
+- `walletTradeSettlements=10000`.
+- `lockedCurrency=0`.
+- `lockedAmount=0`.
+- `finalQueueBacklog=0`.
+
+Match outbox relay comparison:
+
+| Run | Batch duration sum | Confirm wall sum | First confirm sum | Remaining confirm sum | Mark SENT sum | Payload rebuild sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| R1 | `6.508267s` | `5.721056s` | `4.426251s` | `1.290889s` | `0.194316s` | `0.045952s` |
+| R2 | `7.632587s` | `6.591884s` | `4.179253s` | `2.407892s` | `0.204439s` | `0.068983s` |
+| R3 | `7.602891s` | `6.914233s` | `5.059197s` | `1.850911s` | `0.227284s` | `0.049241s` |
+
+Integrated stage lag:
+
+| Run | Match -> Order p95 | Match -> Wallet p95 | Match -> Wallet p99 | Durable convergence p99 |
+| --- | ---: | ---: | ---: | ---: |
+| R1 | `1.356ms` | `1663.550ms` | `1755.730ms` | `1755.730ms` |
+| R2 | `0.413ms` | `2135.080ms` | `2429.570ms` | `2429.570ms` |
+| R3 | `0.847ms` | `1966.590ms` | `2082.340ms` | `2082.340ms` |
+
+Interpretation:
+
+- Do not claim stable `1350+` completed-business TPS from TPS-123 yet.
+- The current measured class is closer to `1100-1200` completed-business TPS on this local 10k light workload:
+  - the average is `1188.25`;
+  - the two confirmation runs clustered around `1100-1112`.
+- The bottleneck evidence is now clearer than before:
+  - MatchEngine determines how fast `TradeExecuted` reaches downstream services;
+  - Wallet remains the final durable convergence tail after Match persistence;
+  - Order application is not the tail in these runs, with Match -> Order p95 below `1.4ms`.
+- Match outbox relay confirm is a real fixed cost, but it does not fully explain the R1/R2/R3 spread:
+  - R2/R3 confirm wall was about `0.87-1.19s` higher than R1;
+  - completed-business time was about `1.59-1.69s` slower than R1;
+  - Wallet settlement lag also grew materially in R2/R3.
+- Payload rebuild remains ruled out as a meaningful bottleneck:
+  - all runs rebuilt `10000` payloads in less than `0.07s` total.
+
+Next action:
+
+1. Inspect Wallet settlement batch path again with the new evidence:
+   - Wallet is consistently the last non-zero queue;
+   - Match -> Wallet p95/p99 moved with the slower completed-business runs.
+2. Inspect Match `trade_record` transaction variability:
+   - R1 transaction total: `17.032s`;
+   - R2 transaction total: `20.746s`;
+   - R3 transaction total: `20.223s`.
+3. Treat RabbitMQ publisher confirm as a secondary fixed-cost target:
+   - still important;
+   - but not sufficient alone to explain the full business completion tail.
+
+### 2026-07-27 - TPS-124 Wallet batch collection window
+
+Status: implemented in loadtest profile; one env A/B probe and one default-profile verification run completed.
+
+Context:
+
+- TPS-123 repeated runs showed Wallet as the durable convergence tail:
+  - `wallet.tradeExecuted.queue` was the last non-zero queue in all three runs;
+  - Match -> Wallet p95/p99 grew in the slower completed-business runs.
+- Wallet batch metrics showed unstable batch shape despite `batch-size=50`:
+  - batch count: `797`, `919`, `998`;
+  - singleton fallback count: `70`, `83`, `142`;
+  - average batch size: about `12.5`, `10.9`, `10.0`.
+- This meant Wallet was paying the batch SQL fixed cost hundreds more times than necessary under the 10k burst workload.
+
+Change:
+
+- Loadtest profile only:
+  - changed `eap.wallet.listeners.trade-executed.receive-timeout-ms` from `25` to `75`.
+- Production default remains unchanged.
+- Business behavior and settlement SQL are unchanged.
+
+Verification runs:
+
+| Run | Setting | Actual input TPS | TradeExecuted reach TPS | Completed TPS | Completion seconds | Final backlog |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `GLT_TPS123_MATCH_OUTBOX_ATTR_LIGHT_10K_R2` | baseline `25ms` | `9960.92` | `1159.43` | `1100.55` | `9.09` | `0` |
+| `GLT_TPS123_MATCH_OUTBOX_ATTR_LIGHT_10K_R3` | baseline `25ms` | `9926.81` | `1234.77` | `1112.06` | `8.99` | `0` |
+| `GLT_TPS124_WALLET_BATCH_TIMEOUT75_LIGHT_10K_R1` | env override `75ms` | `9976.90` | `1472.55` | `1292.98` | `7.73` | `0` |
+| `GLT_TPS124_WALLET_BATCH_TIMEOUT75_DEFAULT_LIGHT_10K_R1` | profile default `75ms` | `9881.90` | `1472.57` | `1206.37` | `8.29` | `0` |
+
+Wallet batch metrics:
+
+| Run | Batch count | Batch size sum | Max batch size | Singleton / fallback count | Batch duration sum | CTE duration sum |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-123 R1 baseline | `797` | `10000` | `50` | `70` | `5.217753s` | `4.370838s` |
+| TPS-123 R2 baseline | `919` | `10000` | `42` | `83` | `6.928202s` | `5.311461s` |
+| TPS-123 R3 baseline | `998` | `10000` | `50` | `142` | `8.881874s` | `7.190025s` |
+| TPS-124 env `75ms` | `265` | `10000` | `50` | `0` | `3.118675s` | `2.738265s` |
+| TPS-124 default `75ms` | `325` | `10000` | `50` | `0` | `3.885851s` | `3.493085s` |
+
+Integrated lag:
+
+| Run | Match -> Wallet p50 | Match -> Wallet p95 | Match -> Wallet p99 |
+| --- | ---: | ---: | ---: |
+| TPS-123 R2 baseline | `1558.710ms` | `2135.080ms` | `2429.570ms` |
+| TPS-123 R3 baseline | `1450.340ms` | `1966.590ms` | `2082.340ms` |
+| TPS-124 env `75ms` | `1369.800ms` | `1983.760ms` | `2100.930ms` |
+| TPS-124 default `75ms` | `1580.330ms` | `2036.600ms` | `2093.660ms` |
+
+Interpretation:
+
+- The `75ms` loadtest window is accepted as a real Wallet fixed-cost reduction:
+  - batch count dropped from the `797-998` range to `265-325`;
+  - singleton fallback dropped to `0`;
+  - Wallet CTE total dropped from the `5.31-7.19s` slow-run range to `2.74-3.49s`.
+- This is not a complete TPS fix:
+  - completed TPS improved versus the slow TPS-123 confirmation runs, but still ranged from `1206.37` to `1292.98`;
+  - Wallet remains the last non-zero queue;
+  - Match `TradeExecuted` reach was strong in both TPS-124 runs, so the remaining tail is still Wallet durable convergence and Match fixed durable publication cost.
+- This profile change is workload-sensitive:
+  - it benefits burst settlement throughput;
+  - it intentionally trades a small waiting window for fewer database batch executions;
+  - production settings should be decided against API/user-visible latency requirements, not copied blindly from loadtest.
+
+Next action:
+
+1. Keep the loadtest profile at `75ms`.
+2. Continue with Wallet settlement SQL shape:
+   - the current batch CTE still updates `wallets` twice per trade through `input JOIN settlement`;
+   - inspect whether there is a cheaper grouped update model for this load shape without losing wallet invariants.
+3. Continue Match `trade_record` transaction variability analysis:
+   - TPS-124 showed strong `tradeExecutionReachTps`, but Match durable transaction remains one of the largest cumulative costs.
+
+### 2026-07-27 - TPS-125 Metric naming cleanup before further tuning
+
+Status: implemented; compile and targeted tests passed.
+
+Context:
+
+- The next tuning work depends heavily on comparing load-test JSON, actuator metrics, and write-cost summaries.
+- Several older MatchEngine metrics still used unscoped names such as `trade_outbox_*`, `trade_completion_marker_*`, and `trade_completion_*`.
+- Load-test JSON also still emitted legacy throughput aliases such as `businessMatchedE2eTps`, `matchedE2eTps`, and `completionMarkerReachTps`.
+- These names were not a runtime bottleneck, but they created a real diagnosis risk because a reader could not immediately tell whether a number represented a whole-business gate or one service stage.
+
+Naming rule:
+
+- Whole-chain / load-test business numbers use `business*`.
+- Service-specific stage numbers use a service prefix:
+  - `order*`;
+  - `wallet*`;
+  - `matchEngine*` in JSON output;
+  - `match_engine_*` in Prometheus/Micrometer metrics, because Prometheus metric names use underscores.
+- Runtime Micrometer metrics should not publish duplicate legacy aliases.
+- Summary tooling may keep read-side fallback for older reports, but new report labels should use the canonical names.
+
+Changes:
+
+- Renamed MatchEngine runtime metrics:
+  - `trade_outbox_*` -> `match_engine_trade_outbox_*`;
+  - `trade_completion_marker_*` -> `match_engine_trade_completion_marker_*`;
+  - `trade_completion_*` -> `match_engine_trade_completion_*`;
+  - `match_reservation_reconciler_*` -> `match_engine_reservation_reconciler_*`;
+  - `match_reservations_active` -> `match_engine_reservations_active`.
+- Renamed the Match trade record phase tag:
+  - `insert_trade_outbox` -> `insert_trade_execution_and_outbox`.
+- Renamed load-test JSON throughput output:
+  - `actualBuyPublishTps` -> `businessInputOrderTps`;
+  - `orderbookAdmissionTps` -> `businessOrderbookAdmissionTps`;
+  - `blendedMarketFlow*` -> `businessMarketFlow*`;
+  - `tradeExecutionReachTps` -> `matchEngineTradeExecutionReachTps`;
+  - `orderCommandMatchReachTps` -> `orderTradeApplicationReachTps`;
+  - `walletSettlementReachTps` -> `walletTradeSettlementReachTps`.
+- Removed new output of legacy JSON aliases:
+  - `businessMatchedE2eTps`;
+  - `matchedE2eTps`;
+  - `completionMarkerReachTps`;
+  - `strictCompletionMarkerReachTps`.
+- Updated write-cost summary parsing to prefer canonical names while still reading older reports when needed.
+
+Verification:
+
+| Check | Result |
+| --- | --- |
+| `eap-matchEngine` targeted tests: `TradeCompletionServiceTest`, `TradeOutboxRelayTest` | PASS |
+| `eap-order` `testClasses` | PASS |
+| `summarize-write-costs.sh` syntax | PASS |
+| `collect-loadtest-diagnostics.sh` syntax | PASS |
+| Runtime MatchEngine metric-name scan | No unscoped `trade_*` / short `match_*` Micrometer builders remain. |
+| Load-test JSON output scan | No new `businessMatchedE2eTps`, `matchedE2eTps`, `completionMarkerReachTps`, or old stage output remains. |
+| 500-trade light smoke `GLT_TPS125_METRIC_NAMING_SMOKE_500` | PASS, final queues/DLQ `0`; result JSON and write-cost summary use canonical throughput names. |
+| Smoke actuator scrape | PASS, no runtime `trade_outbox_*`, `trade_completion_*`, or `match_reservation_*` MatchEngine metric prefixes remain. |
+
+Match DB probe note:
+
+- The Match trade DB record cost is not fully solved yet.
+- TPS-125 isolated DB ceiling probe showed:
+  - current-like `cte_metadata`: `8314.25` trade fact + outbox inserts/s, p95 `2.350ms`;
+  - split statements `split_metadata`: `6339.87`/s, p95 `3.028ms`;
+  - trade fact only `trade_only`: `9009.41`/s, p95 `1.817ms`.
+- This means the current CTE shape is better than splitting into two statements in isolation.
+- Removing the outbox row has a measurable isolated benefit, but the full-chain bottleneck cannot be explained by this DB insert shape alone.
+
+Next action:
+
+1. Keep Match trade DB record under investigation, but do not replace the CTE with split SQL.
+2. Use the cleaned metric names for the next 10k light run so the report separates:
+   - business completion;
+   - MatchEngine trade execution reach;
+   - Order trade application reach;
+   - Wallet trade settlement reach;
+   - MatchEngine trade outbox relay stages.

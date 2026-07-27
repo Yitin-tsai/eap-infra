@@ -58,16 +58,37 @@ emit_result_summary() {
   local market completed orderbook_tps business_completed_tps blended_tps blended_orders blended_seconds legacy_business_tps completion_seconds trade_tps order_tps wallet_tps marker_tps queue_drain last_queue last_queue_seconds
   market="$(json_value marketId)"
   completed="$(json_value completedTrades)"
-  orderbook_tps="$(json_value orderbookAdmissionTps)"
+  orderbook_tps="$(json_value businessOrderbookAdmissionTps)"
+  if [[ -z "${orderbook_tps}" ]]; then
+    orderbook_tps="$(json_value orderbookAdmissionTps)"
+  fi
   business_completed_tps="$(json_value businessCompletedTradeTps)"
-  blended_tps="$(json_value blendedMarketFlowTps)"
-  blended_orders="$(json_value blendedMarketFlowOrders)"
-  blended_seconds="$(json_value blendedMarketFlowSeconds)"
+  blended_tps="$(json_value businessMarketFlowTps)"
+  if [[ -z "${blended_tps}" ]]; then
+    blended_tps="$(json_value blendedMarketFlowTps)"
+  fi
+  blended_orders="$(json_value businessMarketFlowOrders)"
+  if [[ -z "${blended_orders}" ]]; then
+    blended_orders="$(json_value blendedMarketFlowOrders)"
+  fi
+  blended_seconds="$(json_value businessMarketFlowSeconds)"
+  if [[ -z "${blended_seconds}" ]]; then
+    blended_seconds="$(json_value blendedMarketFlowSeconds)"
+  fi
   legacy_business_tps="$(json_value businessMatchedE2eTps)"
   completion_seconds="$(json_value businessCompletionSeconds)"
-  trade_tps="$(json_value tradeExecutionReachTps)"
-  order_tps="$(json_value orderCommandMatchReachTps)"
-  wallet_tps="$(json_value walletSettlementReachTps)"
+  trade_tps="$(json_value matchEngineTradeExecutionReachTps)"
+  if [[ -z "${trade_tps}" ]]; then
+    trade_tps="$(json_value tradeExecutionReachTps)"
+  fi
+  order_tps="$(json_value orderTradeApplicationReachTps)"
+  if [[ -z "${order_tps}" ]]; then
+    order_tps="$(json_value orderCommandMatchReachTps)"
+  fi
+  wallet_tps="$(json_value walletTradeSettlementReachTps)"
+  if [[ -z "${wallet_tps}" ]]; then
+    wallet_tps="$(json_value walletSettlementReachTps)"
+  fi
   marker_tps="$(json_value businessConvergenceReachTps)"
   if [[ -z "${marker_tps}" || "${marker_tps}" == "null" ]]; then
     marker_tps="$(json_value completionMarkerReachTps)"
@@ -87,16 +108,15 @@ emit_result_summary() {
 |---|---:|
 | marketId | \`${market}\` |
 | completedTrades | ${completed:-n/a} |
-| orderbookAdmissionTps | ${orderbook_tps:-n/a} |
+| businessOrderbookAdmissionTps | ${orderbook_tps:-n/a} |
 | businessCompletedTradeTps | ${business_completed_tps:-${legacy_business_tps:-n/a}} |
-| blendedMarketFlowTps | ${blended_tps:-n/a} |
-| blendedMarketFlowOrders | ${blended_orders:-n/a} |
-| blendedMarketFlowSeconds | ${blended_seconds:-n/a} |
+| businessMarketFlowTps | ${blended_tps:-n/a} |
+| businessMarketFlowOrders | ${blended_orders:-n/a} |
+| businessMarketFlowSeconds | ${blended_seconds:-n/a} |
 | businessCompletionSeconds | ${completion_seconds:-n/a} |
-| businessMatchedE2eTps legacy alias | ${legacy_business_tps:-n/a} |
-| tradeExecutionReachTps | ${trade_tps:-n/a} |
-| orderCommandMatchReachTps | ${order_tps:-n/a} |
-| walletSettlementReachTps | ${wallet_tps:-n/a} |
+| matchEngineTradeExecutionReachTps | ${trade_tps:-n/a} |
+| orderTradeApplicationReachTps | ${order_tps:-n/a} |
+| walletTradeSettlementReachTps | ${wallet_tps:-n/a} |
 | businessConvergenceReachTps | ${marker_tps:-n/a} |
 | queueFullyDrainedSeconds | ${queue_drain:-n/a} |
 | lastNonZeroQueue | \`${last_queue:-n/a}\` |
@@ -221,6 +241,80 @@ emit_pg_ranking() {
     '
 }
 
+emit_match_outbox_breakdown() {
+  local file="${DIAG_DIR}/match-actuator-prometheus.txt"
+  if [[ ! -f "${file}" ]]; then
+    echo "_No MatchEngine actuator metrics found._"
+    return
+  fi
+
+  awk '
+    function metric_value(line, parts) {
+      split(line, parts, " ")
+      return parts[length(parts)] + 0
+    }
+    function capture(metric, name) {
+      if ($0 ~ "^" metric "_count") counts[name] = metric_value($0)
+      if ($0 ~ "^" metric "_sum") sums[name] = metric_value($0)
+      if ($0 ~ "^" metric "_max") maxes[name] = metric_value($0)
+    }
+    {
+      capture("match_engine_trade_outbox_batch_size", "match_engine_trade_outbox_batch_size")
+      capture("match_engine_trade_outbox_confirmed_batch_size", "match_engine_trade_outbox_confirmed_batch_size")
+      capture("match_engine_trade_outbox_batch_duration_seconds", "match_engine_trade_outbox_batch_duration_seconds")
+      capture("match_engine_trade_outbox_select_duration_seconds", "match_engine_trade_outbox_select_duration_seconds")
+      capture("match_engine_trade_outbox_publish_stage_duration_seconds", "match_engine_trade_outbox_publish_stage_duration_seconds")
+      capture("match_engine_trade_outbox_publish_enqueue_duration_seconds", "match_engine_trade_outbox_publish_enqueue_duration_seconds")
+      capture("match_engine_trade_outbox_message_build_duration_seconds", "match_engine_trade_outbox_message_build_duration_seconds")
+      capture("match_engine_trade_outbox_payload_rebuild_duration_seconds", "match_engine_trade_outbox_payload_rebuild_duration_seconds")
+      capture("match_engine_trade_outbox_confirm_wall_duration_seconds", "match_engine_trade_outbox_confirm_wall_duration_seconds")
+      capture("match_engine_trade_outbox_confirm_duration_seconds", "match_engine_trade_outbox_confirm_duration_seconds")
+      capture("match_engine_trade_outbox_first_confirm_duration_seconds", "match_engine_trade_outbox_first_confirm_duration_seconds")
+      capture("match_engine_trade_outbox_remaining_confirm_duration_seconds", "match_engine_trade_outbox_remaining_confirm_duration_seconds")
+      capture("match_engine_trade_outbox_mark_sent_duration_seconds", "match_engine_trade_outbox_mark_sent_duration_seconds")
+      capture("trade_outbox_batch_size", "match_engine_trade_outbox_batch_size")
+      capture("trade_outbox_confirmed_batch_size", "match_engine_trade_outbox_confirmed_batch_size")
+      capture("trade_outbox_batch_duration_seconds", "match_engine_trade_outbox_batch_duration_seconds")
+      capture("trade_outbox_select_duration_seconds", "match_engine_trade_outbox_select_duration_seconds")
+      capture("trade_outbox_publish_stage_duration_seconds", "match_engine_trade_outbox_publish_stage_duration_seconds")
+      capture("trade_outbox_publish_enqueue_duration_seconds", "match_engine_trade_outbox_publish_enqueue_duration_seconds")
+      capture("trade_outbox_message_build_duration_seconds", "match_engine_trade_outbox_message_build_duration_seconds")
+      capture("trade_outbox_payload_rebuild_duration_seconds", "match_engine_trade_outbox_payload_rebuild_duration_seconds")
+      capture("trade_outbox_confirm_wall_duration_seconds", "match_engine_trade_outbox_confirm_wall_duration_seconds")
+      capture("trade_outbox_confirm_duration_seconds", "match_engine_trade_outbox_confirm_duration_seconds")
+      capture("trade_outbox_first_confirm_duration_seconds", "match_engine_trade_outbox_first_confirm_duration_seconds")
+      capture("trade_outbox_remaining_confirm_duration_seconds", "match_engine_trade_outbox_remaining_confirm_duration_seconds")
+      capture("trade_outbox_mark_sent_duration_seconds", "match_engine_trade_outbox_mark_sent_duration_seconds")
+    }
+    END {
+      order[1] = "match_engine_trade_outbox_batch_size"
+      order[2] = "match_engine_trade_outbox_confirmed_batch_size"
+      order[3] = "match_engine_trade_outbox_batch_duration_seconds"
+      order[4] = "match_engine_trade_outbox_select_duration_seconds"
+      order[5] = "match_engine_trade_outbox_publish_stage_duration_seconds"
+      order[6] = "match_engine_trade_outbox_publish_enqueue_duration_seconds"
+      order[7] = "match_engine_trade_outbox_message_build_duration_seconds"
+      order[8] = "match_engine_trade_outbox_payload_rebuild_duration_seconds"
+      order[9] = "match_engine_trade_outbox_confirm_wall_duration_seconds"
+      order[10] = "match_engine_trade_outbox_confirm_duration_seconds"
+      order[11] = "match_engine_trade_outbox_first_confirm_duration_seconds"
+      order[12] = "match_engine_trade_outbox_remaining_confirm_duration_seconds"
+      order[13] = "match_engine_trade_outbox_mark_sent_duration_seconds"
+
+      print "| Metric | Count | Sum | Max | Mean |"
+      print "|---|---:|---:|---:|---:|"
+      for (i = 1; i <= 13; i++) {
+        name = order[i]
+        count = counts[name] + 0
+        sum = sums[name] + 0
+        max = maxes[name] + 0
+        mean = count > 0 ? sum / count : 0
+        printf "| `%s` | %d | %.6f | %.6f | %.6f |\n", name, count, sum, max, mean
+      }
+    }
+  ' "${file}"
+}
+
 emit_hikari_snapshot() {
   awk '
     function basename(path, parts) {
@@ -279,6 +373,12 @@ emit_integrated_stage_lag() {
   echo "This is PostgreSQL executor time from pg_stat_statements. Gaps versus application timers usually point to JDBC, transaction, commit, broker confirm, scheduling, or client-side waits."
   echo
   emit_pg_ranking
+  echo
+  echo "## Match Trade Outbox Relay Breakdown"
+  echo
+  echo "This isolates MatchEngine TradeExecuted relay costs. Batch-size rows are counts; duration rows are seconds."
+  echo
+  emit_match_outbox_breakdown
   echo
   echo "## Integrated Stage Lag"
   echo
