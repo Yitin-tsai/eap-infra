@@ -101,11 +101,11 @@ jq -s \
           end
         )
       };
-	  def finalQueueBacklog:
-	    (
-	      (.matchEngineQueueReady // 0)
-	      + (.orderTradeExecutedQueueReady // 0)
-	      + (.walletTradeExecutedQueueReady // 0)
+  def finalQueueBacklog:
+    (
+      (.matchEngineQueueReady // 0)
+      + (.orderTradeExecutedQueueReady // 0)
+      + (.walletTradeExecutedQueueReady // 0)
       + (.orderTradeAppliedQueueReady // 0)
       + (.walletTradeSettledQueueReady // 0)
       + (.matchEngineQueueUnacked // 0)
@@ -114,30 +114,52 @@ jq -s \
       + (.orderTradeAppliedQueueUnacked // 0)
       + (.walletTradeSettledQueueUnacked // 0)
     );
+  def schemaValid: (.benchmarkSchemaVersion // 0) == 2;
   def validRun:
     (
-      (.actualBuyPublishTps // 0) >= ($targetTps * $minOfferedTpsRatio)
+      schemaValid
+      and (.businessInputOrderTps // 0) >= ($targetTps * $minOfferedTpsRatio)
       and (.buyPublishFailures // 0) == 0
       and (.sellPublishFailures // 0) == 0
+      and (.buyPublishBrokerAcked // 0) == $events
+      and (.sellPublishBrokerAcked // 0) == $events
+      and (.buyPublishBrokerNacked // 0) == 0
+      and (.sellPublishBrokerNacked // 0) == 0
+      and (.buyPublishReturned // 0) == 0
+      and (.sellPublishReturned // 0) == 0
+      and (.buyPublishConfirmTimedOut // 0) == 0
+      and (.sellPublishConfirmTimedOut // 0) == 0
       and (.completedTrades // 0) == $events
       and (.tradeExecutions // 0) == $events
       and (.walletTradeSettlements // 0) == $events
+      and (.completedTradeIdSetsEqual // false) == true
       and (.orderCommandMatchedRows // 0) == ($events * 2)
       and (.remainingSellOrders // 0) == 0
       and (.remainingBuyOrders // 0) == 0
+      and (.activeReservations // 0) == 0
+      and (.queueMetricsReadFailures // 0) == 0
       and finalQueueBacklog == 0
     );
   def invalidReasons:
     [
-      (if (.actualBuyPublishTps // 0) < ($targetTps * $minOfferedTpsRatio) then "driver_offered_tps_below_threshold" else empty end),
+      (if schemaValid | not then "unsupported_benchmark_schema" else empty end),
+      (if (.businessInputOrderTps // 0) < ($targetTps * $minOfferedTpsRatio) then "driver_offered_tps_below_threshold" else empty end),
       (if (.buyPublishFailures // 0) != 0 then "buy_publish_failures" else empty end),
       (if (.sellPublishFailures // 0) != 0 then "sell_publish_failures" else empty end),
+      (if (.buyPublishBrokerAcked // 0) != $events then "buy_publish_broker_ack_mismatch" else empty end),
+      (if (.sellPublishBrokerAcked // 0) != $events then "sell_publish_broker_ack_mismatch" else empty end),
+      (if (.buyPublishBrokerNacked // 0) != 0 or (.sellPublishBrokerNacked // 0) != 0 then "publish_broker_nacks" else empty end),
+      (if (.buyPublishReturned // 0) != 0 or (.sellPublishReturned // 0) != 0 then "publish_returns" else empty end),
+      (if (.buyPublishConfirmTimedOut // 0) != 0 or (.sellPublishConfirmTimedOut // 0) != 0 then "publish_confirm_timeouts" else empty end),
       (if (.completedTrades // 0) != $events then "completed_trades_mismatch" else empty end),
       (if (.tradeExecutions // 0) != $events then "trade_executions_mismatch" else empty end),
       (if (.walletTradeSettlements // 0) != $events then "wallet_settlements_mismatch" else empty end),
+      (if (.completedTradeIdSetsEqual // false) != true then "completed_trade_id_set_mismatch" else empty end),
       (if (.orderCommandMatchedRows // 0) != ($events * 2) then "order_command_rows_mismatch" else empty end),
       (if (.remainingSellOrders // 0) != 0 then "remaining_sell_orders" else empty end),
       (if (.remainingBuyOrders // 0) != 0 then "remaining_buy_orders" else empty end),
+      (if (.activeReservations // 0) != 0 then "active_reservations" else empty end),
+      (if (.queueMetricsReadFailures // 0) != 0 then "queue_metrics_read_failures" else empty end),
       (if finalQueueBacklog != 0 then "final_queue_backlog" else empty end)
     ];
   def withValidity:
@@ -171,56 +193,72 @@ jq -s \
       resultJson: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-result.json"),
       metaTxt: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-meta.txt"),
       runLog: ($reportDir + "/matched-e2e-two-phase-" + .marketId + "-run.log"),
-      actualBuyPublishTps,
-      orderbookAdmissionTps,
+      benchmarkSchemaVersion,
+      businessInputOrderTps,
+      buyPublishAttempts,
+      buyPublishBrokerAcked,
+      buyPublishBrokerNacked,
+      buyPublishReturned,
+      buyPublishConfirmTimedOut,
+      sellPublishAttempts,
+      sellPublishBrokerAcked,
+      sellPublishBrokerNacked,
+      sellPublishReturned,
+      sellPublishConfirmTimedOut,
+      businessOrderbookAdmissionTps,
       orderbookAdmissionSeconds,
       businessCompletedTradeTps,
-      blendedMarketFlowTps,
-      blendedMarketFlowSeconds,
-      blendedMarketFlowOrders,
-      businessMatchedE2eTps,
+      businessMarketFlowTps,
+      businessMarketFlowSeconds,
+      businessMarketFlowOrders,
       businessCompletionSeconds,
-      tradeExecutionReachTps,
-      orderCommandMatchReachTps,
-      walletSettlementReachTps,
-      businessConvergenceReachTps: (.businessConvergenceReachTps // .completionMarkerReachTps),
-      completionMarkerReachTps,
+      matchEngineTradeExecutionReachTps,
+      orderTradeApplicationReachTps,
+      walletTradeSettlementReachTps,
+      businessConvergenceReachTps,
       completedTrades,
       tradeExecutions,
       walletTradeSettlements,
+      completedTradeIdSetsEqual,
+      matchTradeIdCount,
+      orderTradeIdCount,
+      walletTradeIdCount,
+      tradeIdUnionCount,
+      tradeIdsMissingInMatch,
+      tradeIdsMissingInOrder,
+      tradeIdsMissingInWallet,
+      tradeIdSetFingerprint,
       orderCommandMatchedRows,
       finalQueueBacklog,
+      queueMetricsReadFailures,
+      activeReservations,
       maxMatchEngineQueueUnacked,
       maxOrderTradeExecutedQueueUnacked,
       maxOrderTradeAppliedQueueUnacked
     })),
     metrics: {
       allRuns: {
-        actualBuyPublishTps: ($runs | stat("actualBuyPublishTps")),
-        orderbookAdmissionTps: ($runs | stat("orderbookAdmissionTps")),
+        businessInputOrderTps: ($runs | stat("businessInputOrderTps")),
+        businessOrderbookAdmissionTps: ($runs | stat("businessOrderbookAdmissionTps")),
         businessCompletedTradeTps: ($runs | stat("businessCompletedTradeTps")),
-        blendedMarketFlowTps: ($runs | stat("blendedMarketFlowTps")),
-        businessMatchedE2eTps: ($runs | stat("businessMatchedE2eTps")),
+        businessMarketFlowTps: ($runs | stat("businessMarketFlowTps")),
         businessCompletionSeconds: ($runs | stat("businessCompletionSeconds")),
-        tradeExecutionReachTps: ($runs | stat("tradeExecutionReachTps")),
-        orderCommandMatchReachTps: ($runs | stat("orderCommandMatchReachTps")),
-        walletSettlementReachTps: ($runs | stat("walletSettlementReachTps")),
-        businessConvergenceReachTps: ($runs | map(.businessConvergenceReachTps = (.businessConvergenceReachTps // .completionMarkerReachTps)) | stat("businessConvergenceReachTps")),
-        completionMarkerReachTps: ($runs | stat("completionMarkerReachTps")),
+        matchEngineTradeExecutionReachTps: ($runs | stat("matchEngineTradeExecutionReachTps")),
+        orderTradeApplicationReachTps: ($runs | stat("orderTradeApplicationReachTps")),
+        walletTradeSettlementReachTps: ($runs | stat("walletTradeSettlementReachTps")),
+        businessConvergenceReachTps: ($runs | stat("businessConvergenceReachTps")),
         maxMatchEngineQueueUnacked: ($runs | stat("maxMatchEngineQueueUnacked"))
       },
       validRunsOnly: {
-        actualBuyPublishTps: ($validRuns | stat("actualBuyPublishTps")),
-        orderbookAdmissionTps: ($validRuns | stat("orderbookAdmissionTps")),
+        businessInputOrderTps: ($validRuns | stat("businessInputOrderTps")),
+        businessOrderbookAdmissionTps: ($validRuns | stat("businessOrderbookAdmissionTps")),
         businessCompletedTradeTps: ($validRuns | stat("businessCompletedTradeTps")),
-        blendedMarketFlowTps: ($validRuns | stat("blendedMarketFlowTps")),
-        businessMatchedE2eTps: ($validRuns | stat("businessMatchedE2eTps")),
+        businessMarketFlowTps: ($validRuns | stat("businessMarketFlowTps")),
         businessCompletionSeconds: ($validRuns | stat("businessCompletionSeconds")),
-        tradeExecutionReachTps: ($validRuns | stat("tradeExecutionReachTps")),
-        orderCommandMatchReachTps: ($validRuns | stat("orderCommandMatchReachTps")),
-        walletSettlementReachTps: ($validRuns | stat("walletSettlementReachTps")),
-        businessConvergenceReachTps: ($validRuns | map(.businessConvergenceReachTps = (.businessConvergenceReachTps // .completionMarkerReachTps)) | stat("businessConvergenceReachTps")),
-        completionMarkerReachTps: ($validRuns | stat("completionMarkerReachTps")),
+        matchEngineTradeExecutionReachTps: ($validRuns | stat("matchEngineTradeExecutionReachTps")),
+        orderTradeApplicationReachTps: ($validRuns | stat("orderTradeApplicationReachTps")),
+        walletTradeSettlementReachTps: ($validRuns | stat("walletTradeSettlementReachTps")),
+        businessConvergenceReachTps: ($validRuns | stat("businessConvergenceReachTps")),
         maxMatchEngineQueueUnacked: ($validRuns | stat("maxMatchEngineQueueUnacked"))
       }
     }
