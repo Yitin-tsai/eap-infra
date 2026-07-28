@@ -14,7 +14,7 @@ EAP benchmark results are separated by workflow contract:
 
 | Contract | Status | Meaning |
 | --- | --- | --- |
-| `order-admission-chain` | planned | Order API through Wallet reservation and MatchEngine orderbook admission |
+| `order-admission-chain` | implemented | Order API through Wallet reservation and MatchEngine orderbook admission |
 | `matched-trade-completion-chain` | implemented | Seeded confirmed orders through MatchEngine matching, Order trade application, Wallet settlement, trade-ID equality, and queue drain |
 | `public-order-lifecycle` | planned | User-facing HTTP order submission through full durable trade completion |
 | `rabbitmq-publish-only` | implemented diagnostic | RabbitMQ broker-confirmed input ceiling without service consumers |

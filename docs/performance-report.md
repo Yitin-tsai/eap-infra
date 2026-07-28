@@ -8,7 +8,7 @@ EAP reports multiple throughput numbers because they answer different questions.
 
 The current benchmark suite is split into contracts:
 
-- `order-admission-chain` (planned): `Order API -> Wallet reservation -> OrderConfirmedEvent -> MatchEngine orderbook admission`.
+- `order-admission-chain` (implemented): `Order API -> Wallet reservation -> OrderConfirmedEvent -> MatchEngine orderbook admission`.
 - `matched-trade-completion-chain` (implemented): seeded confirmed orders enter MatchEngine and the benchmark waits for MatchEngine, Order, and Wallet durable trade completion.
 - `public-order-lifecycle` (planned): user-facing HTTP submission through reservation, matching, settlement, durable convergence, and queue drain.
 - `rabbitmq-publish-only` (implemented diagnostic): RabbitMQ broker-confirmed input ceiling with service processing removed.
@@ -26,6 +26,72 @@ The current benchmark suite is split into contracts:
 | blended market flow TPS | total SELL+BUY order confirmations processed across the full two-phase benchmark window | No, useful for workload capacity but it mixes order confirmations and completed trades |
 
 The project intentionally does not report accepted order throughput as completed trading throughput.
+
+## Order-Admission Chain Semantics
+
+`order-admission-chain` is the front-half benchmark. It sends one-sided HTTP limit orders to the Order API and counts the workflow as admitted only after Order has persisted the submission request, Wallet has reserved assets and emitted confirmation, Order has persisted `OrderAssetReservationConfirmedV1`, MatchEngine has admitted the order into the Redis orderbook, and measured RabbitMQ queues have drained.
+
+This benchmark does not execute trades. Its TPS must not be compared directly with `business completed trade TPS`.
+
+### First Order-Admission Diagnostic
+
+Run: `GLT_20260728_ORDER_ADMISSION_10K_R1`, one 10k SELL-only local diagnostic sample.
+
+| Metric | Result |
+| --- | ---: |
+| target HTTP order rate | `2000 orders/s` |
+| HTTP accepted | `10000/10000` |
+| HTTP accepted TPS | `1333.68 orders/s` |
+| HTTP p95 / p99 | `249.46 ms / 437.53 ms` |
+| Order `OrderSubmissionRequestedV1` rows | `10000` |
+| Order `OrderAssetReservationConfirmedV1` rows | `10000` |
+| MatchEngine orderbook admissions | `10000` |
+| order-admission gate window | `24.79s` |
+| business order-admission TPS | `403.36 orders/s` |
+| final measured queue backlog | `0` |
+| queue metrics read failures | `0` |
+
+Interpretation:
+
+- The front-half order path is now measurable as its own contract.
+- This run was valid for correctness, but the HTTP load generator only reached `1333.68/s` against a `2000/s` target.
+- The first bottleneck to split is the admission chain itself: Order API/event-store/outbox, Wallet reservation/outbox relay, Order confirmation consumer, and MatchEngine Redis admission.
+
+### Order-Admission Split Diagnostic
+
+Run: `GLT_20260728_ORDER_ADMISSION_SPLIT_10K_R1`, one 10k SELL-only local diagnostic sample with stage-reached timings.
+
+| Stage | Reached At |
+| --- | ---: |
+| HTTP accepted | `7.31s` send window |
+| Order `OrderSubmissionRequestedV1` persisted | `7.57s` |
+| Order `OrderSubmittedEvent` outbox SENT | `23.43s` |
+| Wallet order-submission claim | `23.47s` |
+| Order `OrderAssetReservationConfirmedV1` persisted | `23.50s` |
+| MatchEngine Redis orderbook admission | `23.50s` |
+| final measured queue drain | `26.81s` |
+
+Interpretation:
+
+- Order API persistence completed shortly after the HTTP send window.
+- The dominant delay was between Order submission persistence and Order outbox SENT convergence.
+- Wallet reservation, Wallet confirmed publication, Order confirmation consumption, and MatchEngine orderbook admission converged almost immediately after Order outbox publication caught up.
+- The next tuning target is Order outbox relay confirm/publication strategy, not Wallet settlement or MatchEngine Redis admission.
+
+Order outbox confirm strategy A/B:
+
+| Run | Order outbox relay mode | Order outbox SENT reached | Orderbook admitted | Gate elapsed | Business order-admission TPS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `GLT_20260728_ORDER_ADMISSION_SPLIT_10K_R1` | per-message correlated confirm wait, batch `500` | `23.43s` | `23.50s` | `26.81s` | `372.93/s` |
+| `GLT_20260728_ORDER_ADMISSION_QUEUE_ATTR_10K_R1` | batch confirm, batch `500`, clean reset | `17.44s` | `18.20s` (`549.42/s`) | `21.38s` | `467.68/s` |
+| `GLT_20260728_ORDER_ADMISSION_OPT_DEFAULT_10K_R1` | batch confirm, batch `1000`, clean reset | `16.50s` | `16.57s` (`603.39/s`) | `21.39s` | `467.54/s` |
+
+Decision:
+
+- Load-test Order outbox relay now defaults to batch publisher confirms and batch size `1000`.
+- Admission benchmark reset now truncates Order/Wallet test tables and purges RabbitMQ queues after truncation, preventing old outbox rows from being relayed into the next run.
+- The next bottleneck is no longer only OrderSubmitted relay. The orderbook-admission stage is now around the `600/s` class, while the full drained gate remains around the `460/s` class because confirmed-event queues still have late unacked tails.
+- Latest tail sample: `wallet.orderSubmitted.queue(ready=0,unacked=20)`, `order.orderConfirmed.queue(ready=0,unacked=350)`, `matchEngine.orderConfirmed.queue(ready=0,unacked=87)` shortly before final drain.
 
 ## Matched-Trade-Completion Chain Semantics
 

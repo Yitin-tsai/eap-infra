@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+
+TARGET_TPS="${TARGET_TPS:-2000}"
+DURATION_SECONDS="${DURATION_SECONDS:-5}"
+EVENTS="${EVENTS:-10000}"
+USERS="${USERS:-500}"
+WORKERS="${WORKERS:-128}"
+SIDE="${SIDE:-SELL}"
+WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
+RUN_ID="${RUN_ID:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_10K}"
+MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
+START_SERVICES="${START_SERVICES:-true}"
+GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
+
+if (( EVENTS != 10000 )); then
+  echo "[WARN] EVENTS=${EVENTS}; the standard order-admission-chain probe is normally EVENTS=10000." >&2
+fi
+
+if [[ "${MARKET_ID}" != "ENERGY-SPOT" ]]; then
+  echo "[WARN] Order HTTP API currently assigns default market ENERGY-SPOT; MARKET_ID=${MARKET_ID} is used only for admission gate lookup." >&2
+fi
+
+if [[ "${START_SERVICES}" == "true" ]]; then
+  bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
+fi
+
+mkdir -p "${GRADLE_USER_HOME_DIR}"
+
+echo "[INFO] Order admission chain benchmark"
+echo "[INFO] runId=${RUN_ID}"
+echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, users=${USERS}, workers=${WORKERS}, side=${SIDE}"
+
+cd "${ROOT_DIR}/eap-order"
+GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTest \
+  --args="--mode orderAdmissionChain \
+  --run-id ${RUN_ID} \
+  --market-id ${MARKET_ID} \
+  --side ${SIDE} \
+  --events ${EVENTS} \
+  --tps ${TARGET_TPS} \
+  --duration-seconds ${DURATION_SECONDS} \
+  --users ${USERS} \
+  --workers ${WORKERS} \
+  --wait-timeout-seconds ${WAIT_TIMEOUT_SECONDS} \
+  --order-admission-gate true"
