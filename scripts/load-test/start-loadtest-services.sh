@@ -18,6 +18,9 @@ start_service() {
   if [[ "${repo}" == "eap-matchEngine" ]]; then
     service_env="EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED='${EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED:-true}'"
   fi
+  if [[ "${repo}" == "eap-wallet" ]]; then
+    service_env="EAP_WALLET_OUTBOX_ASYNC_RELAY_ENABLED='${EAP_WALLET_OUTBOX_ASYNC_RELAY_ENABLED:-false}' EAP_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES='${EAP_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES:-4}' EAP_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS='${EAP_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS:-30}'"
+  fi
 
   if lsof -Pi ":${port}" -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "[WARN] port ${port} is already in use; stop the existing process before starting ${repo}" >&2

@@ -11433,3 +11433,46 @@ Next action:
 1. Keep Wallet JDBC outbox insert.
 2. Keep Order async relay behind feature flag until repeated A/B proves a stable win.
 3. Continue with Wallet outbox relay confirm strategy or a shared Order/Wallet outbox claim-relay design, using repeated clean 10k runs before changing defaults.
+
+### 2026-07-28 - TPS-127 Wallet async outbox relay experiment
+
+Status: implemented behind a loadtest feature flag; rejected as a default tuning.
+
+Implementation:
+
+- Added an experimental Wallet outbox claim state:
+  - `PENDING -> IN_FLIGHT -> SENT`;
+  - stale `IN_FLIGHT` rows can be reclaimed after `eap.wallet.outbox-relay.in-flight-timeout-seconds`;
+  - `async-relay-enabled` remains `false` by default.
+- Added loadtest flags:
+  - `EAP_WALLET_OUTBOX_ASYNC_RELAY_ENABLED`;
+  - `EAP_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES`;
+  - `EAP_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS`.
+- Added `idx_wallet_outbox_in_flight_timeout` so stale in-flight recovery does not require scanning the whole outbox table.
+
+Validation:
+
+| Run | Variant | Business admission TPS | Wallet outbox batches | Wallet outbox confirm sum | Order outbox confirm wall | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260728_ORDER_ADMISSION_WALLET_ASYNC_RELAY_10K_R1` | Wallet async relay on, max in-flight batches `4` | `402.18` | `121` | `54.374s` | `16.309s` | PASS correctness, slower |
+| `GLT_20260728_ORDER_ADMISSION_WALLET_ASYNC_OFF_COMPARE_10K_R1` | Wallet async relay off | `538.76` | `23` | `12.142s` | `11.811s` | PASS, better |
+
+Post-run state:
+
+- Wallet outbox status was clean after the async run:
+  - `SENT=10000`;
+  - no `IN_FLIGHT` rows remained.
+
+Interpretation:
+
+- The async claim-relay design preserved correctness in this run, but it was worse for the admission chain.
+- Root cause:
+  - Wallet outbox rows are produced gradually while HTTP orders are still flowing;
+  - async workers claim too early and fragment the relay into many small batches (`121` batches vs `23`);
+  - this increases RabbitMQ confirm and batch fixed costs instead of reducing tail latency.
+- Keep the flag disabled.
+- Do not claim Wallet async relay as a TPS improvement.
+- The remaining useful direction is not "more relay workers"; it is reducing or reshaping the durable relay cost itself:
+  - OrderSubmitted durable append/outbox confirm;
+  - Wallet reservation transaction and outbox confirm;
+  - queue drain tail after durable admission rows have already converged.
