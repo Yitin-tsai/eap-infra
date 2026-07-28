@@ -11340,3 +11340,38 @@ Next action:
    - Order submission outbox relay;
    - Wallet reservation durable apply/outbox relay;
    - Order reservation-confirmed consumer and queue drain.
+
+Follow-up attribution:
+
+| Run | Variant | Business admission TPS | Order outbox confirm wall | Order outbox batch wall | Wallet transaction sum | Wallet outbox batch wall | Match Redis eval sum |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_OUTBOX_METRICS_10K_R1` | batch `500`, batch confirm on | `431.53` | `15.676s` | `16.289s` | n/a | n/a | `15.865s` |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_OUTBOX_ASYNC_CONFIRM_10K_R1` | batch `500`, per-message future confirm | `432.11` | `15.117s` | `16.104s` | n/a | n/a | `16.086s` |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_OUTBOX_BATCH1000_10K_R1` | batch `1000`, batch confirm on | `475.26` | `13.994s` | `14.531s` | n/a | n/a | `9.655s` |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_OUTBOX_BATCH2000_10K_R1` | batch `2000`, batch confirm on | `370.77` | `13.236s` | `20.198s` | n/a | n/a | `26.574s` |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH4_10K_R1` | batch `500`, publish chunks `4` | `459.17` | `56.756s` chunk-sum / `14.869s` batch wall | `14.869s` | n/a | n/a | `14.091s` |
+| `GLT_20260728_ORDER_ADMISSION_WALLET_METRICS_10K_R1` | standard metrics pass | `356.04` | `17.468s` | `18.187s` | `79.387s` cumulative / `7.939ms` mean | `18.021s` | `16.675s` |
+
+Interpretation:
+
+- Order outbox `publish enqueue` and mark-SENT are not the main Order relay costs:
+  - enqueue was sub-second across 10k messages;
+  - mark-SENT was about `0.17-0.45s`.
+- Order outbox confirm wall is a real fixed cost, but existing knobs are not enough:
+  - per-message future confirm did not improve the chain;
+  - batch `1000` helped the Order outbox stage but did not create a stable full-chain win;
+  - batch `2000` is rejected because batch wall worsened, HTTP p99 regressed, and publish enqueue count exceeded the expected 10k attempts.
+- Wallet is also part of the admission durable chain:
+  - Wallet reservation transaction averaged about `7.94ms`;
+  - idempotency claim, wallet update, and wallet outbox insert are all measurable;
+  - Wallet outbox batch wall was in the same class as Order outbox batch wall.
+- The current front-chain limit is therefore a durable relay pipeline problem, not a Redis-only problem and not a consumer-count problem.
+
+Next engineering candidates:
+
+1. Add a proper bounded asynchronous outbox relay design for Order/Wallet so confirm waiting can overlap without duplicate publish attempts or oversized batches.
+2. Review Wallet order-submitted transaction SQL shape:
+   - idempotency claim;
+   - wallet row update;
+   - outbox insert.
+3. Keep batch `500` as the conservative default until a repeated run proves batch `1000` is both faster and stable.
