@@ -456,7 +456,7 @@ snapshot_actuator() {
     for url in "$@"; do
       echo "# url=${url}"
       if curl -fsS "${url}" \
-        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_completion_marker_.*|trade_outbox_.*|match_engine_.*).*'; then
+        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_completion_marker_.*|trade_outbox_.*|match_engine_.*).*'; then
         return 0
       fi
     done
@@ -532,7 +532,7 @@ sample_loop() {
           for url in ${urls}; do
             echo "# url=${url}"
             if curl -fsS "${url}" \
-              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_completion_marker_.*|trade_outbox_.*).*'; then
+              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_completion_marker_.*|trade_outbox_.*).*'; then
               break
             fi
           done

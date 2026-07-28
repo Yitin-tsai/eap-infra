@@ -11476,3 +11476,54 @@ Interpretation:
   - OrderSubmitted durable append/outbox confirm;
   - Wallet reservation transaction and outbox confirm;
   - queue drain tail after durable admission rows have already converged.
+
+### 2026-07-28 - TPS-128 Order asset-reservation batch append
+
+Status: accepted as a local durable-write reduction; needs more repeated admission-chain runs before updating headline TPS.
+
+Problem found:
+
+- `order-admission-chain` had durable facts converging before broker drain, but per-queue diagnostics showed no `ready` backlog:
+  - queues were mostly `unacked`, not backed up as ready messages.
+- Added Order asset-reservation listener phase metrics:
+  - `eap_order_asset_reservation_confirmed_listener_duration`;
+  - `eap_order_asset_reservation_confirmed_deserialize_duration`;
+  - `eap_order_asset_reservation_confirmed_confirm_all_duration`;
+  - `eap_order_asset_reservation_confirmed_status_update_duration`;
+  - `eap_order_asset_reservation_confirmed_ack_duration`.
+- Baseline showed the listener cost was almost entirely durable append:
+  - `confirmAll=47.030707s`;
+  - deserialize/status update/ACK were sub-second in total.
+
+Implementation:
+
+- Changed `OrderEventAppender.appendFromConsumerBatch(...)` to detect pure `OrderAssetReservationConfirmedV1` batches and use a SQL batch hot path.
+- The specialized path:
+  - locks all stream heads for the batch;
+  - validates every command is expected version `1`;
+  - batch-inserts `order_event_store`;
+  - batch-updates `order_stream_heads`;
+  - batch-upserts `order_matching_state`.
+- Any nonconforming batch falls back to the existing per-command append loop, preserving duplicate/retry behavior for unusual cases.
+- Added machine-readable `orderAdmissionQueueDiagnostics` to `OrderHttpLoadGenerator` so admission-chain results show per-queue `maxReady`, `maxUnacked`, and last non-zero timing.
+
+Validation:
+
+| Run | Variant | Business admission TPS | Match orderbook admission TPS | Order asset confirmAll sum | Order asset listener sum | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_ASSET_PHASE_DIAG_10K_R1` | before batch append | `420.96` | `574.34` | `47.030707s` | `47.312748s` | PASS |
+| `GLT_20260728_ORDER_ADMISSION_ASSET_BATCH_APPEND_10K_R1` | SQL batch append | `479.23` | `552.15` | `21.855785s` | `22.224352s` | PASS |
+| `GLT_20260728_ORDER_ADMISSION_ASSET_BATCH_APPEND_10K_R2` | SQL batch append | `545.04` | `718.89` | `16.756497s` | `17.079468s` | PASS |
+
+Interpretation:
+
+- The Java loop inside `appendFromConsumerBatch(...)` was a real durable-write bottleneck for order admission.
+- The SQL batch path reduced the measured Order asset-reservation append cost by roughly `54-64%` across the two validation runs.
+- The full-chain result still has local noise because Order/Wallet outbox confirm wall and Match Redis eval are still visible:
+  - R2 Order outbox confirm wall: `12.274105s`;
+  - R2 Wallet outbox batch wall: `12.585670s`;
+  - R2 Match Redis eval: `12.516743s`.
+- Do not claim a new stable headline TPS yet.
+- Next useful work:
+  - run three clean 10k admission-chain repeats with this batch append;
+  - then inspect whether remaining variance comes from outbox publisher confirms, RabbitMQ management queue-drain timing, or Match Redis eval.
