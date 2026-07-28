@@ -11527,3 +11527,36 @@ Interpretation:
 - Next useful work:
   - run three clean 10k admission-chain repeats with this batch append;
   - then inspect whether remaining variance comes from outbox publisher confirms, RabbitMQ management queue-drain timing, or Match Redis eval.
+
+Repeat validation:
+
+| Run | Business admission TPS | Match orderbook admission TPS | Final drain | Order asset confirmAll sum | Order outbox confirm wall | Wallet transaction sum | Wallet outbox batch wall | Match Redis eval |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260728_ORDER_ADMISSION_ASSET_BATCH_APPEND_REPEAT_10K_R1` | `455.63` | `705.80` | `21.95s` | `17.503067s` | `12.765896s` | `55.105999s` | `13.280741s` | `13.308062s` |
+| `GLT_20260728_ORDER_ADMISSION_ASSET_BATCH_APPEND_REPEAT_10K_R2` | `352.93` | `505.34` | `28.33s` | `26.081732s` | `17.712569s` | `79.444650s` | `18.293939s` | `19.343567s` |
+| `GLT_20260728_ORDER_ADMISSION_ASSET_BATCH_APPEND_REPEAT_10K_R3` | `470.68` | `691.40` | `21.25s` | `16.011228s` | `12.627576s` | `60.699251s` | `12.647134s` | `15.008042s` |
+
+Repeat summary:
+
+- Business admission TPS:
+  - average `426.41`;
+  - median `455.63`;
+  - range `352.93-470.68`.
+- Match orderbook admission TPS:
+  - average `634.18`;
+  - median `691.40`.
+- Order asset reservation `confirmAll`:
+  - average `19.865342s`;
+  - median `17.503067s`;
+  - still much lower than the pre-batch baseline `47.030707s`.
+- The slow R2 was a whole-system slow sample, not an isolated Order regression:
+  - Order outbox confirm wall, Wallet transaction/outbox, and Match Redis eval all worsened together.
+
+Conclusion:
+
+- Accept the Order asset-reservation SQL batch append as a real local cost reduction.
+- Do not update the public headline TPS from these three runs.
+- The next performance question is variance attribution:
+  - capture CPU/IO/GC/Hikari snapshots during each admission run;
+  - inspect why low ready backlog still leaves long unacked tails;
+  - keep focusing on durable write and publisher-confirm costs, not listener concurrency as the primary explanation.
