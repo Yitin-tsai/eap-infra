@@ -13,12 +13,66 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
 RUN_ID="${RUN_ID:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_10K}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 START_SERVICES="${START_SERVICES:-true}"
+DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
 ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED:-false}"
 ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED="${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED:-false}"
 ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES="${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES:-4}"
 ORDER_ADMISSION_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS="${ORDER_ADMISSION_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS:-30}"
 FLUSH_REDIS_ON_RESET="${FLUSH_REDIS_ON_RESET:-true}"
 GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
+REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
+RUN_REPORT_LOG="${REPORT_DIR}/order-admission-${RUN_ID}.log"
+RUN_DIAG_DIR="${REPORT_DIR}/order-admission-${RUN_ID}-diagnostics"
+
+DIAG_SAMPLER_PID=""
+
+collect_diagnostics() {
+  local phase="$1"
+  case "${DIAGNOSTICS_LEVEL}" in
+    none|baseline)
+      return 0
+      ;;
+    light)
+      DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+        bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" "${phase}-light" || true
+      ;;
+    deep)
+      DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+        bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" "${phase}" || true
+      ;;
+    *)
+      echo "[ERROR] unsupported DIAGNOSTICS_LEVEL=${DIAGNOSTICS_LEVEL}; expected none, baseline, light, or deep" >&2
+      exit 2
+      ;;
+  esac
+}
+
+start_diagnostic_sampler() {
+  case "${DIAGNOSTICS_LEVEL}" in
+    none|baseline)
+      return 0
+      ;;
+  esac
+  mkdir -p "${RUN_DIAG_DIR}"
+  rm -f "${RUN_DIAG_DIR}/sampler.stop" 2>/dev/null || true
+  DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+    bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" sample &
+  DIAG_SAMPLER_PID="$!"
+  echo "[INFO] diagnostics sampler pid=${DIAG_SAMPLER_PID}, level=${DIAGNOSTICS_LEVEL}, dir=${RUN_DIAG_DIR}"
+}
+
+stop_diagnostic_sampler() {
+  if [[ -n "${DIAG_SAMPLER_PID}" ]]; then
+    DIAG_DIR="${RUN_DIAG_DIR}" bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" stop-sample >/dev/null 2>&1 || true
+    wait "${DIAG_SAMPLER_PID}" >/dev/null 2>&1 || true
+    DIAG_SAMPLER_PID=""
+  fi
+}
+
+cleanup() {
+  stop_diagnostic_sampler
+}
+trap cleanup EXIT
 
 if (( EVENTS != 10000 )); then
   echo "[WARN] EVENTS=${EVENTS}; the standard order-admission-chain probe is normally EVENTS=10000." >&2
@@ -36,7 +90,7 @@ if [[ "${START_SERVICES}" == "true" ]]; then
     bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
 fi
 
-mkdir -p "${GRADLE_USER_HOME_DIR}"
+mkdir -p "${GRADLE_USER_HOME_DIR}" "${REPORT_DIR}"
 
 echo "[INFO] Order admission chain benchmark"
 echo "[INFO] runId=${RUN_ID}"
@@ -44,8 +98,14 @@ echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, event
 echo "[INFO] matchUserOpenOrderIndexEnabled=${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}"
 echo "[INFO] walletOutboxAsyncRelayEnabled=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED}, walletOutboxAsyncMaxInFlightBatches=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES}"
 echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
+echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
+echo "[INFO] runReportLog=${RUN_REPORT_LOG}"
 
 cd "${ROOT_DIR}/eap-order"
+collect_diagnostics before-run
+start_diagnostic_sampler
+run_status=0
+set +e
 GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTest \
   --args="--mode orderAdmissionChain \
   --run-id ${RUN_ID} \
@@ -58,4 +118,9 @@ GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTe
   --workers ${WORKERS} \
   --wait-timeout-seconds ${WAIT_TIMEOUT_SECONDS} \
   --flush-redis-on-reset ${FLUSH_REDIS_ON_RESET} \
-  --order-admission-gate true"
+  --order-admission-gate true" | tee "${RUN_REPORT_LOG}"
+run_status=${PIPESTATUS[0]}
+set -e
+stop_diagnostic_sampler
+collect_diagnostics after-run
+exit "${run_status}"
