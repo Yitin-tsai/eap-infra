@@ -11560,3 +11560,67 @@ Conclusion:
   - capture CPU/IO/GC/Hikari snapshots during each admission run;
   - inspect why low ready backlog still leaves long unacked tails;
   - keep focusing on durable write and publisher-confirm costs, not listener concurrency as the primary explanation.
+
+### 2026-07-28 - TPS-129 Order initial submission append CTE fast path
+
+Status: accepted as an Order API admission hot-path reduction; not accepted as a new headline TPS baseline.
+
+Problem found:
+
+- `order-admission-chain` showed a large gap in the Order API command path:
+  - `OrderCommandPool` acquire sum was high during the run;
+  - `OrderSubmissionRequestedV1` append had no phase metrics, so the API-side durable write cost was under-attributed.
+- Added scoped metrics:
+  - `eap_order_submission_append_duration{phase="transaction_total"}`;
+  - `phase="transaction_body"`;
+  - legacy generic phases for the old path: `create_head_if_absent`, `lock_head`, `insert_event`, `update_head_and_matching_state`, `insert_outbox`;
+  - fast-path phase: `initial_append_cte`.
+
+Baseline attribution before the fast path:
+
+| Run | Business admission TPS | Match orderbook admission TPS | HTTP accepted TPS | HTTP p50 | Order submission transaction total | Order submission transaction body | Order outbox confirm wall | Wallet transaction | Wallet outbox confirm | Match Redis eval | Final drain |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260728_ORDER_ADMISSION_SUBMISSION_APPEND_METRICS_10K_R1` | `392.33` | `468.18` | `1301.48` | `75.25ms` | `752.527680s` | `195.060962s` | `19.522612s` | `76.928665s` | `19.351402s` | `20.870791s` | `25.49s` |
+
+Implementation:
+
+- Added `OrderSubmissionAppendMetrics`.
+- Specialized the first `OrderSubmissionRequestedV1` append when an integration outbox event is present.
+- The new path uses one SQL CTE to insert:
+  - `order_stream_heads` directly at version `1`;
+  - `order_event_store`;
+  - `order_matching_state`;
+  - `order_event_outbox`.
+- Duplicate/retry or nonconforming commands fall back to the existing generic append path.
+- Added a Postgres integration test case for `OrderSubmissionRequestedV1 + OrderSubmittedEvent` fast-path append.
+
+Validation:
+
+| Run | Business admission TPS | Match orderbook admission TPS | HTTP accepted TPS | HTTP p50 | Order submission transaction total | Order submission transaction body | Initial append CTE | Order outbox confirm wall | Wallet transaction | Wallet outbox confirm | Match Redis eval | Final drain | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260728_ORDER_ADMISSION_INITIAL_CTE_10K_R1` | `429.01` | `575.51` | `1399.00` | `27.58ms` | `185.884783s` | `44.609169s` | `43.593091s` | `14.930869s` | `87.353821s` | `15.037234s` | `16.209791s` | `23.31s` | PASS |
+| `GLT_20260728_ORDER_ADMISSION_INITIAL_CTE_10K_R2` | `399.12` | `501.34` | `1166.79` | `54.89ms` | `320.289558s` | `69.658877s` | `68.615092s` | `17.119154s` | `125.417580s` | `17.264736s` | `30.082716s` | `25.05s` | PASS |
+| `GLT_20260728_ORDER_ADMISSION_INITIAL_CTE_10K_R3_NODIAG` | `376.02` | `519.67` | `1358.13` | `27.36ms` | `252.396952s` | `51.980361s` | `51.223427s` | `17.370138s` | `81.693646s` | `16.593461s` | `19.030613s` | `26.59s` | PASS |
+
+Interpretation:
+
+- The initial submission fast path is a real local improvement:
+  - it removed the old per-order create-head / lock-head / insert-event / update-head / insert-outbox sequence from the normal first-submission path;
+  - `OrderSubmissionAppendTransactionTotal` dropped from `752.527680s` to `185.884783-320.289558s` across the validation runs;
+  - `OrderSubmissionAppendTransactionBody` dropped from `195.060962s` to `44.609169-69.658877s`;
+  - HTTP p50 improved from `75.25ms` to `27.36-54.89ms`.
+- The full business admission TPS did not improve proportionally because the bottleneck moved downstream:
+  - Wallet reservation transaction remained large (`81.693646-125.417580s`);
+  - Order/Wallet outbox confirm walls remained visible (`14.930869-17.370138s`, `15.037234-17.264736s`);
+  - Match Redis eval still varied significantly (`16.209791-30.082716s`);
+  - final queue drain still stretched the denominator after durable admission facts had converged.
+
+Conclusion:
+
+- Keep the Order initial CTE fast path.
+- Do not claim a new stable admission-chain headline TPS from TPS-129.
+- Next useful target:
+  - Wallet reservation transaction SQL and idempotency/write shape;
+  - outbox publisher-confirm wall-clock behavior under admission-chain pressure;
+  - Match Redis reserve/add cost under one-sided orderbook admission;
+  - final unacked queue tail attribution.
