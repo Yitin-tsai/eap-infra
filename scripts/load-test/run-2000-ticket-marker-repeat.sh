@@ -9,7 +9,7 @@ REPEATS="${REPEATS:-3}"
 TARGET_TPS="${TARGET_TPS:-2000}"
 DURATION_SECONDS="${DURATION_SECONDS:-15}"
 EVENTS="${EVENTS:-$((TARGET_TPS * DURATION_SECONDS))}"
-PUBLISHERS="${PUBLISHERS:-128}"
+PUBLISHERS="${PUBLISHERS:-1}"
 PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE:-}"
 PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT:-}"
 PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS:-}"
@@ -30,7 +30,7 @@ fi
 
 mkdir -p "${REPORT_DIR}"
 
-echo "[INFO] repeated matched-trade completion load test"
+echo "[INFO] repeated matched-trade-completion-chain load test"
 echo "[INFO] runPrefix=${RUN_PREFIX}"
 echo "[INFO] repeats=${REPEATS}, targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, publishers=${PUBLISHERS}"
 echo "[INFO] publisherConnectionCacheSize=${PUBLISHER_CONNECTION_CACHE_SIZE:-default}, publisherMaxInFlight=${PUBLISHER_MAX_IN_FLIGHT:-default}, publisherConfirmTimeoutMs=${PUBLISHER_CONFIRM_TIMEOUT_MS:-default}"

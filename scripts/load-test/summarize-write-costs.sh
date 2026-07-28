@@ -8,7 +8,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: summarize-write-costs.sh [DIAG_DIR] [RESULT_JSON]
 
-Summarizes full-chain write and relay costs captured by collect-loadtest-diagnostics.sh.
+Summarizes matched-trade-completion-chain write and relay costs captured by collect-loadtest-diagnostics.sh.
 If DIAG_DIR is omitted, the latest matched-e2e diagnostics directory is used.
 EOF
 }
@@ -392,7 +392,7 @@ emit_integrated_stage_lag() {
   echo
   echo "## Reading Notes"
   echo
-  echo "- Treat app timer ranking as the full-chain bottleneck view."
+  echo "- Treat app timer ranking as the matched-trade-completion-chain bottleneck view."
   echo "- Treat pg_stat ranking as DB executor cost only; it does not include broker confirm, queue drain, or most client-side transaction gaps."
   echo "- \`*_publish_duration_seconds\` is intentionally excluded because current relay instrumentation can overcount batch lifetime; use enqueue, confirm, select, mark-sent, and batch timers instead."
 } > "${OUT_FILE}"

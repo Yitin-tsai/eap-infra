@@ -61,7 +61,7 @@ esac
 
 mkdir -p "${REPORT_DIR}" "$(dirname "${LOCK_DIR}")"
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-  echo "[ERROR] another two-phase global matched E2E load-test driver appears to be running: ${LOCK_DIR}" >&2
+    echo "[ERROR] another two-phase matched-trade-completion-chain load-test driver appears to be running: ${LOCK_DIR}" >&2
   if [[ -f "${LOCK_INFO_FILE}" ]]; then
     echo "[ERROR] current lock owner:" >&2
     sed 's/^/[ERROR]   /' "${LOCK_INFO_FILE}" >&2 || true
@@ -335,10 +335,14 @@ collect_diagnostics after-run
 
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
-  if summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-write-costs.sh" "${RUN_DIAG_DIR}" "${RUN_REPORT_JSON}")"; then
-    echo "[INFO] persisted write-cost summary=${summary_file}"
+  if [[ -d "${RUN_DIAG_DIR}" ]]; then
+    if summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-write-costs.sh" "${RUN_DIAG_DIR}" "${RUN_REPORT_JSON}")"; then
+      echo "[INFO] persisted write-cost summary=${summary_file}"
+    else
+      echo "[WARN] could not generate write-cost summary" >&2
+    fi
   else
-    echo "[WARN] could not generate write-cost summary" >&2
+    echo "[INFO] skipping write-cost summary; diagnostics directory was not created for DIAGNOSTICS_LEVEL=${DIAGNOSTICS_LEVEL}"
   fi
 else
   echo "[WARN] could not extract JSON result from ${RUN_REPORT_LOG}" >&2

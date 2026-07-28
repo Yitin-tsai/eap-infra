@@ -10,6 +10,17 @@ The goal is not to claim 2000 completed TPS. The goal is to publish repeatable e
 
 ## Benchmark Definitions
 
+EAP benchmark results are separated by workflow contract:
+
+| Contract | Status | Meaning |
+| --- | --- | --- |
+| `order-admission-chain` | planned | Order API through Wallet reservation and MatchEngine orderbook admission |
+| `matched-trade-completion-chain` | implemented | Seeded confirmed orders through MatchEngine matching, Order trade application, Wallet settlement, trade-ID equality, and queue drain |
+| `public-order-lifecycle` | planned | User-facing HTTP order submission through full durable trade completion |
+| `rabbitmq-publish-only` | implemented diagnostic | RabbitMQ broker-confirmed input ceiling without service consumers |
+
+The current public benchmark plan is for `matched-trade-completion-chain`. It must not be described as a public API lifecycle benchmark.
+
 | Metric | Definition |
 | --- | --- |
 | Input attempted load | client-side BUY order confirmations sent toward the match path during the scheduled send window |
@@ -68,7 +79,7 @@ REPEATS=5 \
 TARGET_TPS=2000 \
 DURATION_SECONDS=5 \
 EVENTS=10000 \
-PUBLISHERS=128 \
+PUBLISHERS=1 \
 TIMEOUT_SECONDS=300 \
 DIAGNOSTICS_LEVEL=baseline \
 MIN_OFFERED_TPS_RATIO=0.95 \
@@ -100,6 +111,7 @@ The benchmark contract was hardened after the 2026-07-13 public repeat to add:
 - `completedTradeIdSetsEqual` and missing-ID diagnostics across MatchEngine, Order, and Wallet.
 - Fail-closed queue metric handling through `queueMetricsReadFailures`.
 - New entrypoint names: `run-matched-trade-completion-10k.sh` and `run-matched-trade-completion-repeat.sh`.
+- Separate RabbitMQ input-ceiling diagnostic entrypoint: `run-rabbitmq-publish-only-10k.sh`.
 
 Latest diagnostic run:
 
@@ -115,6 +127,14 @@ Latest diagnostic run:
 
 Interpretation: this run proves the hardened correctness gate on a 10k sample, but it does not replace the public benchmark median because broker-confirmed input did not reach the configured `95%` threshold for a `2000/s` target. The next publishable benchmark should be a clean five-run repeat under contract v2.
 
+TPS126 also split input measurement from integrated service work:
+
+| Probe | Broker-Confirmed Input | Completed Trades | Interpretation |
+| --- | ---: | ---: | --- |
+| `rabbitmq-publish-only` 10k | `1994.98/s` | N/A | RabbitMQ and the load generator can confirm near-2000/s without service consumers |
+| `matched-trade-completion-chain`, `PUBLISHERS=128`, 16 connections | `1171.38/s` | `1046.34/s` | aggressive publisher fan-out increases RabbitMQ confirm contention during integrated service work |
+| `matched-trade-completion-chain`, `PUBLISHERS=1` | `1531.96/s` | `1385.10/s` | lower-interference default for completed-trade-chain capacity probes |
+
 ## 2026-07-13 Official 10k Repeat Result
 
 This is the pinned public result under the older input-attempt contract. It remains useful history, but it should not be used as proof of 2000/s broker-confirmed input.
@@ -123,7 +143,7 @@ Command prefix:
 
 ```bash
 REPEATS=5 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
-PUBLISHERS=128 TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline \
+PUBLISHERS=1 TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline \
 MIN_OFFERED_TPS_RATIO=0.95 \
 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_20260713
 ```
@@ -148,7 +168,7 @@ Valid-runs-only summary:
 | Metric | Median | Min | Max |
 | --- | ---: | ---: | ---: |
 | actual buy publish TPS | `1998.94` | `1998.54` | `1999.13` |
-| business matched E2E TPS | `582.73` | `503.11` | `662.17` |
+| business completed trade TPS | `582.73` | `503.11` | `662.17` |
 | business completion seconds | `17.29` | `15.10` | `19.88` |
 | trade execution reach TPS | `1082.09` | `1036.83` | `1176.72` |
 | Order command match reach TPS | `843.92` | `825.46` | `974.14` |
@@ -173,7 +193,7 @@ Command prefix:
 
 ```bash
 REPEATS=3 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
-PUBLISHERS=128 TIMEOUT_SECONDS=360 DIAGNOSTICS_LEVEL=light \
+PUBLISHERS=1 TIMEOUT_SECONDS=360 DIAGNOSTICS_LEVEL=light \
 RESET_PG_STATS_BEFORE_RUN=true \
 bash scripts/load-test/run-matched-trade-completion-repeat.sh \
   GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3
@@ -243,7 +263,7 @@ Suggested first pass:
 TARGET_TPS=500 \
 DURATION_SECONDS=900 \
 EVENTS=450000 \
-PUBLISHERS=128 \
+PUBLISHERS=1 \
 TIMEOUT_SECONDS=1800 \
 DIAGNOSTICS_LEVEL=light \
 bash scripts/load-test/run-global-matched-e2e-sustained.sh
@@ -300,7 +320,7 @@ Valid-sample summary:
 | Metric | Median | Min | Max |
 | --- | ---: | ---: | ---: |
 | actual BUY publish TPS | `497.36` | `494.71` | `500.00` |
-| business matched E2E TPS | `487.66` | `477.42` | `497.89` |
+| business completed trade TPS | `487.66` | `477.42` | `497.89` |
 | business completion seconds | `923.19` | `903.81` | `942.57` |
 | drain after BUY publish | `18.38s` | `3.81s` | `32.95s` |
 

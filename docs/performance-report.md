@@ -6,6 +6,13 @@ This report summarizes the current 2000 TPS investigation in a public, interview
 
 EAP reports multiple throughput numbers because they answer different questions.
 
+The current benchmark suite is split into contracts:
+
+- `order-admission-chain` (planned): `Order API -> Wallet reservation -> OrderConfirmedEvent -> MatchEngine orderbook admission`.
+- `matched-trade-completion-chain` (implemented): seeded confirmed orders enter MatchEngine and the benchmark waits for MatchEngine, Order, and Wallet durable trade completion.
+- `public-order-lifecycle` (planned): user-facing HTTP submission through reservation, matching, settlement, durable convergence, and queue drain.
+- `rabbitmq-publish-only` (implemented diagnostic): RabbitMQ broker-confirmed input ceiling with service processing removed.
+
 | Metric | Meaning | Can It Be Called Completed Business TPS? |
 | --- | --- | --- |
 | accepted orders/s | order requests accepted or order confirmations published by the load generator | No |
@@ -20,9 +27,9 @@ EAP reports multiple throughput numbers because they answer different questions.
 
 The project intentionally does not report accepted order throughput as completed trading throughput.
 
-## Workload Semantics
+## Matched-Trade-Completion Chain Semantics
 
-The current global 10k benchmark is a controlled matched-trade workload.
+The current global 10k benchmark is a controlled `matched-trade-completion-chain` workload. It is not the public API order lifecycle.
 
 | Field | Meaning |
 | --- | --- |
@@ -73,6 +80,14 @@ Interpretation:
 - The current 10k diagnostic run proves correctness under the hardened gate, but it should not be reported as a valid 2000-input capacity run.
 - The next public step is a clean five-run repeat on contract v2, then a steady-state run at a conservative broker-confirmed target.
 
+Additional TPS126 measurement split:
+
+- `rabbitmq-publish-only` with service processing removed reached `1994.98` broker-confirmed persistent messages/s for 10k messages.
+- `matched-trade-completion-chain` with aggressive `PUBLISHERS=128` / `PUBLISHER_CONNECTION_CACHE_SIZE=16` reached only `1171.38` broker-confirmed input/s and `1046.34` completed trades/s.
+- `matched-trade-completion-chain` with low-interference `PUBLISHERS=1` reached `1531.96` broker-confirmed input/s and `1385.10` completed trades/s.
+
+Interpretation: RabbitMQ input confirms are not the isolated ceiling. Under integrated service load, input publisher confirms compete with MatchEngine relay and downstream Order/Wallet consumer traffic. The matched-trade-completion benchmark therefore defaults to `PUBLISHERS=1`, while high publisher fan-out is reserved for the `rabbitmq-publish-only` diagnostic.
+
 ## Previous Local 10k Repeat Result
 
 Run set: `GLT_TPS93_THROUGHPUT_SEMANTICS_LIGHT_10K_REPEAT3`, 3 repeats, 3 valid samples under the older input-attempt contract.
@@ -110,7 +125,7 @@ Snapshot:
 | target offered load | `2000 order confirmations/s` |
 | valid actual offered load | median `1998.94 order confirmations/s`, range `1998.54-1999.13` |
 | completed trades per valid run | `10000` |
-| business matched E2E TPS | median `582.73 completed trades/s`, range `503.11-662.17` |
+| business completed trade TPS | median `582.73 completed trades/s`, range `503.11-662.17` |
 | business completion window | median `17.29s`, range `15.10-19.88s` |
 | wallet settlement reach TPS | median `843.92/s`, range `825.46-974.14` |
 | completion marker reach TPS | median `745.60/s`, range `701.99-803.90` |
@@ -177,7 +192,7 @@ Interpretation: the core Redis order book is not the current global E2E bottlene
 
 ## Current Bottleneck
 
-The strongest current signal is durable write and relay cost across the completed-trade chain:
+The strongest current signal is durable write and relay cost across the `matched-trade-completion-chain`:
 
 - MatchEngine writes `TradeExecuted` facts and trade outbox rows.
 - Order applies each trade to command-side order state and its durable trade-application table.
@@ -257,7 +272,7 @@ Valid-sample summary:
 | Metric | Median | Range |
 | --- | ---: | ---: |
 | actual BUY publish TPS | `497.36/s` | `494.71-500.00/s` |
-| business matched E2E TPS | `487.66/s` | `477.42-497.89/s` |
+| business completed trade TPS | `487.66/s` | `477.42-497.89/s` |
 | business completion window | `923.19s` | `903.81-942.57s` |
 | drain after BUY publish | `18.38s` | `3.81-32.95s` |
 

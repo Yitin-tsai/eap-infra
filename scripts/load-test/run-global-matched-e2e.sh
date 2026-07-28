@@ -21,7 +21,7 @@ REPORT_FILE="${REPORT_DIR}/matched-e2e-${MARKET_ID}.log"
 
 mkdir -p "$(dirname "${LOCK_DIR}")" "${REPORT_DIR}"
 if ! mkdir "${LOCK_DIR}" 2>/dev/null; then
-  echo "[ERROR] another global matched E2E load test appears to be running: ${LOCK_DIR}" >&2
+  echo "[ERROR] another matched-trade-completion-chain load test appears to be running: ${LOCK_DIR}" >&2
   echo "[ERROR] remove the lock only after confirming no Gradle/loadtest process is active." >&2
   exit 2
 fi

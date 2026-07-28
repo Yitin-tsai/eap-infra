@@ -9,7 +9,7 @@ REPEATS="${REPEATS:-5}"
 TARGET_TPS="${TARGET_TPS:-2000}"
 DURATION_SECONDS="${DURATION_SECONDS:-5}"
 EVENTS="${EVENTS:-10000}"
-PUBLISHERS="${PUBLISHERS:-128}"
+PUBLISHERS="${PUBLISHERS:-1}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-300}"
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-baseline}"
 MIN_OFFERED_TPS_RATIO="${MIN_OFFERED_TPS_RATIO:-0.95}"
@@ -25,7 +25,7 @@ if [[ "${DIAGNOSTICS_LEVEL}" != "baseline" && "${DIAGNOSTICS_LEVEL}" != "light" 
   exit 2
 fi
 
-echo "[INFO] public 10k benchmark repeat"
+echo "[INFO] public 10k matched-trade-completion-chain benchmark repeat"
 echo "[INFO] runPrefix=${RUN_PREFIX}"
 echo "[INFO] repeats=${REPEATS}, targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}, minOfferedTpsRatio=${MIN_OFFERED_TPS_RATIO}"

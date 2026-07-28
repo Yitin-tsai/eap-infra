@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 TARGET_TPS="${TARGET_TPS:-2000}"
 DURATION_SECONDS="${DURATION_SECONDS:-40}"
 EVENTS="${EVENTS:-$((TARGET_TPS * DURATION_SECONDS))}"
-PUBLISHERS="${PUBLISHERS:-128}"
+PUBLISHERS="${PUBLISHERS:-1}"
 PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE:-}"
 PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT:-}"
 PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS:-}"
@@ -29,7 +29,7 @@ if (( EVENTS != EXPECTED_EVENTS )); then
   echo "[WARN] This run will publish ${EVENTS} BUY trades at ${TARGET_TPS} TPS, so the expected publish window is ${EXPECTED_WINDOW}s, not ${DURATION_SECONDS}s." >&2
 fi
 
-echo "[INFO] sustained matched E2E load test"
+echo "[INFO] sustained matched-trade-completion-chain load test"
 echo "[INFO] marketId=${MARKET_ID}"
 echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, publishers=${PUBLISHERS}, timeoutSeconds=${TIMEOUT_SECONDS}, runMode=${RUN_MODE}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
