@@ -11271,3 +11271,72 @@ Interpretation:
   1. run a clean five-repeat contract-v2 10k benchmark;
   2. report median/range for attempted input, broker-confirmed input, and completed business TPS;
   3. only then decide whether to continue TPS tuning or move to steady-state / cloud portability.
+
+### 2026-07-28 - Order admission chain: Redis query-index split and clean-reset fix
+
+Status: implemented; local verification complete.
+
+Context:
+
+- The `order-admission-chain` benchmark was split from the matched-trade completion benchmark to measure the front half of the lifecycle:
+  - Order HTTP request accepted;
+  - Order submission request persisted;
+  - Order outbox publishes `OrderSubmitted`;
+  - Wallet reserves assets and emits reservation confirmation;
+  - Order persists `OrderAssetReservationConfirmed`;
+  - MatchEngine admits the order into the Redis orderbook;
+  - measured queues drain.
+- MatchEngine Redis `user:{userId}:orders` was originally maintained in the same Lua hot path as orderbook admission so user open orders could be queried by user.
+- The current Order API still had a legacy read path that tried to query MatchEngine Redis for pending user orders, even though Order already owns the `orders_current` projection.
+
+Changes:
+
+- Added MatchEngine listener-level timer output:
+  - `matchEngineOrderConfirmedListener*`;
+  - `matchEngineTryMatch*`;
+  - `matchEngineReserveRedisEval*`.
+- Changed Order user-order query to read `order_service.orders_current` instead of synchronously calling MatchEngine Redis.
+- Added a benchmark startup env bridge so `run-order-admission-chain-10k.sh` can start MatchEngine with:
+  - `ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED=false` by default;
+  - production/manual MatchEngine startup still defaults the index to enabled unless explicitly disabled.
+- Added `--flush-redis-on-reset` to `OrderHttpLoadGenerator`; the order-admission script defaults it to `true`.
+
+Why this matters:
+
+- The query-index split keeps service ownership cleaner:
+  - Order owns user-facing order status/read models.
+  - MatchEngine Redis owns matching/orderbook state.
+- The benchmark no longer forces every orderbook admission to pay for a query index that is not part of admission correctness.
+- The Redis reset fix is required for reproducibility. Before this fix, reset only deleted `orderbook:{market}:buy/sell` and left old `order:*`, `order:reservation:*`, and `user:*:orders` keys behind.
+
+Evidence:
+
+| Run | Redis reset | User index | Business admission TPS | Orderbook admission TPS | Redis eval mean |
+| --- | --- | --- | ---: | ---: | ---: |
+| `GLT_20260728_ORDER_ADMISSION_MATCH_TIMER_JSON_10K_R1` | partial key delete | on | `492.46` | `565.36` | `2.552ms` |
+| `GLT_20260728_ORDER_ADMISSION_USER_INDEX_OFF_10K_R1` | partial key delete | off | `431.21` | `669.55` | `1.311ms` |
+| `GLT_20260728_ORDER_ADMISSION_USER_INDEX_DEFAULT_OFF_10K_R1` | partial key delete with dirty keyspace | off | `459.26` | `546.16` | `13.315ms` |
+| `GLT_20260728_ORDER_ADMISSION_CLEAN_REDIS_USER_INDEX_OFF_10K_R1` | `FLUSHDB` | off | `486.52` | `600.82` | `1.300ms` |
+| `GLT_20260728_ORDER_ADMISSION_CLEAN_REDIS_USER_INDEX_ON_10K_R1` | `FLUSHDB` | on | `502.38` | `649.09` | `1.565ms` |
+
+Interpretation:
+
+- Dirty Redis state can invalidate order-admission conclusions:
+  - the active Redis had `253,775` keys before the clean-reset fix;
+  - Redis eval jumped to `13.315ms` in the dirty-keyspace run.
+- Disabling `user:{userId}:orders` reduces local Redis Lua cost under clean Redis:
+  - `1.565ms -> 1.300ms`, about `17%` lower eval mean in this pair.
+- The improvement is not yet visible as a stable end-to-end admission TPS win:
+  - business admission remained in the `486-502/s` band;
+  - queue drain and Order/Wallet relay phases dominate the wall-clock result.
+- Therefore, user-open-order index removal is a valid cleanup and localized Redis optimization, but it is not the primary admission-chain bottleneck.
+
+Next action:
+
+1. Keep `order-admission-chain` clean Redis reset as mandatory benchmark behavior.
+2. Keep user-open-order index disabled for the admission benchmark contract because user-order reads now come from Order projection.
+3. Do not claim a TPS improvement from this change alone.
+4. Continue admission-chain tuning at the dominant phases:
+   - Order submission outbox relay;
+   - Wallet reservation durable apply/outbox relay;
+   - Order reservation-confirmed consumer and queue drain.

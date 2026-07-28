@@ -13,6 +13,8 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
 RUN_ID="${RUN_ID:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_10K}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 START_SERVICES="${START_SERVICES:-true}"
+ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED:-false}"
+FLUSH_REDIS_ON_RESET="${FLUSH_REDIS_ON_RESET:-true}"
 GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
 
 if (( EVENTS != 10000 )); then
@@ -24,7 +26,8 @@ if [[ "${MARKET_ID}" != "ENERGY-SPOT" ]]; then
 fi
 
 if [[ "${START_SERVICES}" == "true" ]]; then
-  bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
+  EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}" \
+    bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
 fi
 
 mkdir -p "${GRADLE_USER_HOME_DIR}"
@@ -32,6 +35,8 @@ mkdir -p "${GRADLE_USER_HOME_DIR}"
 echo "[INFO] Order admission chain benchmark"
 echo "[INFO] runId=${RUN_ID}"
 echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, users=${USERS}, workers=${WORKERS}, side=${SIDE}"
+echo "[INFO] matchUserOpenOrderIndexEnabled=${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}"
+echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
 
 cd "${ROOT_DIR}/eap-order"
 GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTest \
@@ -45,4 +50,5 @@ GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTe
   --users ${USERS} \
   --workers ${WORKERS} \
   --wait-timeout-seconds ${WAIT_TIMEOUT_SECONDS} \
+  --flush-redis-on-reset ${FLUSH_REDIS_ON_RESET} \
   --order-admission-gate true"

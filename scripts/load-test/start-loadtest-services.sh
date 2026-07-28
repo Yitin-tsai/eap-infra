@@ -13,6 +13,11 @@ start_service() {
   local health_path="$3"
   local log_file="${LOG_DIR}/${repo}.log"
   local pid_file="${LOG_DIR}/${repo}.pid"
+  local service_env=""
+
+  if [[ "${repo}" == "eap-matchEngine" ]]; then
+    service_env="EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED='${EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED:-true}'"
+  fi
 
   if lsof -Pi ":${port}" -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "[WARN] port ${port} is already in use; stop the existing process before starting ${repo}" >&2
@@ -20,7 +25,7 @@ start_service() {
   fi
 
   echo "[INFO] starting ${repo} on port ${port}; log=${log_file}"
-  nohup bash -lc "cd '${ROOT_DIR}/${repo}' && GRADLE_USER_HOME='${GRADLE_USER_HOME_DIR}' ./gradlew --no-daemon bootRun --args='--spring.profiles.active=loadtest'" >"${log_file}" 2>&1 &
+  nohup bash -lc "cd '${ROOT_DIR}/${repo}' && ${service_env} GRADLE_USER_HOME='${GRADLE_USER_HOME_DIR}' ./gradlew --no-daemon bootRun --args='--spring.profiles.active=loadtest'" >"${log_file}" 2>&1 &
   echo "$!" >"${pid_file}"
 
   local health_url="http://localhost:${port}${health_path}"
