@@ -11375,3 +11375,61 @@ Next engineering candidates:
    - wallet row update;
    - outbox insert.
 3. Keep batch `500` as the conservative default until a repeated run proves batch `1000` is both faster and stable.
+
+### 2026-07-28 - TPS-127 Order async outbox relay experiment and Wallet JDBC outbox insert
+
+Status: partially implemented; Order async relay remains disabled by default.
+
+Order async relay:
+
+- Added an experimental Order outbox state transition:
+  - `PENDING -> IN_FLIGHT -> SENT`;
+  - stale `IN_FLIGHT` rows can be reclaimed after `eap.order-event-outbox.in-flight-timeout-seconds`.
+- Added loadtest flags:
+  - `EAP_ORDER_OUTBOX_ASYNC_RELAY_ENABLED`;
+  - `EAP_ORDER_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES`;
+  - `EAP_ORDER_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS`.
+- Default remains `async-relay-enabled=false`.
+
+Validation:
+
+| Run | Variant | Business admission TPS | Order submitted outbox SENT reached | Order outbox batch sum | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| `GLT_20260728_ORDER_ADMISSION_WALLET_METRICS_10K_R1` | standard sync relay | `356.04` | `19.34s` | `18.187s` | PASS |
+| `GLT_20260728_ORDER_ADMISSION_ORDER_OUTBOX_ASYNC_RELAY_10K_R1` | async relay, max in-flight batches `4` | `468.86` | `17.14s` | `58.892s` cumulative worker time | PASS |
+
+Interpretation:
+
+- The async relay did not leave stuck rows:
+  - post-run `order_event_outbox` status counts were `SENT=10000` only.
+- The wall-clock admission result improved versus the slow standard sample, but the result is not strong enough to make async relay the default:
+  - cumulative timer sums grow under parallel workers and cannot be compared directly with single-worker wall time;
+  - the improvement is still in the same broad noisy range as batch-size experiments;
+  - a repeated baseline is required before adopting it.
+- Keep the feature as an experiment for further A/B; do not claim this as accepted TPS improvement yet.
+
+Wallet JDBC outbox insert:
+
+- Replaced `outboxRepository.save(new OutboxEntity(...))` in `CreateOrderListener` with a direct `JdbcTemplate` insert into `wallet_service.outbox`.
+- This preserves the same transactional outbox table, relay, retry, and at-least-once semantics.
+
+Validation:
+
+| Run | Variant | Wallet outbox write sum | Wallet outbox write mean | Business admission TPS | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| `GLT_20260728_ORDER_ADMISSION_WALLET_METRICS_10K_R1` | JPA outbox save | `25.937s` | `2.594ms` | `356.04` | PASS |
+| `GLT_20260728_ORDER_ADMISSION_WALLET_JDBC_OUTBOX_10K_R1` | JDBC outbox insert | `13.902s` | `1.390ms` | `381.21` | PASS |
+
+Interpretation:
+
+- Wallet outbox insert cost was nearly halved in this pair.
+- The full-chain TPS did not improve proportionally because the chain is still dominated by relay confirm walls and queue drain:
+  - Order outbox confirm wall remained `18.074s`;
+  - Wallet outbox batch wall remained `18.879s`.
+- This is still worth keeping as a local SQL cost reduction, but it is not sufficient to solve admission TPS alone.
+
+Next action:
+
+1. Keep Wallet JDBC outbox insert.
+2. Keep Order async relay behind feature flag until repeated A/B proves a stable win.
+3. Continue with Wallet outbox relay confirm strategy or a shared Order/Wallet outbox claim-relay design, using repeated clean 10k runs before changing defaults.
