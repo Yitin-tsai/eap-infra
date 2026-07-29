@@ -11965,3 +11965,75 @@ Next action:
    - `market-sequence-block1000-10k`.
 3. Decide separately whether EAP's public benchmark headline includes backend rate limiting, or reports it as a front-door protection profile.
 4. Before accepting sequence block allocation in production-like runs, review whether EAP's price-time priority requires globally interleaved per-order sequencing across multiple Order pods.
+
+### 2026-07-29 - TPS-133 Order-admission repeat runner and noise control
+
+Status: implemented for repeatable local evidence; not yet accepted as a new capacity headline.
+
+Problem:
+
+- Single 10k order-admission runs showed high variance:
+  - default post-commit run `R10`: `1239.44/s`;
+  - rate-limit-off `R11`: `1278.86/s`;
+  - sequence-block1000 `R12`: `1026.55/s`;
+  - earlier single samples ranged up to `1.46k-1.59k/s`.
+- Because multiple phase timers moved together in the slow runs, single-run A/B was no longer enough to separate:
+  - real code-path improvement;
+  - local Docker/PostgreSQL I/O state;
+  - JVM/Micrometer cumulative state;
+  - benchmark harness behavior.
+- Docker stats also showed the Order PostgreSQL load-test container had much higher accumulated block I/O than the other local dependencies, so local burst variance is a real measurement risk.
+
+Implementation:
+
+- Added `scripts/load-test/run-order-admission-repeat.sh`.
+- The repeat runner:
+  - runs one order-admission profile for N repeats;
+  - extracts the JSON object from each run log into `order-admission-<runId>-result.json`;
+  - writes `order-admission-repeat-<runPrefix>-summary.json`;
+  - computes avg/median/min/max/spread for order-admission TPS and selected phase metrics;
+  - records invalid runs separately using schema/version/capacity gates.
+- The runner defaults to `WARMUP_ENABLED=false` for now.
+- The runner defaults to `RESTART_SERVICES_EACH_REPEAT=true` so Prometheus timer means are not polluted by previous formal repeats.
+
+Validation:
+
+- `bash -n scripts/load-test/run-order-admission-repeat.sh`: PASS.
+- Smoke run:
+  - `REPEATS=2 WARMUP_ENABLED=false PROFILE=light-10k bash scripts/load-test/run-order-admission-repeat.sh GLT_20260729_ORDER_ADMISSION_REPEAT_SMOKE_LIGHT_10K_V4`
+  - Result summary: `validRuns=2`, `invalidRuns=0`.
+
+| Run | Profile | Orderbook admission TPS | Convergence TPS | HTTP accepted TPS | Queue drain tail | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_REPEAT_SMOKE_LIGHT_10K_V4_R1` | `light-10k` | `1111.85` | `1109.70` | `1181.26` | `0.02s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_REPEAT_SMOKE_LIGHT_10K_V4_R2` | `light-10k` | `1450.90` | `1449.27` | `1524.19` | `0.01s` | PASS |
+
+Repeat summary:
+
+- `businessOrderbookAdmissionTps`:
+  - avg/median `1281.375/s`;
+  - min `1111.85/s`;
+  - max `1450.90/s`;
+  - relative spread `26.46%`.
+- `businessOrderAdmissionConvergenceTps`:
+  - avg/median `1279.485/s`;
+  - min `1109.70/s`;
+  - max `1449.27/s`;
+  - relative spread `26.54%`.
+
+Interpretation:
+
+- The repeat runner is now the safer default for judging order-admission capacity changes.
+- The current local environment is too noisy for one-run A/B conclusions:
+  - rate-limit and sequence metrics clearly show measurable per-request Redis cost;
+  - but the headline TPS can still swing by about `26%` across two valid runs.
+- Warm-up cannot be enabled by default yet because service-level Micrometer timers are cumulative.
+  - If a warm-up run is executed in the same JVM, formal phase means include warm-up samples.
+  - Correct warm-up support needs before/after Prometheus snapshots and delta calculation, or per-run service restart with a different definition of warm-up.
+- For now, use repeat medians for headline comparison and use individual run JSONs for phase diagnosis.
+
+Next action:
+
+1. Run proper three-to-five-run comparisons with the repeat runner before accepting any Order API hot-path change.
+2. Add Prometheus delta support if warm JVM measurements become necessary.
+3. Continue investigating the durable write chain using repeat medians, not single-run best scores.

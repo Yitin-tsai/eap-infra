@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
+
+RUN_PREFIX="${1:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_REPEAT}"
+PROFILE="${PROFILE:-light-10k}"
+REPEATS="${REPEATS:-3}"
+WARMUP_ENABLED="${WARMUP_ENABLED:-false}"
+WARMUP_TARGET_TPS="${WARMUP_TARGET_TPS:-1000}"
+WARMUP_DURATION_SECONDS="${WARMUP_DURATION_SECONDS:-1}"
+WARMUP_RUN_ID="${RUN_PREFIX}_WARMUP"
+MIN_ORDERBOOK_TPS_RATIO="${MIN_ORDERBOOK_TPS_RATIO:-0}"
+STOP_SERVICES_BEFORE_RUN="${STOP_SERVICES_BEFORE_RUN:-true}"
+RESTART_SERVICES_EACH_REPEAT="${RESTART_SERVICES_EACH_REPEAT:-true}"
+
+if (( REPEATS < 2 )); then
+  echo "[ERROR] REPEATS must be at least 2 for a repeat run." >&2
+  exit 2
+fi
+
+mkdir -p "${REPORT_DIR}"
+
+echo "[INFO] repeated order-admission-chain load test"
+echo "[INFO] runPrefix=${RUN_PREFIX}"
+echo "[INFO] profile=${PROFILE}, repeats=${REPEATS}, warmupEnabled=${WARMUP_ENABLED}, warmupTargetTps=${WARMUP_TARGET_TPS}, warmupDurationSeconds=${WARMUP_DURATION_SECONDS}"
+echo "[INFO] minOrderbookTpsRatio=${MIN_ORDERBOOK_TPS_RATIO}, stopServicesBeforeRun=${STOP_SERVICES_BEFORE_RUN}, restartServicesEachRepeat=${RESTART_SERVICES_EACH_REPEAT}"
+
+if [[ "${STOP_SERVICES_BEFORE_RUN}" == "true" ]]; then
+  bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
+fi
+
+extract_result_json() {
+  local run_id="$1"
+  local run_log="${REPORT_DIR}/order-admission-${run_id}.log"
+  local result_json="${REPORT_DIR}/order-admission-${run_id}-result.json"
+  local tmp_json="${result_json}.tmp"
+
+  if [[ ! -s "${run_log}" ]]; then
+    echo "[ERROR] expected run log was not created: ${run_log}" >&2
+    return 1
+  fi
+
+  awk '
+    /^\{/ { capture = 1 }
+    capture { print }
+    /^\}/ { capture = 0 }
+  ' "${run_log}" > "${tmp_json}"
+
+  if ! jq . "${tmp_json}" > "${result_json}"; then
+    echo "[ERROR] could not extract result json from run log: ${run_log}" >&2
+    rm -f "${tmp_json}" "${result_json}"
+    return 1
+  fi
+  rm -f "${tmp_json}"
+}
+
+if [[ "${WARMUP_ENABLED}" == "true" ]]; then
+  echo
+  echo "[INFO] warm-up: runId=${WARMUP_RUN_ID}"
+  bash "${ROOT_DIR}/scripts/load-test/run-order-admission-chain-10k.sh" \
+    --profile "${PROFILE}" \
+    --run-id "${WARMUP_RUN_ID}" \
+    --target-tps "${WARMUP_TARGET_TPS}" \
+    --duration-seconds "${WARMUP_DURATION_SECONDS}" \
+    --diagnostics-level none
+fi
+
+RESULT_FILES=()
+for run_index in $(seq 1 "${REPEATS}"); do
+  RUN_ID="${RUN_PREFIX}_R${run_index}"
+  RESULT_JSON="${REPORT_DIR}/order-admission-${RUN_ID}-result.json"
+
+  echo
+  echo "[INFO] repeat ${run_index}/${REPEATS}: runId=${RUN_ID}"
+  if [[ "${run_index}" != "1" && "${RESTART_SERVICES_EACH_REPEAT}" == "true" ]]; then
+    bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
+  fi
+  START_SERVICES_FOR_REPEAT=false
+  if [[ "${WARMUP_ENABLED}" != "true" && "${run_index}" == "1" ]]; then
+    START_SERVICES_FOR_REPEAT=true
+  elif [[ "${RESTART_SERVICES_EACH_REPEAT}" == "true" ]]; then
+    START_SERVICES_FOR_REPEAT=true
+  fi
+  bash "${ROOT_DIR}/scripts/load-test/run-order-admission-chain-10k.sh" \
+    --profile "${PROFILE}" \
+    --run-id "${RUN_ID}" \
+    --start-services "${START_SERVICES_FOR_REPEAT}"
+
+  extract_result_json "${RUN_ID}"
+  if [[ ! -s "${RESULT_JSON}" ]]; then
+    echo "[ERROR] expected result json was not created: ${RESULT_JSON}" >&2
+    exit 1
+  fi
+  RESULT_FILES+=("${RESULT_JSON}")
+done
+
+SUMMARY_JSON="${REPORT_DIR}/order-admission-repeat-${RUN_PREFIX}-summary.json"
+jq -s \
+  --arg runPrefix "${RUN_PREFIX}" \
+  --arg profile "${PROFILE}" \
+  --argjson repeats "${REPEATS}" \
+  --argjson minOrderbookTpsRatio "${MIN_ORDERBOOK_TPS_RATIO}" \
+  --arg reportDir "${REPORT_DIR}" '
+  def nums(k): map(. [k] | select(type == "number"));
+  def avg(a): if (a | length) == 0 then null else (a | add) / (a | length) end;
+  def median(a):
+    if (a | length) == 0 then null
+    else
+      (a | sort) as $s
+      | ($s | length) as $n
+      | if ($n % 2) == 1
+        then $s[(($n - 1) / 2)]
+        else (($s[($n / 2) - 1] + $s[($n / 2)]) / 2)
+        end
+    end;
+  def minv(a): if (a | length) == 0 then null else (a | min) end;
+  def maxv(a): if (a | length) == 0 then null else (a | max) end;
+  def stat(k):
+    nums(k) as $values
+    | avg($values) as $avg
+    | median($values) as $median
+    | minv($values) as $min
+    | maxv($values) as $max
+    | {
+        count: ($values | length),
+        avg: $avg,
+        median: $median,
+        min: $min,
+        max: $max,
+        spread: (if $min == null or $max == null then null else $max - $min end),
+        relativeSpreadPct: (
+          if $avg == null or $avg == 0 or $min == null or $max == null
+          then null
+          else (($max - $min) * 100 / $avg)
+          end
+        )
+      };
+  def validRun:
+    (
+      (.benchmarkSchemaVersion // 0) == 2
+      and (.validForCapacityComparison // false) == true
+      and ((.capacityInvalidReasons // []) | length) == 0
+      and (.httpAccepted // 0) == (.events // -1)
+      and (.finalQueueBacklog // 0) == 0
+      and (.queueMetricsReadFailures // 0) == 0
+      and (
+        $minOrderbookTpsRatio <= 0
+        or ((.businessOrderbookAdmissionTps // 0) >= ((.targetTps // 0) * $minOrderbookTpsRatio))
+      )
+    );
+  def invalidReasons:
+    [
+      (if (.benchmarkSchemaVersion // 0) != 2 then "unsupported_benchmark_schema" else empty end),
+      (if (.validForCapacityComparison // false) != true then "capacity_comparison_invalid" else empty end),
+      (if ((.capacityInvalidReasons // []) | length) != 0 then "capacity_invalid_reasons_present" else empty end),
+      (if (.httpAccepted // 0) != (.events // -1) then "http_accepted_mismatch" else empty end),
+      (if (.finalQueueBacklog // 0) != 0 then "final_queue_backlog" else empty end),
+      (if (.queueMetricsReadFailures // 0) != 0 then "queue_metrics_read_failures" else empty end),
+      (if $minOrderbookTpsRatio > 0 and ((.businessOrderbookAdmissionTps // 0) < ((.targetTps // 0) * $minOrderbookTpsRatio)) then "orderbook_tps_below_threshold" else empty end)
+    ];
+  def withValidity:
+    . + {
+      validForRepeatSummary: validRun,
+      repeatInvalidReasons: invalidReasons
+    };
+  map(withValidity) as $runs
+  | ($runs | map(select(.validForRepeatSummary))) as $validRuns
+  | {
+    runPrefix: $runPrefix,
+    profile: $profile,
+    config: {
+      repeats: $repeats,
+      minOrderbookTpsRatio: $minOrderbookTpsRatio
+    },
+    validity: {
+      validRuns: ($validRuns | length),
+      invalidRuns: (($runs | length) - ($validRuns | length)),
+      invalidRunIds: ($runs | map(select(.validForRepeatSummary | not) | {runId, repeatInvalidReasons, capacityInvalidReasons}))
+    },
+    runs: ($runs | map({
+      runId,
+      validForRepeatSummary,
+      repeatInvalidReasons,
+      resultJson: ($reportDir + "/order-admission-" + .runId + "-result.json"),
+      benchmarkSchemaVersion,
+      targetTps,
+      events,
+      httpAccepted,
+      httpAcceptedTps,
+      businessOrderbookAdmissionTps,
+      businessOrderAdmissionConvergenceTps,
+      orderAdmissionGateElapsedSeconds,
+      businessOrderAdmissionQueueDrainTailSeconds,
+      orderSubmissionTotalMeanMs,
+      orderSubmissionRateLimitCheckMeanMs,
+      orderSubmissionMarketSequenceMeanMs,
+      orderSubmissionEventStoreRequestMeanMs,
+      orderSubmissionAppendTransactionBeforeCallbackMeanMs,
+      orderSubmissionAppendInitialAppendCteMeanMs,
+      orderAssetReservationConfirmedBatchSizeMean,
+      orderAssetReservationAppendTransactionTotalMeanMs,
+      walletOrderSubmittedTransactionMeanMs,
+      walletOrderSubmittedReservationCteMeanMs,
+      matchEngineReserveRedisEvalMeanMs,
+      finalQueueBacklog,
+      queueMetricsReadFailures
+    })),
+    metrics: {
+      allRuns: {
+        httpAcceptedTps: ($runs | stat("httpAcceptedTps")),
+        businessOrderbookAdmissionTps: ($runs | stat("businessOrderbookAdmissionTps")),
+        businessOrderAdmissionConvergenceTps: ($runs | stat("businessOrderAdmissionConvergenceTps")),
+        orderAdmissionGateElapsedSeconds: ($runs | stat("orderAdmissionGateElapsedSeconds")),
+        orderSubmissionTotalMeanMs: ($runs | stat("orderSubmissionTotalMeanMs")),
+        orderSubmissionRateLimitCheckMeanMs: ($runs | stat("orderSubmissionRateLimitCheckMeanMs")),
+        orderSubmissionMarketSequenceMeanMs: ($runs | stat("orderSubmissionMarketSequenceMeanMs")),
+        orderSubmissionEventStoreRequestMeanMs: ($runs | stat("orderSubmissionEventStoreRequestMeanMs")),
+        walletOrderSubmittedTransactionMeanMs: ($runs | stat("walletOrderSubmittedTransactionMeanMs")),
+        matchEngineReserveRedisEvalMeanMs: ($runs | stat("matchEngineReserveRedisEvalMeanMs"))
+      },
+      validRunsOnly: {
+        httpAcceptedTps: ($validRuns | stat("httpAcceptedTps")),
+        businessOrderbookAdmissionTps: ($validRuns | stat("businessOrderbookAdmissionTps")),
+        businessOrderAdmissionConvergenceTps: ($validRuns | stat("businessOrderAdmissionConvergenceTps")),
+        orderAdmissionGateElapsedSeconds: ($validRuns | stat("orderAdmissionGateElapsedSeconds")),
+        orderSubmissionTotalMeanMs: ($validRuns | stat("orderSubmissionTotalMeanMs")),
+        orderSubmissionRateLimitCheckMeanMs: ($validRuns | stat("orderSubmissionRateLimitCheckMeanMs")),
+        orderSubmissionMarketSequenceMeanMs: ($validRuns | stat("orderSubmissionMarketSequenceMeanMs")),
+        orderSubmissionEventStoreRequestMeanMs: ($validRuns | stat("orderSubmissionEventStoreRequestMeanMs")),
+        walletOrderSubmittedTransactionMeanMs: ($validRuns | stat("walletOrderSubmittedTransactionMeanMs")),
+        matchEngineReserveRedisEvalMeanMs: ($validRuns | stat("matchEngineReserveRedisEvalMeanMs"))
+      }
+    }
+  }
+  ' "${RESULT_FILES[@]}" > "${SUMMARY_JSON}"
+
+echo
+echo "[INFO] repeat summary json=${SUMMARY_JSON}"
+jq '{validity, metrics}' "${SUMMARY_JSON}"
