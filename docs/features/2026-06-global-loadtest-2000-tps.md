@@ -12458,3 +12458,64 @@ Next action:
 
 1. Do not revisit raw positional JDBC for this initial append path unless a profiler shows named-parameter binding as a direct CPU hotspot.
 2. Continue with full-chain envelope attribution and candidate changes that reduce actual measured wait or remove a proven hot-path round trip.
+
+### 2026-07-29 - TPS-140 Redis client envelope A/B for Order admission
+
+Status: diagnostic switch implemented; non-shared pooled Redis candidate rejected for now.
+
+Problem:
+
+- Recent order-admission runs showed that several synchronous waits rise and fall together:
+  - Order command connection acquisition;
+  - Wallet reservation transaction;
+  - MatchEngine Redis orderbook admission eval;
+  - Order market sequence Redis allocation.
+- Since Order and MatchEngine both hit the same local Redis during the front-chain burst, one hypothesis was that Spring Data Redis/Lettuce shared native connection behavior was adding client-side serialization or command waiting under burst load.
+
+Implementation:
+
+- Added a guarded Redis client A/B switch for Order and MatchEngine load-test profiles:
+  - `eap.redis.share-native-connection`;
+  - `spring.data.redis.lettuce.pool.enabled`;
+  - pool `max-active`, `max-idle`, `min-idle`, and `max-wait`.
+- The default remains unchanged:
+  - `share-native-connection=true`;
+  - Lettuce pool disabled.
+- Extended `run-order-admission-chain-10k.sh` and `start-loadtest-services.sh` so Redis client settings are explicit in the run command and printed in the report log.
+
+Validation:
+
+- `eap-order`: `./gradlew --no-daemon testClasses` PASS.
+- `eap-matchEngine`: `./gradlew --no-daemon testClasses` PASS.
+- `bash -n scripts/load-test/run-order-admission-chain-10k.sh` PASS.
+- `bash -n scripts/load-test/start-loadtest-services.sh` PASS.
+
+Results:
+
+| Run | Redis client mode | HTTP accepted TPS | Business admission TPS | Order sequence mean | Order event-store request mean | Wallet transaction mean | Match Redis eval mean | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_REDIS_POOL_NONSHARED_LIGHT_10K_R1` | non-shared pool, `max-active=64`, `max-wait=50ms` | n/a | n/a | n/a | n/a | n/a | n/a | INVALID: Order API returned Redis pool wait failures before downstream facts were produced |
+| `GLT_20260729_ORDER_ADMISSION_REDIS_POOL_NONSHARED_WAIT500_LIGHT_10K_R1` | non-shared pool, `max-active=128`, `max-wait=500ms` | `1232.32/s` | `1169.83/s` | `13.891ms` | `56.633ms` | `21.143ms` | `8.589ms` | PASS, but slower |
+| `GLT_20260729_ORDER_ADMISSION_REDIS_SHARED_DEFAULT_LIGHT_10K_R1` | default shared native connection, pool disabled | `1402.83/s` | `1218.92/s` | `16.590ms` | `41.876ms` | `15.404ms` | `6.792ms` | PASS, better than pooled candidate |
+
+Interpretation:
+
+- The first non-shared pool run was not valid capacity evidence:
+  - it failed in the Order API hot path with Redis connection pool exhaustion;
+  - no Match/Order/Wallet durable stage rows were produced.
+- The conservative non-shared pool run completed correctly, but did not improve the full order-admission chain.
+- The same-machine default comparison was also below the earlier best `~1.45k/s` sequence-block candidate, so this single pair should not be used as a new capacity headline.
+- The useful conclusion is narrower:
+  - changing Lettuce to non-shared pooled connections is not an accepted optimization;
+  - Redis client mode is now a controllable A/B variable if a future profiler shows command serialization;
+  - current TPS work should continue on the full-chain durable relay/listener envelope instead of treating Redis client pooling as the main fix.
+
+Next action:
+
+1. Keep the Redis client A/B switch because it is default-off and improves benchmark reproducibility.
+2. Do not enable non-shared pooled Redis for the load-test default.
+3. Continue investigating full-chain costs with the current default Redis client mode:
+   - Order event-store transaction wait versus body time;
+   - Wallet reservation transaction and outbox relay pressure;
+   - MatchEngine Redis eval under front-chain pressure;
+   - RabbitMQ publisher-confirm and queue-drain timing.

@@ -34,6 +34,12 @@ ORDER_ADMISSION_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS="${ORDER_ADMISSION_WALLE
 ORDER_ADMISSION_RATE_LIMIT_ENABLED="${ORDER_ADMISSION_RATE_LIMIT_ENABLED:-true}"
 ORDER_ADMISSION_RATE_LIMIT_BACKEND="${ORDER_ADMISSION_RATE_LIMIT_BACKEND:-local}"
 ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE="${ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE:-1}"
+ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION="${ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION:-true}"
+ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED:-false}"
+ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE:-64}"
+ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE:-64}"
+ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE:-16}"
+ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT:-500ms}"
 FLUSH_REDIS_ON_RESET="${FLUSH_REDIS_ON_RESET:-true}"
 BENCHMARK_PROFILE="${BENCHMARK_PROFILE:-custom}"
 GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
@@ -79,6 +85,12 @@ Common options:
   --rate-limit-enabled VALUE   true or false
   --rate-limit-backend VALUE   local or redis
   --market-sequence-allocation-block-size VALUE
+  --redis-share-native-connection VALUE true or false
+  --redis-lettuce-pool-enabled VALUE true or false
+  --redis-lettuce-pool-max-active VALUE
+  --redis-lettuce-pool-max-idle VALUE
+  --redis-lettuce-pool-min-idle VALUE
+  --redis-lettuce-pool-max-wait VALUE
   --help
 
 Environment variables with the previous names remain supported. Command-line
@@ -312,6 +324,36 @@ while [[ $# -gt 0 ]]; do
       ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE="$2"
       shift 2
       ;;
+    --redis-share-native-connection)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --redis-share-native-connection requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION="$2"
+      shift 2
+      ;;
+    --redis-lettuce-pool-enabled)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --redis-lettuce-pool-enabled requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED="$2"
+      shift 2
+      ;;
+    --redis-lettuce-pool-max-active)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --redis-lettuce-pool-max-active requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE="$2"
+      shift 2
+      ;;
+    --redis-lettuce-pool-max-idle)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --redis-lettuce-pool-max-idle requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE="$2"
+      shift 2
+      ;;
+    --redis-lettuce-pool-min-idle)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --redis-lettuce-pool-min-idle requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE="$2"
+      shift 2
+      ;;
+    --redis-lettuce-pool-max-wait)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --redis-lettuce-pool-max-wait requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -405,6 +447,12 @@ if [[ "${START_SERVICES}" == "true" ]]; then
     EAP_RATE_LIMIT_ENABLED="${ORDER_ADMISSION_RATE_LIMIT_ENABLED}" \
     EAP_RATE_LIMIT_BACKEND="${ORDER_ADMISSION_RATE_LIMIT_BACKEND}" \
     EAP_ORDER_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE="${ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE}" \
+    EAP_REDIS_SHARE_NATIVE_CONNECTION="${ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION}" \
+    EAP_REDIS_LETTUCE_POOL_ENABLED="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED}" \
+    EAP_REDIS_LETTUCE_POOL_MAX_ACTIVE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE}" \
+    EAP_REDIS_LETTUCE_POOL_MAX_IDLE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE}" \
+    EAP_REDIS_LETTUCE_POOL_MIN_IDLE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE}" \
+    EAP_REDIS_LETTUCE_POOL_MAX_WAIT="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT}" \
     EAP_ORDER_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE}" \
     EAP_ORDER_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS}" \
     EAP_WALLET_OUTBOX_ASYNC_RELAY_ENABLED="${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED}" \
@@ -423,6 +471,7 @@ echo "[INFO] matchUserOpenOrderIndexEnabled=${ORDER_ADMISSION_MATCH_USER_OPEN_OR
 echo "[INFO] orderCommandPoolSize=${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}, orderCommandPoolMinIdle=${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE}"
 echo "[INFO] orderOutboxBatchSize=${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_SIZE}, orderOutboxPublishConcurrency=${ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY}, orderOutboxBatchConfirmEnabled=${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED}, orderOutboxAsyncRelayEnabled=${ORDER_ADMISSION_ORDER_OUTBOX_ASYNC_RELAY_ENABLED}"
 echo "[INFO] rateLimitEnabled=${ORDER_ADMISSION_RATE_LIMIT_ENABLED}, rateLimitBackend=${ORDER_ADMISSION_RATE_LIMIT_BACKEND}, marketSequenceAllocationBlockSize=${ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE}"
+echo "[INFO] redisShareNativeConnection=${ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION}, redisLettucePoolEnabled=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED}, redisLettucePoolMaxActive=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE}, redisLettucePoolMaxIdle=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE}, redisLettucePoolMinIdle=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE}, redisLettucePoolMaxWait=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT}"
 echo "[INFO] orderAssetReservationConfirmedBatchSize=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE}, orderAssetReservationConfirmedReceiveTimeoutMs=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS}"
 echo "[INFO] walletOutboxAsyncRelayEnabled=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED}, walletOutboxAsyncMaxInFlightBatches=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES}"
 echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
