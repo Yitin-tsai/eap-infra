@@ -12196,3 +12196,69 @@ Next action:
 1. Keep `eap.rate-limit.backend=local` as the load-test default.
 2. Use `redis` backend only for explicit strict-limit A/B or production policy validation.
 3. Continue TPS work on durable order submission, wallet reservation/relay, and MatchEngine Redis admission cost.
+
+### 2026-07-29 - TPS-136 Order admission after local rate-limit: sequence allocation and initial state write check
+
+Status: measured; sequence block remains a conditional optimization, initial `order_matching_state` removal rejected.
+
+Scope:
+
+- Continued from TPS-135 after removing per-request Redis rate-limit cost from the Order API hot path.
+- Compared Order admission with:
+  - `eap.rate-limit.backend=local`;
+  - `marketSequenceAllocationBlockSize=1000`;
+  - same `light-10k` order-admission chain gate.
+- Rechecked whether initial submission really needs to write `order_matching_state`.
+
+Sequence allocation result:
+
+| Profile | Valid runs | HTTP accepted TPS median | Orderbook admission TPS median | Convergence TPS median | Market sequence mean median | Event-store request mean median | Wallet transaction mean median | Match Redis eval mean median |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| TPS-134 default `light-10k` | `3/3` | `1451.74/s` | `1283.94/s` | `1282.40/s` | `10.903ms` | `31.892ms` | `14.227ms` | `6.440ms` |
+| TPS-136 local limiter + sequence block1000 | `3/3` | `1520.28/s` | `1450.81/s` | `1448.96/s` | `0.466ms` | `36.496ms` | `15.022ms` | `6.354ms` |
+
+Interpretation:
+
+- With rate-limit moved off Redis, sequence block allocation became visible:
+  - convergence median improved from `1282.40/s` to `1448.96/s`;
+  - relative improvement: about `13.0%`;
+  - `market_sequence` mean dropped from `10.903ms` to `0.466ms`.
+- The result is still not accepted as a production default because it changes ordering semantics:
+  - current sequence allocation means "Order API accepted order sequence";
+  - block allocation means each Order process may reserve ranges ahead of actual request arrival;
+  - moving sequence allocation to MatchEngine would mean "asset-confirmed orderbook admission sequence".
+- The architecture decision is therefore separate from the performance finding.
+
+Initial matching-state write experiment:
+
+- Hypothesis:
+  - initial submission writes both `order_stream_heads` and `order_matching_state` as `PENDING_ASSET_CHECK`;
+  - `order_matching_state` is required later for cancel/trade command decisions;
+  - asset-confirmed batch already upserts `order_matching_state` to `OPEN`;
+  - therefore initial `order_matching_state` write might be removable from the Order API hot path.
+- Temporary implementation:
+  - removed initial submission `order_matching_state` upsert from the fast-path CTE;
+  - added cancel fallback from `order_matching_state` to `order_stream_heads`;
+  - verified `OrderEventAppenderPostgresIT`: PASS.
+- Load-test result:
+
+| Profile | Valid runs | Orderbook admission TPS median | Convergence TPS median | Event-store request mean median | Initial append CTE mean median | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| local limiter + sequence block1000 | `3/3` | `1450.81/s` | `1448.96/s` | `36.496ms` | `7.436ms` | accepted as benchmark candidate |
+| no initial `order_matching_state` | `3/3` | `1220.00/s` | `1129.77/s` | `57.053ms` | `10.038ms` | rejected |
+
+Decision:
+
+- Reverted the code change.
+- Do not remove initial `order_matching_state` from the fast path based on current evidence.
+- Although it looks like a write-amplification reduction on paper, it did not improve the measured chain.
+- The likely larger issue remains DB transaction/connection wait and downstream write pressure, not that single row.
+
+Next action:
+
+1. Keep local rate-limit as accepted TPS-135 change.
+2. Keep sequence block as a measured but conditional optimization; do not make it production default until price-time priority semantics are decided.
+3. Next investigation should target DB transaction wait directly:
+   - Order initial append transaction/connection timing;
+   - Wallet reservation transaction and relay timing;
+   - MatchEngine Redis admission eval under the same runs.
