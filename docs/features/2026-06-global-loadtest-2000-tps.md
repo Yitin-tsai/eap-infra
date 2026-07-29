@@ -11693,3 +11693,275 @@ Next action:
 2. Use `businessOrderbookAdmissionTps` and `businessOrderAdmissionConvergenceTps` separately in reports.
 3. Investigate whether Order state convergence should remain in the "orderbook admission" business gate or be tracked as a separate convergence SLO.
 4. Continue with Wallet reservation/outbox and Match Redis admission attribution before changing broad resource knobs.
+
+### 2026-07-29 - TPS-131 Order admission benchmark profiles and stage wall-clock attribution
+
+Status: implemented for benchmark tooling and attribution; no production business behavior changed.
+
+Problem:
+
+- Running load tests with long environment-variable command lines repeatedly hit Codex sandbox restrictions before the command could be re-run with external permissions.
+- Long env command lines also made benchmark settings harder to repeat exactly.
+- Admission-chain results were still mixing two different costs:
+  - durable orderbook admission facts reaching MatchEngine;
+  - final broker queue drain after those facts had already converged.
+
+Implementation:
+
+- Added command-line profiles to `scripts/load-test/run-order-admission-chain-10k.sh`:
+  - `--profile light-10k`;
+  - `--profile deep-10k`;
+  - `--profile baseline-10k`;
+  - `--profile users10000-10k`;
+  - `--profile order-outbox-publish4-10k`.
+- Profiles keep the previous environment-variable overrides but allow a stable command shape such as:
+
+```bash
+bash scripts/load-test/run-order-admission-chain-10k.sh \
+  --profile light-10k \
+  --run-id GLT_20260729_ORDER_ADMISSION_PROFILE_LIGHT_10K_R2
+```
+
+- Added profile metadata to the run header.
+- Added `RESET_PG_STATS_BEFORE_RUN` support to the order-admission runner so deep attribution can reset `pg_stat_statements` before formal measurement.
+- Added `ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY` and bridged it through `start-loadtest-services.sh` into `EAP_ORDER_OUTBOX_PUBLISH_CONCURRENCY`.
+- Added `--order-outbox-batch-size` and an `order-outbox-batch250-10k` profile for targeted Order outbox batch-confirm A/B testing.
+- Added wall-clock deltas to the order-admission JSON:
+  - `orderSubmittedRelayWallSeconds`;
+  - `walletOrderSubmissionClaimLagSeconds`;
+  - `orderAssetReservationConfirmedLagSeconds`;
+  - `businessOrderAdmissionQueueDrainTailSeconds`.
+- Added Wallet order-submitted transaction phase metrics:
+  - `walletOrderSubmittedTransactionBeforeCallback*`;
+  - `walletOrderSubmittedTransactionBody*`;
+  - `walletOrderSubmittedTransactionAfterBody*`;
+  - plus Wallet Hikari acquire/usage summary in the order-admission JSON output.
+- Added existing Order outbox confirm sub-stages to the order-admission JSON output:
+  - `orderOutboxFirstConfirm*`;
+  - `orderOutboxRemainingConfirm*`;
+  - `orderOutboxPostConfirmMarkGap*`.
+- Added per-queue drain attribution:
+  - `drainedObservedSeconds`;
+  - `tailAfterOrderbookSeconds`.
+- Added Order asset-reservation-confirmed append phase metrics:
+  - `transaction_total`;
+  - `transaction_before_callback`;
+  - `transaction_body`;
+  - `transaction_after_body`;
+  - `lock_heads`;
+  - `prepare_batch_arrays`;
+  - `create_sql_arrays`;
+  - `bind_sql_arrays`;
+  - `execute_cte`;
+  - `connection_callback`;
+  - `fallback_individual_append`.
+- Added actual Order asset-reservation-confirmed listener batch-size summary.
+
+Validation:
+
+| Run | Profile | Orderbook admission TPS | Convergence TPS | HTTP accepted TPS | Order relay wall | Queue drain tail | Order outbox confirm wall | Order command acquire | Wallet transaction | Wallet outbox confirm | Match Redis eval | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_PROFILE_LIGHT_10K_R1` | `light-10k` | `792.36` | `526.86` | `1589.58` | `5.32s` | `6.36s` | `10.273918s` | `77.030000s` | `38.286199s` | `10.510470s` | `16.573159s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_PROFILE_PUBLISH4_10K_R1` | `order-outbox-publish4-10k` | `816.44` | `650.12` | `1751.27` | `6.39s` | `3.13s` | `42.328657s` | `41.681000s` | `33.648616s` | `10.821426s` | `14.033824s` | PASS, not accepted as default |
+| `GLT_20260729_ORDER_ADMISSION_PROFILE_LIGHT_10K_R2` | `light-10k` | `921.03` | `654.03` | `1685.47` | `4.10s` | `4.43s` | `9.072519s` | `56.512000s` | `28.115938s` | `9.121953s` | `13.994089s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_ORDER_OUTBOX_CONFIRM_ATTR_10K_R1` | `light-10k` with confirm sub-stage JSON | `685.51` | `465.13` | `1584.56` | `8.13s` | `6.91s` | `12.897036s` | `66.321000s` | `49.147332s` | `13.037330s` | `20.327373s` | PASS, attribution only |
+| `GLT_20260729_ORDER_ADMISSION_ORDER_OUTBOX_BATCH250_10K_R1` | `order-outbox-batch250-10k` | `902.88` | `572.89` | `1614.08` | `4.75s` | `6.38s` | `9.393409s` | `80.804000s` | `38.203261s` | `8.932493s` | `11.314371s` | PASS, not accepted as default |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_BATCH_SIZE_10K_R1` | `light-10k` with asset append phases | `886.42` | `725.73` | `1524.49` | `4.60s` | `2.50s` | `9.670211s` | `58.863000s` | `35.097274s` | `9.861707s` | `14.138616s` | PASS, attribution only |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_TIMEOUT50_10K_R1` | `asset-confirmed-timeout50-10k` | `895.49` | `555.22` | `1636.17` | `4.93s` | `6.84s` | `9.453443s` | `57.494000s` | `38.859825s` | `9.621682s` | `18.493104s` | PASS, not accepted as default |
+
+Interpretation:
+
+- The profile-based runner fixes the repeatability and sandbox usability issue for normal load-test work.
+- `order-outbox-publish4-10k` is not accepted as a default:
+  - it did not reduce `orderSubmittedRelayWallSeconds`;
+  - it inflated cumulative `orderOutboxConfirmWallSumSeconds` because four chunks now each report confirm wall;
+  - baseline R2 produced a better orderbook admission TPS and comparable convergence TPS without the additional publish split.
+- Order outbox confirm sub-stage attribution showed:
+  - `orderOutboxFirstConfirmSumSeconds` matched `orderOutboxConfirmWallSumSeconds`;
+  - `orderOutboxRemainingConfirmSumSeconds` was `0`;
+  - `orderOutboxPostConfirmMarkGapSumSeconds` was effectively zero.
+- Therefore the Order relay wall is dominated by RabbitMQ batch publisher-confirm latency, not Java mark-SENT post-processing.
+- Order outbox batch `250` is not accepted as a default:
+  - per-batch confirm mean dropped to `229.108ms`;
+  - batch count increased to `41`;
+  - total confirm wall stayed near baseline (`9.393409s`);
+  - convergence TPS stayed below the best baseline R2 and queue drain tail increased to `6.38s`.
+- Clean deep attribution showed that individual PostgreSQL executor time is not the current main explanation:
+  - Order initial append CTE was about `10k / 2.56s` in `pg_stat_statements`;
+  - Wallet reservation CTE was about `10k / 2.06s`;
+  - application timers remain much larger because they include connection acquisition, transaction/commit boundaries, scheduling, and messaging interaction.
+- Current highest-cost buckets are different depending on the question:
+  - wall-clock path: Order outbox relay wall (`4.10-5.32s` in accepted baseline samples) plus final unacked queue drain tail (`4.43-6.36s`);
+  - cumulative application work: Order command connection acquisition, Wallet order-submitted transaction, Match Redis admission, and Order/Wallet outbox confirm waits.
+- The final queue tail is mostly `ready=0` with residual `unacked` messages, so the next question is not "why is RabbitMQ ready backlog high"; it is "which listener still owns messages after durable admission facts have already converged?"
+- Per-queue drain attribution showed all measured hot-path queues draining in the same 500ms sampler window in the observed run:
+  - `wallet.orderSubmitted.queue`;
+  - `order.orderConfirmed.queue`;
+  - `matchEngine.orderConfirmed.queue`.
+- The largest residual unacked count was consistently on `order.orderConfirmed.queue`, so Order state convergence remains the first queue-tail suspect even though the sampler resolution is too coarse to prove it alone.
+- Order asset-reservation append attribution showed the Order state convergence write is not one slow SQL statement:
+  - `GLT_20260729_ORDER_ADMISSION_ASSET_BATCH_SIZE_10K_R1` processed 10k events in `1584` listener invocations;
+  - actual listener batch size mean was only `6.313` despite batch-size `50`;
+  - batch append transaction count was `1345`;
+  - total appender transaction time was `7.524567s`;
+  - `execute_cte` was `3.167526s`;
+  - `lock_heads` was `2.300291s`;
+  - `transaction_after_body` was `1.236355s`;
+  - `fallback_individual_append` was `0`.
+- This means the Order convergence cost is largely fixed transaction/lock/commit cost repeated across many small batches.
+- `asset-confirmed-timeout50-10k` confirmed the trade-off:
+  - average listener batch size improved from `6.313` to `10.905`;
+  - listener invocations dropped from `1584` to `917`;
+  - `confirmAll` cumulative time dropped from `12.793223s` to `8.944284s`;
+  - but queue-drain tail increased from `2.50s` to `6.84s`;
+  - convergence TPS dropped from `725.73` to `555.22`.
+- Therefore receive-timeout `50ms` is useful as a diagnostic proving small-batch amplification, but it is not accepted as the default because it delays ACK/drain behavior.
+
+Next action:
+
+1. Keep `light-10k` as the standard quick attribution profile and `deep-10k` as the pg-stat-backed attribution profile.
+2. Do not adopt `order-outbox-publish4-10k` as a TPS improvement.
+3. Do not adopt Order outbox batch `250` as a TPS improvement.
+4. Do not adopt asset-reservation-confirmed receive timeout `50ms` as the default.
+5. Continue dissecting whether `businessOrderbookAdmissionTps` should be the front-half capacity headline and `businessOrderAdmissionConvergenceTps` should be reported separately as a conservative drain/reconciliation SLO.
+6. If the goal is to reduce the durable orderbook-admission denominator, Order outbox publisher confirm remains the highest wall-clock suspect.
+7. If the goal is to reduce the conservative queue-drain denominator, Order asset-reservation-confirmed small-batch amplification remains the highest confirmed suspect.
+
+Correction after environment audit:
+
+- The runs above were useful for instrumentation, but their RabbitMQ/Redis attribution is not accepted as formal capacity evidence.
+- The local environment was mixed:
+  - PostgreSQL containers were the load-test containers;
+  - RabbitMQ and Redis were still the development containers.
+- This invalidated the earlier conclusion that Order outbox publisher-confirm latency was the highest wall-clock suspect.
+- The order-admission runner now fails fast against the expected load-test RabbitMQ/Redis containers before starting services.
+- `collect-loadtest-diagnostics.sh` now also defaults to load-test RabbitMQ/Redis containers, and the order-admission runner passes those container names to before/after diagnostics, sampler, and pg-stat reset.
+- Development `eap-rabbitmq` and `eap-redis` were stopped for formal order-admission runs; `eap-rabbitmq-loadtest` and `eap-redis-loadtest` are the intended benchmark infrastructure.
+
+Formal load-test-infra validation:
+
+| Run | Profile | Orderbook admission TPS | Convergence TPS | HTTP accepted TPS | Order relay wall | Queue drain tail | Order outbox confirm wall | Order command acquire | Wallet transaction | Wallet outbox confirm | Match Redis eval | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_LOADTEST_INFRA_LIGHT_10K_R1` | `light-10k`, strict load-test infra | `1429.81` | `784.73` | n/a | `0.04s` | `5.75s` | `2.141165s` | n/a | `108.599022s` | `2.463757s` | `44.606613s` | PASS, cold/drain-tail attribution |
+| `GLT_20260729_ORDER_ADMISSION_LOADTEST_INFRA_LIGHT_10K_R2` | `light-10k`, strict load-test infra | `1440.47` | `1438.32` | `1504.31` | `0.06s` | `0.01s` | `2.396582s` | `128.769000s` | `124.894466s` | `2.417042s` | `55.712525s` | PASS, clean |
+| `GLT_20260729_ORDER_ADMISSION_LOADTEST_INFRA_LIGHT_10K_R3` | `light-10k`, strict load-test infra | `1480.41` | `45.75` | `1540.80` | `0.06s` | `211.82s` | `1.997875s` | `85.015000s` | `118.074255s` | `2.188689s` | `49.761883s` | PASS correctness, invalid for convergence capacity due to long unacked tail |
+| `GLT_20260729_ORDER_ADMISSION_LOADTEST_INFRA_LIGHT_10K_R4` | per-queue management read, non-zero samples added | `1341.95` | `765.06` | `1390.96` | `0.74s` | `5.62s` | `2.240976s` | `140.720000s` | `132.457808s` | `2.677065s` | `52.224003s` | PASS correctness, queue-tail measurement suspect |
+| `GLT_20260729_ORDER_ADMISSION_QUEUE_TOTALS_LIGHT_10K_R5` | aggregate queue totals read | `1465.70` | `1464.26` | `1505.24` | `0.05s` | `0.01s` | `2.091819s` | `126.519000s` | `104.680907s` | `2.411879s` | `48.134533s` | PASS, accepted measurement fix |
+| `GLT_20260729_ORDER_ADMISSION_QUEUE_TOTALS_DEEP_10K_R1` | aggregate queue totals + pg-stat reset | `1530.67` | `1529.03` | `1576.82` | `0.05s` | `0.01s` | `1.524974s` | `50.695000s` | `88.064424s` | `1.540531s` | `33.101112s` | PASS, deep attribution |
+
+Corrected interpretation:
+
+- With the correct load-test RabbitMQ/Redis, Order outbox relay is not the current front-half wall-clock bottleneck:
+  - Order relay wall dropped from multi-second values to `0.04-0.06s`;
+  - Order outbox confirm wall dropped to about `2.0-2.4s` cumulative over 10k, not the previous `9-12s` range.
+- The clean strict-infra run shows the current front-half headline should be approximately:
+  - `businessOrderbookAdmissionTps ~= 1.44k/s`;
+  - `businessOrderAdmissionConvergenceTps ~= 1.44k/s` only when final broker drain does not exhibit an unacked tail.
+- R3 is the important outlier:
+  - durable facts reached `10k` in `6.75s`;
+  - final queue drain reached only at `218.58s`;
+  - residual unacked was observed on `wallet.orderSubmitted.queue` and `matchEngine.orderConfirmed.queue`;
+  - after comparing diagnostics sampler output, this was more likely a queue-metrics measurement issue than a durable write problem.
+- R4 reproduced a shorter version of the tail while the new `orderAdmissionQueueNonZeroSamples` field showed repeated identical unacked counts:
+  - `order.orderConfirmed.queue(ready=0,unacked=102)`;
+  - `matchEngine.orderConfirmed.queue(ready=0,unacked=228)`;
+  - the values stayed unchanged for several seconds, which looked like stale management queue statistics rather than active processing.
+- R5 changed the load generator queue drain gate from per-queue management reads to one aggregate RabbitMQ management HTTP scrape:
+  - endpoint shape: `/api/queues?disable_stats=true&enable_queue_totals=true&columns=name,messages_ready,messages_unacknowledged`;
+  - convergence returned to `1464.26/s`;
+  - queue drain tail dropped to `0.01s`;
+  - no non-zero queue samples were observed.
+- The strict-infra deep run confirmed the remaining wall-clock capacity limit is not a single slow SQL statement:
+  - Order initial append CTE: `10k` calls, `3753.47ms` total executor time, `0.3753ms` mean;
+  - Order asset-reservation batch append CTE: `564` calls, `1102.37ms` total executor time, `1.9545ms` mean;
+  - Wallet reservation CTE: `10k` calls, `2374.83ms` total executor time, `0.2375ms` mean;
+  - MatchEngine PostgreSQL was effectively idle for this front-half flow.
+- Application cumulative timers remain much larger than PostgreSQL executor time:
+  - Order submission transaction total: `121.166273s` cumulative;
+  - Order command connection acquire: `50.695000s` cumulative;
+  - Wallet order-submitted transaction total: `88.064424s` cumulative;
+  - MatchEngine Redis eval: `33.101112s` cumulative.
+- Therefore the next front-half investigation should focus on application transaction boundaries, connection acquisition/scheduling, and Redis round-trip/eval cost under burst pressure, not SQL text tuning alone.
+- Remaining corrected-infra suspects are:
+  - Order API submission transaction and connection acquisition;
+  - Wallet reservation transaction;
+  - MatchEngine Redis admission path;
+  - intermittent broker unacked tail only if reproduced with aggregate queue totals, not with the older per-queue gate.
+
+Next corrected action:
+
+1. Treat all pre-audit RabbitMQ/Redis conclusions as attribution-only, not formal capacity.
+2. Keep aggregate queue totals as the admission-chain drain gate.
+3. Keep reporting `businessOrderbookAdmissionTps` and `businessOrderAdmissionConvergenceTps` separately.
+4. Next tuning target: reduce Order HTTP submission transaction overhead and connection acquisition before revisiting RabbitMQ relay knobs.
+
+### 2026-07-29 - TPS-132 Order submission Redis-side attribution and A/B flags
+
+Status: implemented for attribution and guarded A/B testing; production defaults are unchanged.
+
+Problem:
+
+- After the RabbitMQ queue-drain measurement fix, strict-infra order-admission runs reached about `1.46k-1.53k/s`.
+- Deep attribution showed PostgreSQL executor time was not the only explanation for remaining latency:
+  - Order initial append CTE was fast in `pg_stat_statements`;
+  - application transaction timers were still much larger;
+  - MatchEngine Redis eval and Order-side Redis work were competing for the same local Redis.
+- The Order API path had two unmeasured per-request Redis operations:
+  - rate limit Lua script;
+  - market sequence `INCR`.
+
+Implementation:
+
+- Added `eap_order_submission_phase_duration{phase=...}` timers:
+  - `total`;
+  - `backpressure_check`;
+  - `market_sequence`;
+  - `build_event`;
+  - `event_store_request`;
+  - `rate_limit_check`.
+- Added these phase timers to the order-admission JSON output.
+- Added guarded A/B controls:
+  - `eap.rate-limit.enabled`, bridged by `EAP_RATE_LIMIT_ENABLED`;
+  - `eap.order.market-sequence.allocation-block-size`, bridged by `EAP_ORDER_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE`.
+- Added order-admission profiles:
+  - `rate-limit-off-10k`;
+  - `market-sequence-block1000-10k`.
+- Market sequence block allocation defaults to `1`, preserving existing per-order Redis `INCR` semantics unless explicitly changed.
+
+Validation:
+
+| Run | Profile | Rate limit | Sequence block | Orderbook admission TPS | Convergence TPS | HTTP accepted TPS | Rate-limit mean | Market-sequence mean | Order event-store request mean | Order command acquire mean | Match Redis eval mean | Result |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_SUBMISSION_PHASES_LIGHT_10K_R6` | `light-10k` + submission phase metrics | on | `1` | `1011.64` | `1011.32` | `1149.57` | `19.872ms` | `16.560ms` | `52.600ms` | `31.142ms` | `9.004ms` | PASS, attribution |
+| `GLT_20260729_ORDER_ADMISSION_RATE_LIMIT_OFF_LIGHT_10K_R7` | `rate-limit-off-10k` | off | `1` | `1380.20` | `1378.12` | `1426.77` | `~0ms` | `10.176ms` | `30.664ms` | `19.212ms` | `5.406ms` | PASS, A/B |
+| `GLT_20260729_ORDER_ADMISSION_SEQUENCE_BLOCK1000_LIGHT_10K_R8` | `market-sequence-block1000-10k` | on | `1000` | `1595.27` | `1448.50` | `1642.63` | `9.449ms` | `0.088ms` | `17.018ms` | `8.677ms` | `3.998ms` | PASS, A/B |
+| `GLT_20260729_ORDER_ADMISSION_RATE_LIMIT_OFF_SEQUENCE_BLOCK1000_LIGHT_10K_R9B` | sequence block + rate limit off | off | `1000` | `1346.94` | `1346.55` | `1537.26` | `~0ms` | `0.293ms` | `34.921ms` | `21.139ms` | `5.712ms` | PASS, noisy combined sample |
+
+Interpretation:
+
+- Rate limit is a real measurable Order API hot-path cost:
+  - R6 rate-limit check cost was `198.721308s` cumulative over 10k requests;
+  - disabling it removed that timer and improved orderbook admission from `1011.64/s` to `1380.20/s` in the observed A/B run.
+- The current rate-limit implementation uses a Redis ZSET sliding window Lua script, which is precise but expensive for a high-throughput synthetic order burst.
+- Market sequence allocation is also a real hot-path cost:
+  - R6 market-sequence cost was `165.595316s` cumulative, `16.560ms` mean;
+  - sequence block allocation reduced it to `0.877090s` cumulative, `0.088ms` mean in R8.
+- Sequence block allocation has a business-semantics caveat:
+  - it preserves uniqueness and monotonicity within allocated ranges;
+  - it can weaken strict cross-pod request-time ordering if multiple Order pods allocate different blocks;
+  - therefore it is not accepted as a default production setting without an Architect Review of price-time priority semantics.
+- The combined R9B sample was lower than R8, so combined tuning needs repeated runs before declaring a new capacity number.
+- The strongest current, non-hand-wavy finding is:
+  - Order API Redis-side work was materially affecting admission throughput;
+  - sequence allocation has a clean optimization lever;
+  - rate limiting should likely move to a cheaper edge/gateway/token-bucket strategy or be separated from core matching-capacity benchmarks.
+
+Next action:
+
+1. Keep `eap.rate-limit.enabled=true` and market sequence block size `1` as default semantics.
+2. For capacity research, run at least three repeats each for:
+   - default `light-10k`;
+   - `rate-limit-off-10k`;
+   - `market-sequence-block1000-10k`.
+3. Decide separately whether EAP's public benchmark headline includes backend rate limiting, or reports it as a front-door protection profile.
+4. Before accepting sequence block allocation in production-like runs, review whether EAP's price-time priority requires globally interleaved per-order sequencing across multiple Order pods.
