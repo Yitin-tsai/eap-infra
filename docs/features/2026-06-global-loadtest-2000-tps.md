@@ -12519,3 +12519,67 @@ Next action:
    - Wallet reservation transaction and outbox relay pressure;
    - MatchEngine Redis eval under front-chain pressure;
    - RabbitMQ publisher-confirm and queue-drain timing.
+
+### 2026-07-29 - TPS-141 Wallet outbox pool isolation candidate
+
+Status: tested and rejected; Wallet service code reverted.
+
+Hypothesis:
+
+- TPS-137/TPS-138 showed that isolated Order and Wallet SQL ceilings are much higher than the full order-admission chain.
+- Wallet order-submitted listener and Wallet outbox relay were sharing the same default Hikari pool.
+- A plausible explanation was that Wallet relay `SELECT`/`UPDATE SENT` work was competing with the Wallet reservation listener for DB connections inside the same service.
+
+Candidate:
+
+- Added a dedicated `WalletOutboxPool` and wired Wallet `OutboxPoller` to use outbox-specific `JdbcTemplate` / `NamedParameterJdbcTemplate`.
+- Kept business semantics unchanged:
+  - same Wallet reservation CTE;
+  - same outbox table;
+  - same publisher confirm handling;
+  - same mark-SENT behavior;
+  - same idempotency tables.
+
+Validation:
+
+- Candidate build:
+  - `eap-wallet`: `./gradlew --no-daemon testClasses` PASS;
+  - `eap-wallet`: `./gradlew --no-daemon test --tests com.eap.eap_wallet.application.OutboxPollerTest` PASS.
+- Measurement fallback correction:
+  - `OrderHttpLoadGenerator` now reads Wallet Hikari metrics from `WalletCommandPool`, falling back to the previous `HikariPool-1` name;
+  - this prevents future benchmark JSON from reporting `walletConnectionAcquire=0` after a pool-name change.
+
+Results:
+
+| Run | Candidate | Business admission TPS | Wallet connection acquire mean | Wallet transaction mean | Wallet reservation CTE mean | Wallet outbox batch wall | Match Redis eval mean | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_REDIS_SHARED_DEFAULT_LIGHT_10K_R1` | baseline, shared Wallet pool | `1218.92/s` | `0.832ms` | `15.404ms` | `7.647ms` | `4.924839s / 28 batches` | `6.792ms` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_WALLET_OUTBOX_POOL_LIGHT_10K_R1` | dedicated Wallet outbox pool | `1070.84/s` | metric label mismatch | `21.517ms` | `10.888ms` | `6.110055s / 27 batches` | `9.033ms` | PASS, slower |
+| `GLT_20260729_ORDER_ADMISSION_WALLET_OUTBOX_POOL_LIGHT_10K_R2` | dedicated Wallet outbox pool + fixed metric fallback | `1074.01/s` | `1.730ms` | `21.944ms` | `10.966ms` | `6.847249s / 26 batches` | `9.686ms` | PASS, slower |
+
+Interpretation:
+
+- The dedicated Wallet outbox pool did not improve the front-chain bottleneck.
+- It also did not prove Wallet command-pool connection acquisition was the dominant cost:
+  - R2 Wallet acquire mean was only `1.730ms`;
+  - the larger regressions were visible in Wallet transaction body, Order transaction wait, Order asset-confirm append, and Match Redis eval.
+- Therefore the current slowdown is still better explained as a shared local full-chain envelope rather than one Wallet outbox connection-pool bottleneck.
+- Important metric correction:
+  - `walletOutboxPublishSumSeconds` is a per-record accumulated duration from publish start to batch completion;
+  - it double-counts batch waiting across all records and must not be interpreted as wall-clock relay time;
+  - prefer `walletOutboxBatch*`, `walletOutboxConfirm*`, and `walletOutboxMarkSent*` for relay wall-clock attribution.
+
+Decision:
+
+- Reverted the Wallet outbox pool candidate.
+- Kept only the benchmark metric fallback in `OrderHttpLoadGenerator` because it makes future pool-name changes visible instead of silently reporting zero.
+
+Next action:
+
+1. Do not split Wallet DB pools again unless Hikari pending/acquire metrics show a real command-pool wait bottleneck.
+2. Update future reports to avoid ranking `walletOutboxPublishSumSeconds` as a wall-clock cost.
+3. Continue investigation at the full-chain stage level:
+   - Order transaction wait and asset-confirm append;
+   - MatchEngine Redis eval variability;
+   - RabbitMQ publish-confirm wall time;
+   - longer runs or repeat baselines to separate local noise from real code impact.
