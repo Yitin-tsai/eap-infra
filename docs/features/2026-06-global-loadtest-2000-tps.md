@@ -12657,3 +12657,128 @@ Next action:
    - whether Order asset-reservation apply is delayed by upstream Wallet/Order relay timing;
    - whether `execute_cte` and transaction after-body rise with PostgreSQL global pressure rather than this query alone.
 3. If optimizing this path again, focus on reducing required durable writes, not just replacing the lock query syntax.
+
+### 2026-07-29 - TPS-143 Order asset-confirmed batch collector probe
+
+Status: tested; keep default behavior, retain A/B knobs for future attribution.
+
+Problem:
+
+- Order asset-reservation confirmed uses batch consumption, but representative 10k runs showed effective batch size far below the configured `50`:
+  - normal runs often landed around `15-22`;
+  - each batch still pays one transaction, stream-head lock, CTE execution, and commit gap.
+- This made "small-batch amplification" a plausible explanation for the conservative order-admission convergence cost.
+
+Change:
+
+- Added a load-test-only control for the number of Order asset-reservation confirmed batch collectors:
+  - `EAP_ORDER_ASSET_RESERVATION_CONFIRMED_CONCURRENCY`;
+  - `--asset-confirmed-collector-count`.
+- Default remains `16`, so existing load-test profile behavior is unchanged unless explicitly overridden.
+- Expanded `run-order-admission-repeat.sh` summary output with asset-confirmed append breakdown fields:
+  - batch count/sum/mean;
+  - transaction before/body/after/total;
+  - `lock_heads`;
+  - `execute_cte`;
+  - fallback count.
+
+Results:
+
+| Run | Collector count | Business admission TPS | Batch mean | Batch count | Asset append total mean | Asset append total sum | Order command acquire mean | Wallet reservation tx mean | Match Redis eval mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260729_ORDER_ADMISSION_REPEAT_LOCAL_RATE_LIMIT_SEQUENCE_BLOCK1000_10K_R1_R2` | `16` | `1505.77/s` | `21.882` | `457` | `42.393ms` | `19.374s` | `22.777ms` | `15.022ms` | `6.354ms` |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_COLLECTOR8_LIGHT_10K_R1` | `8` | `1194.72/s` | `28.169` | `355` | `28.558ms` | `9.767s` | `10.758ms` | `11.661ms` | `5.646ms` |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_COLLECTOR4_LIGHT_10K_R1` | `4` | `1300.95/s` | `41.322` | `242` | `31.470ms` | `7.332s` | `20.117ms` | `14.995ms` | `5.905ms` |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_COLLECTOR2_LIGHT_10K_R1` | `2` | `1059.36/s` | `45.045` | `222` | `37.668ms` | `8.325s` | `35.150ms` | `18.275ms` | `7.552ms` |
+
+Findings:
+
+- Lower collector counts did increase effective batch size and reduce the number of asset-confirmed durable batch appends.
+- This did not translate into a stable whole-chain improvement:
+  - `8` reduced asset append total sum but landed at only `1194.72/s`;
+  - `4` was better than `8`, but still below the best existing `16` run;
+  - `2` made batch size near-full but slowed the entire chain.
+- The cost shifted into broader local pressure:
+  - Order command connection acquisition rose to `35.150ms` in the `2` run;
+  - Wallet reservation transaction and Match Redis eval also worsened;
+  - RabbitMQ outbox confirm wall time increased as the run slowed.
+
+Decision:
+
+- Do not change the default asset-confirmed collector count.
+- Do not treat effective batch size alone as the bottleneck.
+- Keep the new A/B knob and repeat-summary fields because they make future attribution clearer without changing production behavior.
+
+Next action:
+
+1. Investigate durable write pressure across the full order-admission chain rather than optimizing this listener in isolation.
+2. Compare total wall-clock and per-stage accumulated costs for:
+   - Order initial append;
+   - Order outbox relay confirm;
+   - Wallet reservation CTE;
+   - Wallet outbox relay confirm;
+   - Order asset-confirmed append;
+   - Match Redis admission.
+3. Prefer changes that reduce required durable facts or relay round trips over changes that only reshuffle batch timing.
+
+### 2026-07-29 - TPS-144 Order initial pending matching-state write removal
+
+Status: implemented; correctness verified; performance impact is small and not the main TPS breakthrough.
+
+Problem:
+
+- The Order initial submission fast path wrote four synchronous facts in one transaction:
+  - `order_stream_heads`;
+  - `order_event_store`;
+  - `order_matching_state` with `PENDING_ASSET_CHECK`;
+  - `order_event_outbox`.
+- `order_matching_state` is a hot command-state table used by match/cancel logic after the order is active.
+- A pending asset-check order is not admitted to the order book yet. The authoritative pending state already exists in `order_stream_heads` and the append-only event stream.
+
+Change:
+
+- Removed the synchronous `order_matching_state(PENDING_ASSET_CHECK)` upsert from the Order initial submission fast-path CTE.
+- Wallet asset confirmation still creates or updates `order_matching_state(OPEN)` in the asset-confirmed apply path before MatchEngine orderbook admission is considered complete.
+- Cancellation validation now falls back to locked `order_stream_heads` when `order_matching_state` does not exist, so pending orders fail with the correct status-based rejection instead of a missing command-state error.
+
+Validation:
+
+- `eap-order`: `./gradlew --no-daemon test --tests com.eap.eap_order.eventstore.OrderEventAppenderPostgresIT` PASS.
+- `eap-order`: `./gradlew --no-daemon testClasses` PASS.
+- Added tests:
+  - initial submission fast path does not create `order_matching_state`;
+  - asset-confirmed batch creates `order_matching_state(OPEN)`.
+
+Three-run load-test result:
+
+Run prefix:
+
+- `GLT_20260729_ORDER_ADMISSION_NO_PENDING_MATCHING_STATE_REPEAT_LIGHT_10K_R1`
+
+Summary:
+
+| Metric | Avg | Median | Min | Max |
+| --- | ---: | ---: | ---: | ---: |
+| `httpAcceptedTps` | `1428.19/s` | `1416.11/s` | `1372.08/s` | `1496.39/s` |
+| `businessOrderbookAdmissionTps` | `1360.36/s` | `1333.72/s` | `1320.79/s` | `1426.57/s` |
+| `businessOrderAdmissionConvergenceTps` | `1358.65/s` | `1332.24/s` | `1319.04/s` | `1424.67/s` |
+| `orderSubmissionEventStoreRequestMeanMs` | `33.289ms` | `33.293ms` | `32.064ms` | `34.509ms` |
+| `orderSubmissionAppendInitialAppendCteMeanMs` | `7.391ms` | `7.512ms` | `6.921ms` | `7.740ms` |
+| `orderSubmissionAppendTransactionBeforeCallbackMeanMs` | `19.633ms` | `19.038ms` | `18.958ms` | `20.904ms` |
+| `orderAssetReservationAppendTransactionTotalMeanMs` | `37.444ms` | `38.248ms` | `35.274ms` | `38.810ms` |
+| `walletOrderSubmittedTransactionMeanMs` | `14.972ms` | `15.371ms` | `14.031ms` | `15.513ms` |
+| `matchEngineReserveRedisEvalMeanMs` | `6.393ms` | `6.325ms` | `6.218ms` | `6.636ms` |
+
+Comparison:
+
+- Compared with the earlier default light repeat average of roughly `1332/s`, this is a small improvement.
+- Compared with the earlier local-rate-limit + market-sequence block run:
+  - old runs: `1448.96/s`, `1505.77/s`, `1162.12/s`;
+  - new runs: `1332.24/s`, `1424.67/s`, `1319.04/s`.
+- The new version avoids the very slow `1162/s` tail in this three-run sample, but it does not establish a new throughput ceiling.
+
+Decision:
+
+- Keep the change because it removes a derived pending command-state write from the synchronous admission path and better matches the current state ownership model.
+- Do not claim this as the main TPS fix.
+- Continue investigating `transaction_before_callback` / connection acquisition and relay-confirm wall time as the active ceiling.
