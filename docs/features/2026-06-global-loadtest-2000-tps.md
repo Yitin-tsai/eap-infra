@@ -11624,3 +11624,72 @@ Conclusion:
   - outbox publisher-confirm wall-clock behavior under admission-chain pressure;
   - Match Redis reserve/add cost under one-sided orderbook admission;
   - final unacked queue tail attribution.
+
+### 2026-07-29 - TPS-130 Order command transaction manager and admission-chain attribution
+
+Status: accepted for metrics and local Order append improvement; tuning knobs remain experimental.
+
+Problem found:
+
+- After TPS-129, `OrderSubmissionRequestedV1` append was faster, but the new phase split showed a large `transaction_before_callback` bucket.
+- `transaction_before_callback` matched Hikari `OrderCommandPool` connection acquisition almost exactly:
+  - `GLT_20260729_ORDER_ADMISSION_JDBC_TX_MANAGER_10K_R2`: `transaction_before_callback=73.770020s`, `hikaricp_connections_acquire=73.625s`;
+  - `GLT_20260729_ORDER_ADMISSION_COMMAND_POOL35_METRICS_10K_R1`: `transaction_before_callback=72.963608s`, `orderCommandConnectionAcquire=72.724000s`.
+- Serialization and hash computation were not material:
+  - payload/metadata serialization stayed below `2s / 10k`;
+  - hash computation stayed below `1s / 10k`.
+
+Implementation:
+
+- Added finer Order submission append phases:
+  - `transaction_before_callback`;
+  - `transaction_after_body`;
+  - `initial_append_serialize_payload_metadata`;
+  - `initial_append_compute_hash`.
+- Switched the pure JDBC Order command append path from the default JPA transaction manager to `DataSourceTransactionManager` via `orderCommandTransactionManager`.
+- Made loadtest `OrderCommandPool` sizing configurable:
+  - `ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE`;
+  - `ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE`.
+- Added Hikari command-pool metrics directly to the order-admission JSON output:
+  - `orderCommandConnectionAcquire*`;
+  - `orderCommandConnectionUsage*`.
+- Added clearer TPS naming while keeping legacy aliases:
+  - `businessOrderbookAdmissionTps`: order accepted, wallet-reserved, and admitted into MatchEngine orderbook;
+  - `businessOrderAdmissionConvergenceTps`: conservative convergence gate including Order state application and measured queue drain;
+  - `businessOrderAdmissionTps` remains as the legacy convergence alias.
+
+Validation:
+
+| Run | Variant | Business convergence TPS | Orderbook admission TPS | HTTP accepted TPS | Order command acquire | Order transaction total | Initial append CTE | Order outbox confirm wall | Order asset confirmAll | Wallet reservation CTE | Match Redis eval | Final drain | Result |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_APPEND_PHASES_10K_R1` | baseline phase split, JPA tx manager | `515.35` | `683.30` | `1390.06` | n/a | `159.500647s` | `36.306294s` | `12.460810s` | n/a | n/a | n/a | `19.40s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_JDBC_TX_MANAGER_10K_R1` | JDBC tx manager | `619.91` | `875.63` | `1595.97` | n/a | `132.414488s` | `24.469908s` | `9.619933s` | n/a | `16.849966s` | `15.422256s` | `16.13s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_JDBC_TX_MANAGER_10K_R2` | JDBC tx manager repeat | `548.51` | `804.43` | `1591.69` | `73.625s` | `133.742071s` | `32.353723s` | `10.419825s` | n/a | `21.679203s` | `18.781195s` | `18.23s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_COMMAND_POOL35_METRICS_10K_R1` | JDBC tx manager, pool `35/10`, JSON Hikari metrics | `651.92` | `750.69` | `1633.11` | `72.724000s` | `128.714876s` | `30.170331s` | `11.243216s` | `14.223216s` | `20.240946s` | `16.566482s` | `15.34s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_COMMAND_POOL50_10K_R1` | pool `50/20` | `609.73` | `842.81` | `1549.11` | `34.034s` | `102.591958s` | `35.584961s` | `9.733972s` | `14.341232s` | `18.428985s` | `16.482654s` | `16.40s` | PASS |
+| `GLT_20260729_ORDER_ADMISSION_ORDER_OUTBOX_BATCH1000_AFTER_JDBC_TX_10K_R1` | Order outbox batch `1000` | `451.47` | `713.12` | `1274.63` | `114.274000s` | `191.664993s` | `42.377804s` | `12.192838s` | `16.484119s` | `18.463199s` | `14.126307s` | `22.15s` | PASS, rejected |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_CONFIRMED_TIMEOUT75_10K_R1` | Order asset-confirmed receive timeout `75ms` | `542.74` | `753.55` | `1520.62` | `63.378000s` | `119.978699s` | `29.917143s` | `11.024581s` | `9.872707s` | `18.104353s` | `15.265404s` | `18.43s` | PASS, rejected as default |
+
+Interpretation:
+
+- The JDBC transaction manager is accepted:
+  - it reduced Order command transaction overhead without changing business semantics;
+  - it improved the observed 10k admission-chain result from `515.35` to `548.51-619.91` in the immediate A/B pair.
+- `OrderCommandPool` acquire wait is now a proven attribution point:
+  - increasing the command pool to `50/20` reduced acquire wait from about `72.7s` to `34.0s`;
+  - however, full convergence TPS did not beat the best pool-35 fresh sample, so pool size is a capacity knob, not a standalone fix.
+- Order outbox batch `1000` is rejected as a default:
+  - it reduced batch count but worsened HTTP latency, command connection acquisition, final queue drain, and business convergence TPS.
+- Order asset-confirmed `75ms` receive timeout is rejected as a default:
+  - it reduced listener batches from `1758` to `675`;
+  - it reduced `confirmAll` from `14.223216s` to `9.872707s`;
+  - but it increased unacked tail and reduced convergence TPS compared with the 25ms fresh baseline.
+- The next bottleneck is no longer a single SQL statement:
+  - the admission chain is now limited by the interaction of Order command connection acquisition, Order/Wallet publisher confirms, Order state convergence writes, Wallet reservation CTE, and Match Redis admission.
+
+Next action:
+
+1. Keep `batch-size=500`, batch confirm on, and asset-confirmed receive timeout `25ms` as the conservative admission-chain defaults.
+2. Use `businessOrderbookAdmissionTps` and `businessOrderAdmissionConvergenceTps` separately in reports.
+3. Investigate whether Order state convergence should remain in the "orderbook admission" business gate or be tracked as a separate convergence SLO.
+4. Continue with Wallet reservation/outbox and Match Redis admission attribution before changing broad resource knobs.
