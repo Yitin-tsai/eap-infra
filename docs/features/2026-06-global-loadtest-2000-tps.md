@@ -12325,3 +12325,76 @@ Next action:
 1. Keep this probe as the Order initial-append SQL ceiling reference.
 2. Add the same style of isolated ceiling probe for Wallet order-submitted reservation.
 3. Compare isolated ceiling vs full-chain observed metrics to identify where orchestration/relay cost, not raw SQL, is consuming capacity.
+
+### 2026-07-29 - TPS-138 Isolated Wallet order-submitted reservation DB ceiling probe
+
+Status: implemented and measured.
+
+Problem:
+
+- TPS-136 showed full order-admission chain Wallet reservation timing around:
+  - `walletOrderSubmittedTransactionMeanMs=15.022ms` median;
+  - `walletOrderSubmittedReservationCteMeanMs=7.035ms` in the representative sequence-block run.
+- After TPS-137 proved Order initial append SQL can sustain `~4.8k-6.3k/s` locally, the remaining question was whether Wallet's `OrderSubmittedEvent` reservation CTE itself was the next raw SQL ceiling.
+
+Implementation:
+
+- Added `WalletOrderSubmissionDbCeilingProbe`.
+- Added Gradle task:
+  - `./gradlew --no-daemon walletOrderSubmissionDbCeilingProbe`.
+- The probe directly executes the current Wallet order-submitted reservation CTE shape against PostgreSQL:
+  - `order_submission_idempotency` claim;
+  - wallet asset check;
+  - wallet balance/locked update;
+  - wallet outbox insert for `OrderConfirmedEvent` / `OrderFailedEvent`.
+- It intentionally bypasses:
+  - RabbitMQ listener dispatch;
+  - Spring listener acknowledgement;
+  - outbox relay publication;
+  - Order and MatchEngine services;
+  - HTTP/API request handling.
+
+Validation:
+
+- `./gradlew --no-daemon testClasses`: PASS.
+
+Results:
+
+| Run | Workers | Events | Completed | Failures | Elapsed | Reservation TPS | Row p50 | Row p95 | Row p99 | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `WALLET_ORDER_SUBMISSION_DB_CEILING_20260729_WORKERS16_R1` | `16` | `10000` | `10000` | `0` | `1.333s` | `7501.87/s` | `1.456ms` | `3.850ms` | `9.766ms` | PASS |
+| `WALLET_ORDER_SUBMISSION_DB_CEILING_20260729_WORKERS35_R1` | `35` | `10000` | `10000` | `0` | `0.989s` | `10109.27/s` | `2.529ms` | `5.264ms` | `31.815ms` | PASS |
+
+Interpretation:
+
+- Wallet order-submitted reservation SQL is not the hard ceiling behind the full order-admission chain.
+- The isolated Wallet reservation path is faster than both:
+  - the full order-admission chain median `~1.45k/s`;
+  - the isolated Order initial-submission DB ceiling `~4.8k-6.3k/s` from TPS-137.
+- The full-chain `walletOrderSubmittedTransactionMeanMs` therefore likely includes orchestration cost outside the SQL executor:
+  - listener dispatch and transaction wrapper;
+  - Hikari/transaction wait under shared local load;
+  - Wallet outbox relay work competing for the same service and database resources;
+  - upstream Order outbox relay and downstream MatchEngine Redis admission pressure in the same measurement window.
+
+Unified bottleneck update:
+
+- Current evidence does not support another narrow SQL rewrite of either:
+  - Order initial submission CTE;
+  - Wallet order-submitted reservation CTE.
+- The next useful target is the full-chain envelope around durable publication and listener apply:
+  - Order outbox relay select/publish/confirm/mark-sent;
+  - Wallet outbox relay select/publish/confirm/mark-sent;
+  - listener transaction wait versus transaction body time;
+  - MatchEngine orderbook admission Redis eval under full-chain pressure.
+- A code optimization should only be accepted if it improves the full-chain convergence TPS while preserving:
+  - broker-confirmed input accounting;
+  - trade ID set equality;
+  - final measured queue and DLQ drain;
+  - no residual wallet locked asset drift.
+
+Next action:
+
+1. Add a combined report section that compares isolated DB ceilings against full-chain observed TPS.
+2. Add or extract relay-level attribution for Order admission runs, especially Order and Wallet outbox confirm wall time.
+3. Investigate whether relay work can be isolated from the listener hot path by scheduling, pool separation, or cheaper publication state updates before changing business semantics.
