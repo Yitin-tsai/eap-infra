@@ -12353,6 +12353,10 @@ Implementation:
   - outbox relay publication;
   - Order and MatchEngine services;
   - HTTP/API request handling.
+- Safety correction after first use:
+  - the probe now defaults inserted outbox rows to `SENT`, not `PENDING`;
+  - this keeps outbox insert cost in the SQL shape without allowing Wallet relay to publish probe-generated events into business queues;
+  - `--outbox-status PENDING` should only be used for an explicit relay test in an isolated/reset environment.
 
 Validation:
 
@@ -12398,3 +12402,59 @@ Next action:
 1. Add a combined report section that compares isolated DB ceilings against full-chain observed TPS.
 2. Add or extract relay-level attribution for Order admission runs, especially Order and Wallet outbox confirm wall time.
 3. Investigate whether relay work can be isolated from the listener hot path by scheduling, pool separation, or cheaper publication state updates before changing business semantics.
+
+### 2026-07-29 - TPS-139 Order initial append raw JDBC candidate
+
+Status: tested and rejected; code reverted.
+
+Hypothesis:
+
+- TPS-137 showed the isolated Order initial-submission DB ceiling probe was much faster than the full Order API admission chain.
+- One possible Java-side difference was that the isolated probe uses a reused positional JDBC prepared statement, while the production Order fast path used `NamedParameterJdbcTemplate` plus `MapSqlParameterSource` for the same initial append CTE.
+- The candidate change replaced the production initial append fast path with a positional JDBC query while preserving:
+  - `order_stream_heads` insert;
+  - `order_event_store` insert;
+  - `order_matching_state` upsert;
+  - `order_event_outbox` insert;
+  - event IDs, hashes, payloads, metadata, and outbox routing.
+
+Validation:
+
+- `./gradlew --no-daemon test --tests com.eap.eap_order.eventstore.OrderEventAppenderPostgresIT`: PASS.
+- Clean order-admission run after clearing probe pollution:
+  - `GLT_20260729_ORDER_ADMISSION_RAW_INITIAL_APPEND_LIGHT_10K_R1`;
+  - `businessOrderbookAdmissionTps=1314.01/s`;
+  - `businessOrderAdmissionConvergenceTps=1212.12/s`;
+  - `finalQueueBacklog=0`;
+  - `queueMetricsReadFailures=0`;
+  - `capacityInvalidReasons=[]`.
+
+Result:
+
+| Metric | Raw JDBC candidate |
+| --- | ---: |
+| `httpAcceptedTps` | `1361.66/s` |
+| `businessOrderbookAdmissionTps` | `1314.01/s` |
+| `businessOrderAdmissionConvergenceTps` | `1212.12/s` |
+| `orderSubmissionEventStoreRequestMeanMs` | `42.909ms` |
+| `orderSubmissionAppendTransactionBeforeCallbackMeanMs` | `27.118ms` |
+| `orderSubmissionAppendTransactionBodyMeanMs` | `8.787ms` |
+| `orderSubmissionAppendInitialAppendCteMeanMs` | `8.682ms` |
+| `walletOrderSubmittedTransactionMeanMs` | `17.373ms` |
+| `matchEngineReserveRedisEvalMeanMs` | `7.420ms` |
+
+Decision:
+
+- Reverted the raw JDBC production change.
+- The candidate did not reduce the measured Order event-store request cost and did not improve convergence TPS.
+- Keep the production `NamedParameterJdbcTemplate` CTE for readability and lower maintenance risk.
+- The gap between isolated Order DB ceiling and full-chain admission remains better explained by full-chain pressure:
+  - transaction/connection wait;
+  - market sequence allocation when block allocation is disabled;
+  - Wallet transaction and outbox work;
+  - MatchEngine Redis eval under burst pressure.
+
+Next action:
+
+1. Do not revisit raw positional JDBC for this initial append path unless a profiler shows named-parameter binding as a direct CPU hotspot.
+2. Continue with full-chain envelope attribution and candidate changes that reduce actual measured wait or remove a proven hot-path round trip.
