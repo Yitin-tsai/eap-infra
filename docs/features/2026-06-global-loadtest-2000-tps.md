@@ -12121,3 +12121,78 @@ Next action:
    - Order event-store request/transaction;
    - Wallet order-submitted reservation transaction;
    - MatchEngine Redis admission eval.
+
+### 2026-07-29 - TPS-135 Order API rate-limit hot-path redesign
+
+Status: implemented as a cheaper default; strict Redis-backed limiting remains selectable.
+
+Problem:
+
+- TPS-134 confirmed that the previous Order API limiter was a real hot-path cost.
+- The old implementation executed one Redis ZSET sliding-window Lua script per `/buy` or `/sell` request:
+  - `ZREMRANGEBYSCORE`;
+  - `ZCARD`;
+  - `ZADD`;
+  - `PEXPIRE`.
+- In the 3-run default `light-10k` comparison, the median rate-limit check mean was `14.330ms`.
+- Disabling rate limiting entirely was not an acceptable product/default answer:
+  - it removes front-door abuse protection;
+  - it did not produce a stable headline TPS gain in the noisy local repeat set.
+
+Implementation:
+
+- Replaced the Order service default limiter with a per-instance fixed-window counter:
+  - key shape: `rate_limit:{userId}:{timeBucket}`;
+  - request path uses an in-memory `ConcurrentHashMap`;
+  - cleanup runs periodically and removes old buckets;
+  - `eap.rate-limit.backend=local` is the load-test/default backend.
+- Kept a Redis fixed-window backend for strict cross-instance user limiting:
+  - `eap.rate-limit.backend=redis`;
+  - Redis mode uses `INCR` plus `PEXPIRE`, not the old ZSET sliding-window script.
+- Added load-test controls:
+  - `EAP_RATE_LIMIT_BACKEND`;
+  - `--rate-limit-backend local|redis`.
+
+Semantic trade-off:
+
+- Local fixed-window limiting is a per-Order-pod protection mechanism.
+- It is intentionally cheaper for the order-submission hot path, but it is not a strict global per-user limiter across multiple pods.
+- If strict global enforcement is required, use either:
+  - an API gateway / edge limiter before the Order service; or
+  - `eap.rate-limit.backend=redis` for the Order service.
+- This is acceptable for the current TPS investigation because rate limiting is front-door protection, not a durable trading fact.
+
+Validation:
+
+- Unit tests:
+  - `./gradlew --no-daemon test --tests com.eap.eap_order.configuration.ratelimit.RateLimitServiceTest`: PASS.
+  - `./gradlew --no-daemon testClasses`: PASS.
+- Shell checks:
+  - `bash -n scripts/load-test/run-order-admission-chain-10k.sh`: PASS.
+  - `bash -n scripts/load-test/start-loadtest-services.sh`: PASS.
+- Load test:
+  - `GLT_20260729_ORDER_ADMISSION_LOCAL_RATE_LIMIT_LIGHT_10K_R1`;
+  - profile `light-10k`;
+  - `--rate-limit-backend local`;
+  - `httpAccepted=10000`;
+  - `http429=0`;
+  - `businessOrderbookAdmissionTps=1162.57/s`;
+  - `businessOrderAdmissionConvergenceTps=1161.52/s`;
+  - final measured queues and DLQ drained;
+  - `queueMetricsReadFailures=0`.
+
+Measured effect:
+
+- Rate-limit check mean dropped from the TPS-134 default median `14.330ms` to `0.015ms`.
+- The single-run headline TPS did not increase versus the best prior samples because the bottleneck shifted to the remaining chain:
+  - Order event-store append / transaction timing;
+  - Order market sequence allocation;
+  - Wallet order-submitted reservation and relay;
+  - MatchEngine Redis admission eval.
+- The useful conclusion is that the per-request Redis limiter is no longer masking the next bottlenecks.
+
+Next action:
+
+1. Keep `eap.rate-limit.backend=local` as the load-test default.
+2. Use `redis` backend only for explicit strict-limit A/B or production policy validation.
+3. Continue TPS work on durable order submission, wallet reservation/relay, and MatchEngine Redis admission cost.
