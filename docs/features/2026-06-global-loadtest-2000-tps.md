@@ -12583,3 +12583,77 @@ Next action:
    - MatchEngine Redis eval variability;
    - RabbitMQ publish-confirm wall time;
    - longer runs or repeat baselines to separate local noise from real code impact.
+
+### 2026-07-29 - TPS-142 Order asset-reservation stream-head lock probe
+
+Status: tested and rejected; code reverted.
+
+Problem:
+
+- Recent order-admission runs repeatedly showed a visible cost in the Order asset-reservation confirmed apply path:
+  - `orderAssetReservationConfirmedConfirmAll*`;
+  - `orderAssetReservationAppendTransactionBody*`;
+  - `orderAssetReservationAppendLockHeads*`;
+  - `orderAssetReservationAppendExecuteCte*`.
+- The code path is:
+  - Wallet publishes `OrderConfirmedEvent`;
+  - Order batch listener deserializes messages;
+  - `OrderEventSourcingService.confirmAll(...)`;
+  - `OrderEventAppender.appendAssetReservationConfirmedBatch(...)`;
+  - `lockHeads(...) FOR UPDATE`;
+  - batch CTE inserts `OrderAssetReservationConfirmedV1`, advances `order_stream_heads`, and upserts `order_matching_state`.
+
+Findings before code:
+
+- `fallback_individual_append` stayed at `0` in representative runs, so the slow path is not a fallback bug.
+- `deserialize`, `status_update`, and `ack` are not the cost center.
+- The hot portion is the normal durable batch append:
+  - stream-head lock;
+  - batch CTE execution;
+  - transaction after-body/commit gap.
+
+Representative comparison:
+
+| Run | Business admission TPS | Batch size mean | Transaction body mean | Lock heads mean | Execute CTE mean | Fallback count |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260729_ORDER_ADMISSION_REPEAT_LOCAL_RATE_LIMIT_SEQUENCE_BLOCK1000_10K_R1_R2` | `1505.77/s` | `21.882` | `29.335ms` | `10.506ms` | `17.679ms` | `0` |
+| `GLT_20260729_ORDER_ADMISSION_REPEAT_LOCAL_RATE_LIMIT_SEQUENCE_BLOCK1000_10K_R1_R3` | `1162.12/s` | `15.924` | `43.305ms` | `17.622ms` | `24.069ms` | `0` |
+| `GLT_20260729_ORDER_ADMISSION_QUEUE_TOTALS_DEEP_10K_R1` | `1529.03/s` | `17.123` | `11.145ms` | `4.281ms` | `6.325ms` | `0` |
+
+Candidate:
+
+- Replaced `NamedParameterJdbcTemplate` `IN (:aggregateIds)` stream-head lock with a fixed JDBC array query:
+  - `WHERE aggregate_id = ANY(?::uuid[])`;
+  - `ORDER BY aggregate_id`;
+  - `FOR UPDATE`.
+- Business semantics were unchanged:
+  - still locks stream heads;
+  - still requires `current_version=1`;
+  - still computes hashes from the locked `last_hash`;
+  - still writes the same event/head/matching-state facts.
+
+Validation:
+
+- `eap-order`: `./gradlew --no-daemon testClasses` PASS.
+- `eap-order`: `./gradlew --no-daemon test --tests com.eap.eap_order.eventstore.OrderEventAppenderPostgresIT` PASS.
+
+Load-test result:
+
+| Run | Business admission TPS | Batch size mean | Transaction body mean | Lock heads mean | Execute CTE mean | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `GLT_20260729_ORDER_ADMISSION_ASSET_LOCK_ARRAY_LIGHT_10K_R1` | `1179.63/s` | `16.207` | `29.724ms` | `11.499ms` | `17.502ms` | PASS, no improvement |
+
+Decision:
+
+- Reverted the candidate.
+- Dynamic named-parameter `IN (:aggregateIds)` does not appear to be the key bottleneck.
+- `lock_heads` is real cost, but this experiment shows the cost is not primarily Java named-parameter expansion or SQL shape alone.
+
+Next action:
+
+1. Do not retry the array-lock variant unless a profiler proves SQL parsing/binding is a hotspot.
+2. Continue with higher-level full-chain attribution:
+   - why batch size drops in slow runs;
+   - whether Order asset-reservation apply is delayed by upstream Wallet/Order relay timing;
+   - whether `execute_cte` and transaction after-body rise with PostgreSQL global pressure rather than this query alone.
+3. If optimizing this path again, focus on reducing required durable writes, not just replacing the lock query syntax.
