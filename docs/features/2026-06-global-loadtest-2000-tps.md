@@ -12037,3 +12037,87 @@ Next action:
 1. Run proper three-to-five-run comparisons with the repeat runner before accepting any Order API hot-path change.
 2. Add Prometheus delta support if warm JVM measurements become necessary.
 3. Continue investigating the durable write chain using repeat medians, not single-run best scores.
+
+### 2026-07-29 - TPS-134 Order-admission repeat A/B results and rate-limit finding
+
+Status: measured; no new production default accepted.
+
+Scope:
+
+- Compared three 10k order-admission profiles with the repeat runner:
+  - default `light-10k`;
+  - `rate-limit-off-10k`;
+  - `market-sequence-block1000-10k`.
+- Each profile ran 3 valid repeats with service restart per repeat.
+- Gate remained:
+  - 10k HTTP orders accepted;
+  - Order submission requested rows reached 10k;
+  - Order outbox sent rows reached 10k;
+  - Wallet order-submission claims reached 10k;
+  - Order asset-reservation-confirmed rows reached 10k;
+  - MatchEngine orderbook admission reached 10k;
+  - final measured queues and DLQ drained.
+
+Results:
+
+| Profile | Valid runs | HTTP accepted TPS median | Orderbook admission TPS median | Convergence TPS median | Orderbook min/max | Relative spread | Rate-limit mean median | Market-sequence mean median | Event-store request mean median | Wallet transaction mean median | Match Redis eval mean median |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `light-10k` | `3/3` | `1451.74/s` | `1283.94/s` | `1282.40/s` | `1282.87-1434.84/s` | `11.39%` | `14.330ms` | `10.903ms` | `31.892ms` | `14.227ms` | `6.440ms` |
+| `rate-limit-off-10k` | `3/3` | `1126.43/s` | `965.52/s` | `965.06/s` | `906.97-1341.93/s` | `40.59%` | `0ms` | `21.109ms` | `59.948ms` | `22.174ms` | `10.257ms` |
+| `market-sequence-block1000-10k` | `3/3` | `1297.74/s` | `1229.39/s` | `1227.77/s` | `1068.94-1248.83/s` | `15.21%` | `16.746ms` | `0.506ms` | `41.996ms` | `17.725ms` | `7.196ms` |
+
+Interpretation:
+
+- Disabling rate limit did not produce a stable headline TPS gain:
+  - median orderbook admission dropped from `1283.94/s` to `965.52/s`;
+  - spread increased from `11.39%` to `40.59%`.
+- The current rate-limit implementation is still a confirmed hot-path cost:
+  - default median rate-limit check mean was `14.330ms`;
+  - the implementation is a precise Redis ZSET sliding-window script on every `/buy` and `/sell` request.
+- The correct conclusion is not "disable rate limiting".
+- The correct conclusion is:
+  - per-request Redis ZSET sliding-window rate limiting is too expensive for the high-frequency order-entry hot path;
+  - rate limiting should be redesigned as a cheaper front-door protection mechanism.
+- Market sequence block allocation also did not improve headline median:
+  - median orderbook admission was `1229.39/s`, below default `1283.94/s`;
+  - but it reduced `market_sequence` mean from `10.903ms` to `0.506ms`.
+- Therefore sequence allocation is a valid cost-reduction lever, but not an accepted production default:
+  - it has price-time priority and multi-pod ordering implications;
+  - it also did not remove the remaining Order event-store, Wallet reservation, and Match Redis costs.
+
+Rate-limit design finding:
+
+- Current behavior:
+  - `OrderController` uses `@RateLimit(key = "#request.bidder", limit = 5, window = 1)` for `/buy`;
+  - `OrderController` uses `@RateLimit(key = "#request.seller", limit = 5, window = 1)` for `/sell`;
+  - `RateLimitAspect` resolves the user key through SpEL before controller execution;
+  - `RateLimitService` executes a Redis Lua script per request:
+    - `ZREMRANGEBYSCORE`;
+    - `ZCARD`;
+    - `ZADD`;
+    - `PEXPIRE`.
+- This gives a precise sliding-window limiter, but it is too heavy for a benchmark that intentionally pushes the Order API as a trading entry point.
+
+Candidate fixes:
+
+1. Replace the hot-path limiter with a cheaper fixed-window Redis counter:
+   - `INCR rate_limit:{user}:{epochSecond}`;
+   - `EXPIRE`;
+   - reject if count exceeds threshold.
+   - This loses perfect sliding-window precision but removes ZSET cleanup and cardinality work.
+2. Move user-level rate limiting to API Gateway / edge:
+   - keep the backend focused on business validation and durable order submission;
+   - report gateway-protected throughput separately from core backend order-admission throughput.
+3. Use local token buckets with periodic/shared backstop:
+   - good for high-throughput local protection;
+   - requires careful multi-pod burst semantics.
+4. Keep the current ZSET limiter only for admin/low-frequency APIs where precision matters more than hot-path throughput.
+
+Next action:
+
+1. Open a dedicated ticket to replace Order API hot-path ZSET rate limiting with a cheaper limiter or move it out of the core backend path.
+2. Keep default production behavior unchanged until that ticket is reviewed.
+3. Continue TPS work on the remaining durable write chain:
+   - Order event-store request/transaction;
+   - Wallet order-submitted reservation transaction;
+   - MatchEngine Redis admission eval.
