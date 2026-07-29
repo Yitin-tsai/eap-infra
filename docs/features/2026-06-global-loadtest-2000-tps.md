@@ -12262,3 +12262,66 @@ Next action:
    - Order initial append transaction/connection timing;
    - Wallet reservation transaction and relay timing;
    - MatchEngine Redis admission eval under the same runs.
+
+### 2026-07-29 - TPS-137 Isolated Order initial-submission DB ceiling probe
+
+Status: implemented and measured.
+
+Problem:
+
+- After TPS-135/TPS-136, the complete order-admission chain still showed large swings in:
+  - `orderSubmissionEventStoreRequestMeanMs`;
+  - `orderSubmissionAppendTransactionBeforeCallbackMeanMs`;
+  - `orderCommandConnectionAcquireMeanMs`.
+- The open question was whether Order initial append SQL itself was limited to roughly `1.1k-1.5k/s`, or whether the complete chain was slowed by HTTP, Spring transaction/pool wait, RabbitMQ relay, Wallet, MatchEngine, and local resource contention.
+
+Implementation:
+
+- Added `OrderSubmissionDbCeilingProbe`.
+- Added Gradle task:
+  - `./gradlew --no-daemon orderSubmissionDbCeilingProbe`.
+- The probe directly executes the current Order initial submission CTE shape against PostgreSQL:
+  - `order_stream_heads` insert;
+  - `order_event_store` insert;
+  - `order_matching_state` upsert;
+  - `order_event_outbox` insert.
+- It intentionally bypasses:
+  - HTTP server/client;
+  - Spring controllers/aspects;
+  - Spring transaction manager;
+  - RabbitMQ;
+  - Wallet;
+  - MatchEngine.
+
+Validation:
+
+- `./gradlew --no-daemon testClasses`: PASS.
+
+Results:
+
+| Run | Workers | Events | Completed | Failures | Elapsed | Initial append TPS | Row p50 | Row p95 | Row p99 | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `ORDER_SUBMISSION_DB_CEILING_20260729_WORKERS16_R1` | `16` | `10000` | `10000` | `0` | `1.588s` | `6298.92/s` | `1.234ms` | `3.032ms` | `10.171ms` | PASS |
+| `ORDER_SUBMISSION_DB_CEILING_20260729_WORKERS35_R2` | `35` | `10000` | `10000` | `0` | `1.639s` | `6100.17/s` | `2.794ms` | `8.346ms` | `53.818ms` | PASS |
+| `ORDER_SUBMISSION_DB_CEILING_20260729_WORKERS50_R2` | `50` | `10000` | `10000` | `0` | `2.055s` | `4865.72/s` | `3.482ms` | `11.145ms` | `148.854ms` | PASS, tail latency degraded |
+| `ORDER_SUBMISSION_DB_CEILING_20260729_WORKERS128_R1` | `128` | `10000` | `0` | `10000` | `0.901s` | `0/s` | `0ms` | `0ms` | `0ms` | FAILED: PostgreSQL `too many clients already` |
+
+Interpretation:
+
+- Order initial-submission SQL is not the hard ceiling behind the full order-admission chain.
+- The isolated SQL path can sustain roughly `4.8k-6.3k/s` locally, depending on worker count.
+- Worker count above the DB connection envelope does not improve capacity:
+  - `50` workers still completed but p99 degraded sharply;
+  - `128` workers exceeded available PostgreSQL connections and failed immediately.
+- Therefore the full-chain `~1.1k-1.5k/s` order-admission result is more likely caused by combined system pressure:
+  - Spring/Hikari transaction queueing;
+  - Order outbox relay and publisher-confirm work;
+  - Wallet reservation transaction and relay;
+  - MatchEngine Redis admission eval;
+  - all local services sharing CPU, Docker, and PostgreSQL resources.
+
+Next action:
+
+1. Keep this probe as the Order initial-append SQL ceiling reference.
+2. Add the same style of isolated ceiling probe for Wallet order-submitted reservation.
+3. Compare isolated ceiling vs full-chain observed metrics to identify where orchestration/relay cost, not raw SQL, is consuming capacity.
