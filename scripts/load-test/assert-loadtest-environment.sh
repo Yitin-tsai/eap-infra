@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RABBIT_CONTAINER="${RABBIT_CONTAINER:-eap-rabbitmq}"
-REDIS_CONTAINER="${REDIS_CONTAINER:-eap-redis}"
+RABBIT_CONTAINER="${RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
+REDIS_CONTAINER="${REDIS_CONTAINER:-eap-redis-loadtest}"
 REDIS_MIN_MAXMEMORY_BYTES="${REDIS_MIN_MAXMEMORY_BYTES:-1073741824}"
 ORDER_DB_CONTAINER="${ORDER_DB_CONTAINER:-eap-order-postgres-loadtest}"
 WALLET_DB_CONTAINER="${WALLET_DB_CONTAINER:-eap-wallet-postgres-loadtest}"

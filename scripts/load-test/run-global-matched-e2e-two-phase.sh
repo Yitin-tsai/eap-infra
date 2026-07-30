@@ -20,6 +20,8 @@ MARKET_ID="${MARKET_ID:-GLOBAL_LOADTEST_$(date +%Y%m%d_%H%M%S)}"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STARTUP_TIMEOUT_SECONDS="${STARTUP_TIMEOUT_SECONDS:-90}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-false}"
+LOADTEST_RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
+LOADTEST_REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER:-eap-redis-loadtest}"
 RUN_MODE="${RUN_MODE:-prepare-run}"
 RUN_REPORT_LOG="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-run.log"
 RUN_REPORT_JSON="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-result.json"
@@ -100,7 +102,9 @@ trap cleanup EXIT INT TERM
 
 assert_environment() {
   echo "[INFO] checking loadtest infrastructure: $1"
-  bash "${ROOT_DIR}/scripts/load-test/assert-loadtest-environment.sh"
+  RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
+    REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
+    bash "${ROOT_DIR}/scripts/load-test/assert-loadtest-environment.sh"
 }
 
 wait_http() {
@@ -127,6 +131,7 @@ reset_pg_stats() {
   docker exec eap-match-postgres-loadtest psql -U admin -d eap_match_db -v ON_ERROR_STOP=1 -c "select pg_stat_statements_reset();" >/dev/null || true
   if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
     DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" \
+      RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
       bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" reset || true
   fi
 }
@@ -139,10 +144,12 @@ collect_diagnostics() {
       ;;
     light)
       DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+        RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
         bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" "${phase}-light" || true
       ;;
     deep)
       DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+        RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
         bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" "${phase}" || true
       ;;
   esac
@@ -154,6 +161,7 @@ start_diagnostic_sampler() {
   fi
   rm -f "${RUN_DIAG_DIR}/sampler.stop" 2>/dev/null || true
   DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+    RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
     bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" sample &
   DIAG_SAMPLER_PID="$!"
   echo "[INFO] diagnostics sampler pid=${DIAG_SAMPLER_PID}, level=${DIAGNOSTICS_LEVEL}, dir=${RUN_DIAG_DIR}"
@@ -182,7 +190,7 @@ append_service_metadata() {
 }
 
 append_rabbitmq_metadata() {
-  local rabbit_container="${RABBIT_CONTAINER:-eap-rabbitmq}"
+  local rabbit_container="${LOADTEST_RABBIT_CONTAINER}"
   {
     echo
     echo "[rabbitmq.queues]"
@@ -193,7 +201,7 @@ append_rabbitmq_metadata() {
 }
 
 append_redis_metadata() {
-  local redis_container="${REDIS_CONTAINER:-eap-redis}"
+  local redis_container="${LOADTEST_REDIS_CONTAINER}"
   {
     echo
     echo "[redis]"
@@ -280,7 +288,8 @@ if [[ "${RUN_MODE}" == "prepare" || "${RUN_MODE}" == "prepare-run" ]]; then
 
   echo "[INFO] purging queues before seed"
   assert_environment "before queue purge"
-  bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+  RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
+    bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
   echo "[INFO] seeding test data"
   MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE}" PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT}" PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=seed \
@@ -288,7 +297,8 @@ if [[ "${RUN_MODE}" == "prepare" || "${RUN_MODE}" == "prepare-run" ]]; then
 
   echo "[INFO] purging queues after seed"
   assert_environment "after seed"
-  bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+  RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
+    bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
   echo "[INFO] prewarming Order projection before run"
   MARKET_ID="${MARKET_ID}" EVENTS="${EVENTS}" PUBLISHERS="${PUBLISHERS}" PUBLISHER_CONNECTION_CACHE_SIZE="${PUBLISHER_CONNECTION_CACHE_SIZE}" PUBLISHER_MAX_IN_FLIGHT="${PUBLISHER_MAX_IN_FLIGHT}" PUBLISHER_CONFIRM_TIMEOUT_MS="${PUBLISHER_CONFIRM_TIMEOUT_MS}" TIMEOUT_SECONDS="${TIMEOUT_SECONDS}" TARGET_TPS=0 DURATION_SECONDS=0 PHASE=project \
@@ -332,6 +342,13 @@ stop_diagnostic_sampler
 append_rabbitmq_metadata
 append_redis_metadata
 collect_diagnostics after-run
+if [[ -d "${RUN_DIAG_DIR}" && -f "${RUN_DIAG_DIR}/runtime-samples.log" ]]; then
+  if hot_window_summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-runtime-hot-window.sh" "${RUN_DIAG_DIR}")"; then
+    echo "[INFO] persisted runtime hot-window summary=${hot_window_summary_file}"
+  else
+    echo "[WARN] could not generate runtime hot-window summary" >&2
+  fi
+fi
 
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
@@ -354,7 +371,8 @@ bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
 
 echo "[INFO] final queue state"
 assert_environment "before final queue verification"
-bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
+  bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
 if [[ "${run_status}" -ne 0 ]]; then
   echo "[ERROR] load test failed with exit code ${run_status}; diagnostics were still collected." >&2

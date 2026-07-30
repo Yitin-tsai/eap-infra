@@ -14,6 +14,7 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
 RUN_ID="${RUN_ID:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_10K}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 START_SERVICES="${START_SERVICES:-true}"
+STOP_SERVICES_AFTER_RUN="${STOP_SERVICES_AFTER_RUN:-}"
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
 ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS="${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS:-1}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-false}"
@@ -97,6 +98,8 @@ Common options:
   --no-reset-pg-stats
   --assert-loadtest-environment VALUE true or false
   --start-services VALUE       true or false
+  --stop-services-after-run VALUE
+                              true or false. Defaults to --start-services.
   --flush-redis-on-reset VALUE true or false
   --order-outbox-batch-size VALUE
   --order-outbox-publish-concurrency VALUE
@@ -327,6 +330,11 @@ while [[ $# -gt 0 ]]; do
       START_SERVICES="$2"
       shift 2
       ;;
+    --stop-services-after-run)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --stop-services-after-run requires a value" >&2; exit 2; }
+      STOP_SERVICES_AFTER_RUN="$2"
+      shift 2
+      ;;
     --assert-loadtest-environment)
       [[ $# -ge 2 ]] || { echo "[ERROR] --assert-loadtest-environment requires a value" >&2; exit 2; }
       ASSERT_LOADTEST_ENVIRONMENT="$2"
@@ -434,6 +442,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -z "${STOP_SERVICES_AFTER_RUN}" ]]; then
+  STOP_SERVICES_AFTER_RUN="${START_SERVICES}"
+fi
+
 RUN_REPORT_LOG="${REPORT_DIR}/order-admission-${RUN_ID}.log"
 RUN_DIAG_DIR="${REPORT_DIR}/order-admission-${RUN_ID}-diagnostics"
 
@@ -487,6 +499,11 @@ stop_diagnostic_sampler() {
 
 cleanup() {
   stop_diagnostic_sampler
+  if [[ "${STOP_SERVICES_AFTER_RUN}" == "true" ]]; then
+    bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh" >/dev/null 2>&1 || true
+    RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
+      bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -505,6 +522,13 @@ if [[ "${ASSERT_LOADTEST_ENVIRONMENT}" == "true" ]]; then
 fi
 
 if [[ "${START_SERVICES}" == "true" ]]; then
+  echo "[INFO] stopping stale loadtest services before queue purge"
+  bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
+
+  echo "[INFO] purging queues before service start"
+  RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
+    bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
+
   EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}" \
     EAP_ORDER_COMMAND_POOL_SIZE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}" \
     EAP_ORDER_COMMAND_POOL_MIN_IDLE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE}" \
@@ -562,7 +586,7 @@ echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
 echo "[INFO] diagnosticSampleIntervalSeconds=${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS}"
 echo "[INFO] resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
-echo "[INFO] assertLoadtestEnvironment=${ASSERT_LOADTEST_ENVIRONMENT}, loadtestRabbitContainer=${LOADTEST_RABBIT_CONTAINER}, loadtestRedisContainer=${LOADTEST_REDIS_CONTAINER}"
+echo "[INFO] assertLoadtestEnvironment=${ASSERT_LOADTEST_ENVIRONMENT}, loadtestRabbitContainer=${LOADTEST_RABBIT_CONTAINER}, loadtestRedisContainer=${LOADTEST_REDIS_CONTAINER}, startServices=${START_SERVICES}, stopServicesAfterRun=${STOP_SERVICES_AFTER_RUN}"
 echo "[INFO] runReportLog=${RUN_REPORT_LOG}"
 
 cd "${ROOT_DIR}/eap-order"
@@ -596,4 +620,11 @@ run_status=${PIPESTATUS[0]}
 set -e
 stop_diagnostic_sampler
 collect_diagnostics after-run
+if [[ -d "${RUN_DIAG_DIR}" && -f "${RUN_DIAG_DIR}/runtime-samples.log" ]]; then
+  if hot_window_summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-runtime-hot-window.sh" "${RUN_DIAG_DIR}")"; then
+    echo "[INFO] persisted runtime hot-window summary=${hot_window_summary_file}"
+  else
+    echo "[WARN] could not generate runtime hot-window summary" >&2
+  fi
+fi
 exit "${run_status}"

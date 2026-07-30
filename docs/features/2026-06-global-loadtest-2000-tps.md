@@ -13376,3 +13376,105 @@ Decision:
   - Hikari active/pending for Order command datasource and Wallet datasource;
   - per-process CPU during Order outbox relay and Wallet outbox relay;
   - whether load-test infrastructure needs a cold restart before repeatable local baselines.
+
+### 2026-07-30 - TPS-151 Runtime hot-window summary and stale queue isolation
+
+Status: tooling fixed; stale queue contamination confirmed and removed from the next runs.
+
+Context:
+
+- TPS-150 showed the isolated Order and Wallet SQL paths are much faster than the observed full-chain order-admission result.
+- The next step was to add a low-cost runtime attribution view that summarizes the existing sampler output instead of manually reading `runtime-samples.log`.
+- The first 10k light run exposed a correctness failure before it could be used as a performance baseline.
+
+Failure run:
+
+- Run: `GLT_20260730_TPS151_HOT_WINDOW_LIGHT_10K_R1`.
+- Result:
+  - `httpAccepted=10000`;
+  - `orderSubmissionRequestedRows=10000`;
+  - `orderSubmittedOutboxSentRows=10000`;
+  - `walletOrderSubmissionClaimRows=10000`;
+  - `matchEngineOrderbookAdmissionCount=10000`;
+  - `orderAssetReservationConfirmedRows=0`;
+  - `finalQueueBacklog=10800`;
+  - `capacityInvalidReasons=["order_asset_reservation_confirmed_not_equal_events", "final_queue_backlog_not_zero"]`.
+- Order log showed repeated `Order stream head not found after creation` while consuming `order.orderConfirmed.queue`.
+- RabbitMQ showed `order.orderConfirmed.queue=10800 ready`.
+
+Root cause:
+
+- `run-order-admission-chain-10k.sh` started services before the Java load generator reset/purged queues.
+- If a previous run left messages in `order.orderConfirmed.queue`, Order consumers could grab them immediately at service startup.
+- RabbitMQ purge removes ready messages, but it cannot remove messages already held as unacked by a consumer.
+- Those stale messages were then requeued after listener failure and polluted the new run.
+- A stale `OrderConfirmedEvent` payload also exposed a fragile timestamp contract: fixed six-digit fractional seconds rejected valid ISO local datetimes such as `.572`.
+
+Changes:
+
+- Added `scripts/load-test/summarize-runtime-hot-window.sh`.
+  - Summarizes `runtime-samples.log` into `runtime-hot-window-summary.md`.
+  - Reports RabbitMQ backlog peaks, PostgreSQL activity deltas, PostgreSQL wait peaks, Hikari gauge peaks, JVM CPU gauges, and Redis peaks.
+- Wired the hot-window summary into:
+  - `run-order-admission-chain-10k.sh`;
+  - `run-global-matched-e2e-two-phase.sh`.
+- Hardened Order admission runner lifecycle:
+  - stops stale load-test services before queue purge;
+  - purges RabbitMQ queues before service start;
+  - defaults `stopServicesAfterRun` to the value of `startServices`;
+  - stops services and purges queues on exit when the runner started the services.
+- Made load-test helper container identity explicit:
+  - `assert-loadtest-environment.sh` now defaults to `eap-rabbitmq-loadtest` and `eap-redis-loadtest`;
+  - `purge-eap-queues.sh` now defaults to `eap-rabbitmq-loadtest`;
+  - the matched-trade runner passes load-test RabbitMQ/Redis container names to assert, purge, metadata, diagnostics, and sampler helpers.
+- Relaxed `OrderConfirmedEvent.createdAt` and `OrderFailedEvent.failedAt` from fixed six-digit fractional formatting to the standard Jackson Java time ISO handling.
+
+Validation:
+
+- Script syntax:
+  - `bash -n scripts/load-test/summarize-runtime-hot-window.sh scripts/load-test/run-order-admission-chain-10k.sh scripts/load-test/run-global-matched-e2e-two-phase.sh scripts/load-test/assert-loadtest-environment.sh scripts/load-test/purge-eap-queues.sh` PASS.
+- `eap-order`:
+  - `./gradlew --no-daemon testClasses` PASS.
+- RabbitMQ purge:
+  - all measured load-test queues were confirmed at ready/unacked `0`.
+- 500-event smoke:
+  - run `GLT_20260730_TPS151_CLEAN_QUEUE_SMOKE_500`;
+  - `capacityInvalidReasons=[]`;
+  - `finalQueueBacklog=0`;
+  - `orderAssetReservationConfirmedRows=500`;
+  - no `Order stream head not found` or timestamp parse errors in the run logs.
+
+Clean 10k light validation:
+
+| Run | Variant | Valid | HTTP accepted TPS | Business orderbook admission TPS | Business convergence TPS | Order market-sequence mean | Order initial append CTE mean | Order command pending peak | Wallet pending peak | Match queue peak | Final backlog |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_20260730_TPS151_CLEAN_QUEUE_LIGHT_10K_R1` | default sequence block `1` | PASS | `1192.81/s` | `1057.02/s` | `1056.74/s` | `23.584ms` | `14.668ms` | `48` | `3` | `2086` | `0` |
+| `GLT_20260730_TPS151_CLEAN_QUEUE_SEQBLOCK1000_LIGHT_10K_R1` | sequence block `1000` | PASS | `1281.68/s` | `1088.30/s` | `1087.71/s` | `0.523ms` | `13.041ms` | `91` | `11` | `2182` | `0` |
+
+Findings:
+
+- The prior invalid run was not a legitimate TPS result; it was a stale queue contamination case.
+- The cleanup fix restored correctness:
+  - Order confirmed rows reached the expected event count;
+  - MatchEngine admitted all orders into the orderbook;
+  - final measured queues drained;
+  - DLQ remained empty.
+- Sequence block allocation still works as a cost reducer:
+  - market-sequence cost dropped from `23.584ms` to `0.523ms` in the clean A/B.
+- Sequence block did not materially raise whole-chain throughput in this single A/B:
+  - business orderbook admission moved only from `1057.02/s` to `1088.30/s`.
+- The hot-window summary points back to the same practical ceiling:
+  - Order command datasource can still hit pending wait under a 10k burst;
+  - Wallet and MatchEngine are active at the same time;
+  - system CPU reached near saturation during the local run;
+  - the remaining issue is overlapping durable-write and relay pressure, not one isolated Redis `INCR`.
+
+Decision:
+
+- Keep sequence block allocation as an explicit experiment, not a production default, until multi-pod ordering semantics are settled.
+- Use the new hot-window summary for every future diagnostic run before making another service-level tuning decision.
+- Treat future Order admission comparisons as valid only when:
+  - the runner starts from queues at ready/unacked `0`;
+  - `capacityInvalidReasons=[]`;
+  - final queue backlog is `0`;
+  - diagnostics record the actual load-test container names.

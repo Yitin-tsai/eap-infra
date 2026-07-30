@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RABBIT_CONTAINER="${RABBIT_CONTAINER:-eap-rabbitmq}"
+RABBIT_CONTAINER="${RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
 
 if ! docker exec "${RABBIT_CONTAINER}" rabbitmqctl -q list_queues name >/dev/null; then
   echo "[ERROR] unable to query RabbitMQ queues from ${RABBIT_CONTAINER}" >&2
