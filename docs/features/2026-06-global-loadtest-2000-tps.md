@@ -13314,3 +13314,65 @@ Decision:
   - Order initial append transaction envelope;
   - Wallet reservation CTE and outbox insert shape;
   - whether OrderConfirmed publication can be made faster without removing transactional-outbox recovery safety.
+
+### 2026-07-30 - TPS-150 Durable write chain ceiling check
+
+Status: measured; isolated SQL ceilings are not the current 10k full-chain limit.
+
+Scope:
+
+1. Inspect Order initial append transaction envelope.
+2. Inspect Wallet reservation CTE plus outbox insert shape.
+3. Test whether `OrderConfirmedEvent` publication can be made faster while preserving transactional-outbox recovery safety.
+
+Changes tried:
+
+- Added a Wallet outbox `batch-confirm-enabled` experiment flag:
+  - production default remains `false`;
+  - load-test default remains `false`;
+  - the flag uses RabbitMQ channel-level batch confirms before marking outbox rows `SENT`;
+  - the Wallet outbox table remains the recovery source, so this does not remove transactional-outbox safety.
+- Briefly tested a split BUY/SELL Wallet reservation CTE locally, then reverted it:
+  - it did not improve the full-chain result;
+  - it increased code branching without proving a durable benefit.
+
+Full order-admission validation runs:
+
+| Run | Variant | Valid | Business order admission TPS | Order append tx mean | Wallet reservation CTE mean | Wallet outbox batch wall | Wallet outbox confirm count | Queue backlog |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_TPS149_CURRENT_PATH_BASELINE_10K` | clean reference | PASS | `1706.22/s` | `9.969ms` | `5.416ms` | `3.364s` | `10000` | `0` |
+| `GLT_20260730_TPS150_WALLET_CTE_BATCH_CONFIRM_BASELINE_10K_R1` | split CTE + Wallet batch confirm | PASS | `1566.79/s` | `16.576ms` | `5.158ms` | `3.435s` | `31` | `0` |
+| `GLT_20260730_TPS150_WALLET_CTE_ONLY_BASELINE_10K_R1` | split CTE only | PASS | `1411.42/s` | `25.364ms` | `5.968ms` | `4.494s` | `10000` | `0` |
+| `GLT_20260730_TPS150_DEFAULT_AFTER_BATCH_CONFIRM_FLAG_10K_R1` | default path after flag added | PASS | `1240.55/s` | `45.699ms` | `9.560ms` | `6.313s` | `10000` | `0` |
+
+Isolated DB ceiling probes:
+
+| Probe | Scope | Events | Workers | Completed | TPS | p50 | p95 | p99 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `orderSubmissionDbCeilingProbe` | Order current-path initial append SQL | `10000` | `35` | `10000` | `7965.07/s` | `2.421ms` | `5.011ms` | `20.754ms` |
+| `walletOrderSubmissionDbCeilingProbe` | Wallet SELL reservation CTE + outbox insert | `10000` | `32` | `10000` | `12150.74/s` | `1.988ms` | `4.569ms` | `9.569ms` |
+
+Findings:
+
+- Order initial append SQL is not intrinsically limited to the observed full-chain `1200-1700/s` range:
+  - isolated current-path append reached `7965.07/s`.
+  - when the full chain is active, `orderSubmissionAppendTransactionTotalMeanMs` can swing from `9.969ms` to `45.699ms`.
+- Wallet reservation CTE plus outbox insert is also not the isolated ceiling:
+  - isolated SELL reservation reached `12150.74/s`.
+  - full-chain `walletOrderSubmittedReservationCteMeanMs` varies materially with relay and system pressure.
+- Wallet batch confirm preserved outbox recovery semantics but did not improve the full chain:
+  - confirm metric count dropped from per-message `10000` to per-batch `31`;
+  - full-chain TPS still regressed versus the clean reference.
+- The current bottleneck is therefore not a single slow SQL statement in isolation.
+  - It is full-chain durable-write coupling: HTTP intake, Order outbox relay, Wallet reservation/outbox relay, Order state application, MatchEngine Redis admission, and local DB/CPU contention all overlap during the same burst.
+
+Decision:
+
+- Keep Wallet batch confirm behind an explicit opt-in flag for future RabbitMQ confirm experiments.
+- Do not enable Wallet batch confirm as a default.
+- Do not keep the split Wallet reservation CTE.
+- Next investigation should compare the full-chain result against isolated DB ceilings by sampling:
+  - PostgreSQL active/wait events during the hot window;
+  - Hikari active/pending for Order command datasource and Wallet datasource;
+  - per-process CPU during Order outbox relay and Wallet outbox relay;
+  - whether load-test infrastructure needs a cold restart before repeatable local baselines.
