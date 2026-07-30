@@ -13273,3 +13273,44 @@ Decision:
   - response timestamp;
   - sender-side queueing;
   - server accepted/rejected outcome.
+
+### 2026-07-30 - TPS-149 Order admission relay A/B follow-up
+
+Status: measured; sequence block and Wallet outbox relay tuning rejected as primary TPS fixes.
+
+Clean current-path reference:
+
+| Run | Variant | Valid | HTTP accepted TPS | Business orderbook admission TPS | Business order admission TPS | Order append tx mean | Market sequence mean | Wallet outbox batch wall | Wallet outbox batches | Queue backlog |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_TPS149_CURRENT_PATH_BASELINE_10K` | baseline, no diagnostics | PASS | `1817.86/s` | `1714.24/s` | `1706.22/s` | `9.969ms` | `4.711ms` | `3.364s` | `28` | `0` |
+| `GLT_20260730_CURRENT_PATH_SEQBLOCK1000_BASELINE_10K_R1` | market sequence block `1000` | PASS | `1681.35/s` | `1595.02/s` | `1590.19/s` | `14.897ms` | `0.316ms` | `3.364s` | `28` | `0` |
+| `GLT_20260730_WALLET_OUTBOX_ASYNC_RELAY_BASELINE_10K_R1` | Wallet async relay enabled | PASS | `1469.73/s` | `1422.95/s` | `1300.24/s` | `25.269ms` | `16.677ms` | `13.455s` | `115` | `0` |
+| `GLT_20260730_WALLET_OUTBOX_BATCH1000_BASELINE_10K_R1` | Wallet outbox batch `1000` | PASS | `1501.03/s` | `1329.53/s` | `1329.07/s` | `35.852ms` | `11.437ms` | `4.325s` | `20` | `0` |
+| `GLT_20260730_WALLET_OUTBOX_BATCH250_BASELINE_10K_R1` | Wallet outbox batch `250` | PASS | `1575.37/s` | `1506.64/s` | `1366.40/s` | `17.339ms` | `13.520ms` | `4.926s` | `46` | `0` |
+
+Findings:
+
+- Market sequence block allocation worked locally:
+  - `orderSubmissionMarketSequenceMeanMs` improved from `4.711ms` to `0.316ms`.
+  - The full chain still regressed, so Redis sequence allocation is not the current primary bottleneck.
+- Wallet async relay regressed heavily:
+  - it adds `PENDING -> IN_FLIGHT -> SENT` writes;
+  - it fragmented the 10k publication into `115` batches;
+  - it increased the final queue-drain tail to `0.66s`.
+- Wallet outbox batch-size-only tuning did not improve the chain:
+  - batch `1000` reduced batch count but increased single-batch wall time;
+  - batch `250` reduced per-batch wall time but increased batch count;
+  - default `500` remains the best measured setting in this local 10k profile.
+- `walletOutboxPublishMeanMs` is not an additive per-row DB cost:
+  - it records each row's duration from enqueue to the end of its confirmed batch;
+  - use `walletOutboxBatchSumSeconds`, `walletOutboxBatchCount`, reached seconds, and queue-drain tail to reason about relay wall cost.
+
+Decision:
+
+- Keep sequence-block allocation as an optional experiment only until repeated no-diagnostics runs prove a net gain.
+- Do not enable the current Wallet async relay mode for the order-admission baseline.
+- Do not change Wallet outbox batch size from `500` based on the 250/1000 A/B.
+- Next optimization should inspect the current durable write chain instead of tuning relay knobs:
+  - Order initial append transaction envelope;
+  - Wallet reservation CTE and outbox insert shape;
+  - whether OrderConfirmed publication can be made faster without removing transactional-outbox recovery safety.
