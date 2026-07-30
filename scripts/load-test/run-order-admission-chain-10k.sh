@@ -8,19 +8,30 @@ DURATION_SECONDS="${DURATION_SECONDS:-5}"
 EVENTS="${EVENTS:-10000}"
 USERS="${USERS:-500}"
 WORKERS="${WORKERS:-128}"
+MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-$((WORKERS * 2))}"
 SIDE="${SIDE:-SELL}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
 RUN_ID="${RUN_ID:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_10K}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 START_SERVICES="${START_SERVICES:-true}"
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
+ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS="${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS:-1}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-false}"
 ASSERT_LOADTEST_ENVIRONMENT="${ASSERT_LOADTEST_ENVIRONMENT:-true}"
 LOADTEST_RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
 LOADTEST_REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER:-eap-redis-loadtest}"
 ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED:-false}"
 ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE:-35}"
-ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE:-10}"
+ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE:-${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}}"
+ORDER_ADMISSION_SUBMISSION_WRITE_MODE="${ORDER_ADMISSION_SUBMISSION_WRITE_MODE:-current_order_path}"
+ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED:-false}"
+ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_BATCH_SIZE="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_BATCH_SIZE:-500}"
+ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_MAX_BATCHES_PER_TICK="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_MAX_BATCHES_PER_TICK:-4}"
+ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_POLL_INTERVAL_MS="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_POLL_INTERVAL_MS:-25}"
+ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED:-false}"
+ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_BATCH_SIZE="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_BATCH_SIZE:-500}"
+ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_POLL_INTERVAL_MS="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_POLL_INTERVAL_MS:-25}"
+ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_CONFIRM_TIMEOUT_MS="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_CONFIRM_TIMEOUT_MS:-5000}"
 ORDER_ADMISSION_ORDER_OUTBOX_BATCH_SIZE="${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_SIZE:-500}"
 ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY="${ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY:-1}"
 ORDER_ADMISSION_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED="${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED:-true}"
@@ -63,6 +74,9 @@ Profiles:
   --profile rate-limit-off-10k 10k attribution run with Order API rate limit disabled.
   --profile market-sequence-block1000-10k
                               10k attribution run with in-memory market sequence blocks.
+  --profile event-store-intake-10k
+                              10k experimental run with synchronous event_store intake
+                              and checkpoint relay publication.
 
 Common options:
   --run-id VALUE
@@ -71,9 +85,12 @@ Common options:
   --events VALUE
   --users VALUE
   --workers VALUE
+  --max-in-flight VALUE
   --side VALUE
   --wait-timeout-seconds VALUE
   --diagnostics-level VALUE    none, baseline, light, deep
+  --diagnostic-sample-interval-seconds VALUE
+                              Runtime sampler interval. Defaults to 1 for order-admission runs.
   --reset-pg-stats             Reset pg_stat_statements before the run.
   --no-reset-pg-stats
   --assert-loadtest-environment VALUE true or false
@@ -87,6 +104,9 @@ Common options:
   --rate-limit-enabled VALUE   true or false
   --rate-limit-backend VALUE   local or redis
   --market-sequence-allocation-block-size VALUE
+  --submission-write-mode VALUE current_order_path or event_store_intake
+  --submission-head-projector-enabled VALUE true or false
+  --submission-event-store-relay-enabled VALUE true or false
   --redis-share-native-connection VALUE true or false
   --redis-lettuce-pool-enabled VALUE true or false
   --redis-lettuce-pool-max-active VALUE
@@ -208,6 +228,20 @@ apply_profile() {
       ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE=1000
       BENCHMARK_PROFILE="${profile}"
       ;;
+    event-store-intake-10k|order-admission-event-store-intake-10k)
+      TARGET_TPS=2000
+      DURATION_SECONDS=5
+      EVENTS=10000
+      USERS=500
+      WORKERS=128
+      WAIT_TIMEOUT_SECONDS=300
+      DIAGNOSTICS_LEVEL=light
+      RESET_PG_STATS_BEFORE_RUN=false
+      ORDER_ADMISSION_SUBMISSION_WRITE_MODE=event_store_intake
+      ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED=true
+      ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED=true
+      BENCHMARK_PROFILE="${profile}"
+      ;;
     *)
       echo "[ERROR] unsupported profile=${profile}" >&2
       usage >&2
@@ -253,6 +287,11 @@ while [[ $# -gt 0 ]]; do
       WORKERS="$2"
       shift 2
       ;;
+    --max-in-flight)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --max-in-flight requires a value" >&2; exit 2; }
+      MAX_IN_FLIGHT="$2"
+      shift 2
+      ;;
     --side)
       [[ $# -ge 2 ]] || { echo "[ERROR] --side requires a value" >&2; exit 2; }
       SIDE="$2"
@@ -266,6 +305,11 @@ while [[ $# -gt 0 ]]; do
     --diagnostics-level)
       [[ $# -ge 2 ]] || { echo "[ERROR] --diagnostics-level requires a value" >&2; exit 2; }
       DIAGNOSTICS_LEVEL="$2"
+      shift 2
+      ;;
+    --diagnostic-sample-interval-seconds)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --diagnostic-sample-interval-seconds requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS="$2"
       shift 2
       ;;
     --reset-pg-stats)
@@ -329,6 +373,21 @@ while [[ $# -gt 0 ]]; do
     --market-sequence-allocation-block-size)
       [[ $# -ge 2 ]] || { echo "[ERROR] --market-sequence-allocation-block-size requires a value" >&2; exit 2; }
       ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE="$2"
+      shift 2
+      ;;
+    --submission-write-mode)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --submission-write-mode requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_SUBMISSION_WRITE_MODE="$2"
+      shift 2
+      ;;
+    --submission-head-projector-enabled)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --submission-head-projector-enabled requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED="$2"
+      shift 2
+      ;;
+    --submission-event-store-relay-enabled)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --submission-event-store-relay-enabled requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED="$2"
       shift 2
       ;;
     --redis-share-native-connection)
@@ -408,6 +467,7 @@ start_diagnostic_sampler() {
   mkdir -p "${RUN_DIAG_DIR}"
   rm -f "${RUN_DIAG_DIR}/sampler.stop" 2>/dev/null || true
   DIAG_DIR="${RUN_DIAG_DIR}" MARKET_ID="${MARKET_ID}" DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL}" \
+    DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS="${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS}" \
     RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
     bash "${ROOT_DIR}/scripts/load-test/collect-loadtest-diagnostics.sh" sample &
   DIAG_SAMPLER_PID="$!"
@@ -446,6 +506,15 @@ if [[ "${START_SERVICES}" == "true" ]]; then
   EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}" \
     EAP_ORDER_COMMAND_POOL_SIZE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}" \
     EAP_ORDER_COMMAND_POOL_MIN_IDLE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE}" \
+    EAP_ORDER_SUBMISSION_WRITE_MODE="${ORDER_ADMISSION_SUBMISSION_WRITE_MODE}" \
+    EAP_ORDER_SUBMISSION_HEAD_PROJECTOR_ENABLED="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED}" \
+    EAP_ORDER_SUBMISSION_HEAD_PROJECTOR_BATCH_SIZE="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_BATCH_SIZE}" \
+    EAP_ORDER_SUBMISSION_HEAD_PROJECTOR_MAX_BATCHES_PER_TICK="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_MAX_BATCHES_PER_TICK}" \
+    EAP_ORDER_SUBMISSION_HEAD_PROJECTOR_POLL_INTERVAL_MS="${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_POLL_INTERVAL_MS}" \
+    EAP_ORDER_SUBMISSION_EVENT_STORE_RELAY_ENABLED="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED}" \
+    EAP_ORDER_SUBMISSION_EVENT_STORE_RELAY_BATCH_SIZE="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_BATCH_SIZE}" \
+    EAP_ORDER_SUBMISSION_EVENT_STORE_RELAY_POLL_INTERVAL_MS="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_POLL_INTERVAL_MS}" \
+    EAP_ORDER_SUBMISSION_EVENT_STORE_RELAY_CONFIRM_TIMEOUT_MS="${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_CONFIRM_TIMEOUT_MS}" \
     EAP_ORDER_OUTBOX_BATCH_SIZE="${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_SIZE}" \
     EAP_ORDER_OUTBOX_PUBLISH_CONCURRENCY="${ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY}" \
     EAP_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED="${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED}" \
@@ -474,9 +543,12 @@ mkdir -p "${GRADLE_USER_HOME_DIR}" "${REPORT_DIR}"
 echo "[INFO] Order admission chain benchmark"
 echo "[INFO] profile=${BENCHMARK_PROFILE}"
 echo "[INFO] runId=${RUN_ID}"
-echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, users=${USERS}, workers=${WORKERS}, side=${SIDE}"
+echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, users=${USERS}, workers=${WORKERS}, maxInFlight=${MAX_IN_FLIGHT}, side=${SIDE}"
 echo "[INFO] matchUserOpenOrderIndexEnabled=${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}"
 echo "[INFO] orderCommandPoolSize=${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}, orderCommandPoolMinIdle=${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE}"
+echo "[INFO] orderSubmissionWriteMode=${ORDER_ADMISSION_SUBMISSION_WRITE_MODE}, orderSubmissionHeadProjectorEnabled=${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED}, orderSubmissionEventStoreRelayEnabled=${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED}"
+echo "[INFO] orderSubmissionHeadProjectorBatchSize=${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_BATCH_SIZE}, orderSubmissionHeadProjectorMaxBatchesPerTick=${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_MAX_BATCHES_PER_TICK}, orderSubmissionHeadProjectorPollIntervalMs=${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_POLL_INTERVAL_MS}"
+echo "[INFO] orderSubmissionEventStoreRelayBatchSize=${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_BATCH_SIZE}, orderSubmissionEventStoreRelayPollIntervalMs=${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_POLL_INTERVAL_MS}, orderSubmissionEventStoreRelayConfirmTimeoutMs=${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_CONFIRM_TIMEOUT_MS}"
 echo "[INFO] orderOutboxBatchSize=${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_SIZE}, orderOutboxPublishConcurrency=${ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY}, orderOutboxBatchConfirmEnabled=${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED}, orderOutboxAsyncRelayEnabled=${ORDER_ADMISSION_ORDER_OUTBOX_ASYNC_RELAY_ENABLED}"
 echo "[INFO] rateLimitEnabled=${ORDER_ADMISSION_RATE_LIMIT_ENABLED}, rateLimitBackend=${ORDER_ADMISSION_RATE_LIMIT_BACKEND}, marketSequenceAllocationBlockSize=${ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE}"
 echo "[INFO] redisShareNativeConnection=${ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION}, redisLettucePoolEnabled=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED}, redisLettucePoolMaxActive=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE}, redisLettucePoolMaxIdle=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE}, redisLettucePoolMinIdle=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE}, redisLettucePoolMaxWait=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT}"
@@ -484,6 +556,7 @@ echo "[INFO] orderAssetReservationConfirmedCollectorCount=${ORDER_ADMISSION_ASSE
 echo "[INFO] walletOutboxAsyncRelayEnabled=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED}, walletOutboxAsyncMaxInFlightBatches=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES}"
 echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
+echo "[INFO] diagnosticSampleIntervalSeconds=${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS}"
 echo "[INFO] resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
 echo "[INFO] assertLoadtestEnvironment=${ASSERT_LOADTEST_ENVIRONMENT}, loadtestRabbitContainer=${LOADTEST_RABBIT_CONTAINER}, loadtestRedisContainer=${LOADTEST_REDIS_CONTAINER}"
 echo "[INFO] runReportLog=${RUN_REPORT_LOG}"
@@ -508,6 +581,10 @@ GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTe
   --duration-seconds ${DURATION_SECONDS} \
   --users ${USERS} \
   --workers ${WORKERS} \
+  --max-in-flight ${MAX_IN_FLIGHT} \
+  --order-submission-write-mode ${ORDER_ADMISSION_SUBMISSION_WRITE_MODE} \
+  --order-submission-head-projector-enabled ${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED} \
+  --order-submission-event-store-relay-enabled ${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED} \
   --wait-timeout-seconds ${WAIT_TIMEOUT_SECONDS} \
   --flush-redis-on-reset ${FLUSH_REDIS_ON_RESET} \
   --order-admission-gate true" | tee "${RUN_REPORT_LOG}"

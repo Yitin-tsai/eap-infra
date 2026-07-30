@@ -12782,3 +12782,494 @@ Decision:
 - Keep the change because it removes a derived pending command-state write from the synchronous admission path and better matches the current state ownership model.
 - Do not claim this as the main TPS fix.
 - Continue investigating `transaction_before_callback` / connection acquisition and relay-confirm wall time as the active ceiling.
+
+### 2026-07-29 - TPS-145 Order request phase breakdown and 2000 TPS blocker attribution
+
+Status: implemented as measurement; bottleneck identified for the Order API admission chain.
+
+Problem:
+
+- The order-admission chain was still below the 2000 TPS target after removing the hot Redis rate-limit call and the pending `order_matching_state` write.
+- The existing output could show `orderSubmissionEventStoreRequestMeanMs`, but it could not cleanly answer whether a request was slow because of:
+  - controller/response building;
+  - rate-limit aspect/key extraction;
+  - backpressure check;
+  - Redis market sequence allocation;
+  - durable event-store append;
+  - DB connection/transaction wait;
+  - SQL CTE body.
+
+Change:
+
+- Added finer Order request phase metrics:
+  - `controller_buy_total`;
+  - `controller_sell_total`;
+  - `controller_after_service`;
+  - `pre_event_store`;
+  - `rate_limit_aspect`;
+  - `rate_limit_key_extraction`.
+- Extended `OrderHttpLoadGenerator` output with:
+  - mean and max timing for request phases;
+  - `OrderCommandPool` connection acquire/usage max timing;
+  - derived mean gaps:
+    - `orderSubmissionServiceUnattributedMeanMs`;
+    - `orderSubmissionPreEventStoreUnattributedMeanMs`;
+    - `orderSubmissionEventStoreEnvelopeGapMeanMs`;
+    - `orderSubmissionAppendTransactionUnattributedMeanMs`;
+    - `orderSubmissionAppendDbPoolGapMeanMs`.
+- Extended `run-order-admission-repeat.sh` so repeat summaries include HTTP p95/p99 and key mean/max phase metrics.
+
+Validation:
+
+- `eap-order`: `./gradlew --no-daemon testClasses` PASS.
+- Root script syntax: `bash -n scripts/load-test/run-order-admission-repeat.sh` PASS.
+- `order-admission-chain` 10k light run with `marketSequenceAllocationBlockSize=1000`:
+  - run `GLT_20260729_ORDER_ADMISSION_REQUEST_PHASES_MAX2_SEQBLOCK1000_LIGHT_10K_R1`;
+  - correctness PASS;
+  - `finalQueueBacklog=0`;
+  - `queueMetricsReadFailures=0`;
+  - `capacityInvalidReasons=[]`.
+
+Key result:
+
+| Metric | Value |
+| --- | ---: |
+| `httpAcceptedTps` | `1429.87/s` |
+| `httpAcceptedP95Ms` | `144.81ms` |
+| `httpAcceptedP99Ms` | `206.98ms` |
+| `businessOrderbookAdmissionTps` | `1264.32/s` |
+| `businessOrderAdmissionConvergenceTps` | `1263.79/s` |
+| `orderSubmissionControllerSellTotalMeanMs` | `36.121ms` |
+| `orderSubmissionControllerAfterServiceMeanMs` | `0.009ms` |
+| `orderSubmissionPreEventStoreMeanMs` | `0.779ms` |
+| `orderSubmissionRateLimitAspectMeanMs` | `0.131ms` |
+| `orderSubmissionRateLimitCheckMeanMs` | `0.005ms` |
+| `orderSubmissionMarketSequenceMeanMs` | `0.349ms` |
+| `orderSubmissionEventStoreRequestMeanMs` | `35.330ms` |
+| `orderSubmissionEventStoreRequestMaxMs` | `261.603ms` |
+| `orderSubmissionAppendTransactionTotalMeanMs` | `35.294ms` |
+| `orderSubmissionAppendTransactionBeforeCallbackMeanMs` | `20.022ms` |
+| `orderSubmissionAppendTransactionBeforeCallbackMaxMs` | `231.539ms` |
+| `orderCommandConnectionAcquireMeanMs` | `19.992ms` |
+| `orderCommandConnectionAcquireMaxMs` | `232.000ms` |
+| `orderSubmissionAppendInitialAppendCteMeanMs` | `8.292ms` |
+| `orderSubmissionAppendTransactionAfterBodyMeanMs` | `6.886ms` |
+| `walletOrderSubmittedTransactionMeanMs` | `15.060ms` |
+| `walletOrderSubmittedReservationCteMeanMs` | `7.155ms` |
+| `matchEngineReserveRedisEvalMeanMs` | `6.906ms` |
+
+A/B note:
+
+- Earlier same-day run without sequence block:
+  - `orderSubmissionMarketSequenceMeanMs=12.299ms`;
+  - `businessOrderbookAdmissionTps=1263.55/s`.
+- With `marketSequenceAllocationBlockSize=1000`:
+  - `orderSubmissionMarketSequenceMeanMs` dropped to `0.349-0.561ms`;
+  - business admission remained around `1197-1264/s`.
+- Therefore Redis market-sequence allocation is a valid cleanup, but it is not the main 2000 TPS blocker.
+
+Finding:
+
+- The HTTP controller is not the bottleneck:
+  - `controller_after_service` is effectively zero after the service returns.
+- The local rate-limit redesign is holding:
+  - actual rate-limit check is around `0.005ms`;
+  - aspect/key extraction is below `0.2ms` in representative runs.
+- The slow boundary is the synchronous Order durable accept path:
+  - `event_store_request` nearly equals `append transaction total`;
+  - `transaction_before_callback` nearly equals `OrderCommandPool` connection acquire;
+  - the actual initial append CTE is around `8ms`, while waiting to enter the DB transaction is around `20ms` and can spike above `230ms`.
+- This explains why request latency rises even though the Java controller itself is cheap: the API currently returns only after the initial event-store row and outbox row are committed.
+
+Decision:
+
+- Do not chase controller or rate-limit work for the current 2000 TPS blocker.
+- Keep sequence block allocation as a useful cleanup, but do not treat it as the primary throughput fix.
+- Treat the current blocker as the Order API durable-accept boundary plus full-chain DB/relay pressure.
+
+Next options:
+
+1. If the public API contract remains "accepted means persisted in Order event-store and outbox":
+   - focus on reducing transaction occupancy and fixed durable writes;
+   - compare DB wait under longer, smoother offered-load windows instead of only 10k burst;
+   - inspect PostgreSQL connection wait, CPU, WAL, and commit behavior under the same run.
+2. If the public API contract can change to "accepted means broker-confirmed command intake":
+   - introduce a separate front-door command queue with publisher confirms;
+   - report `publicApiAcceptedTps` separately from `orderDurableAcceptedTps`;
+   - keep durable Order append and wallet/match convergence as downstream correctness gates.
+3. For the next implementation ticket, add a DB-side attribution snapshot during the hot window:
+   - sampled Hikari active/pending during the run, not only after the run;
+   - PostgreSQL active sessions and wait events;
+   - command-pool acquire/usage max and HTTP p95/p99 in repeat summaries.
+
+### 2026-07-29 - TPS-146 Order initial append raw JDBC candidate
+
+Status: rejected and reverted.
+
+Context:
+
+- The accepted API contract remains minimal but durable:
+  - the HTTP request returns only after Order DB stores the submission event and integration outbox row;
+  - Wallet reservation, Order asset-confirmed state, and MatchEngine orderbook admission stay asynchronous.
+- TPS-145 showed the API path is dominated by the synchronous durable accept boundary, but the actual initial append CTE was only about `8ms`.
+
+Candidate:
+
+- Replaced the initial submission fast path implementation from `NamedParameterJdbcTemplate` + `MapSqlParameterSource` to transaction-bound `PreparedStatement`.
+- Kept the same transaction and the same required writes:
+  - `order_stream_heads`;
+  - `order_event_store`;
+  - `order_event_outbox`.
+
+Validation:
+
+- `eap-order`: `./gradlew --no-daemon testClasses` PASS.
+- Focused integration test:
+  - `./gradlew --no-daemon test --tests com.eap.eap_order.eventstore.OrderEventAppenderPostgresIT` PASS.
+- 10k order-admission run:
+  - `GLT_20260729_ORDER_ADMISSION_RAW_JDBC_INITIAL_APPEND_SEQBLOCK1000_LIGHT_10K_R1`;
+  - correctness PASS;
+  - final queue backlog `0`;
+  - `capacityInvalidReasons=[]`.
+
+Result:
+
+| Metric | TPS-145 baseline | Raw JDBC candidate |
+| --- | ---: | ---: |
+| `httpAcceptedTps` | `1429.87/s` | `1231.67/s` |
+| `businessOrderbookAdmissionTps` | `1264.32/s` | `1173.68/s` |
+| `businessOrderAdmissionConvergenceTps` | `1263.79/s` | `1082.56/s` |
+| `orderSubmissionEventStoreRequestMeanMs` | `35.330ms` | `48.744ms` |
+| `orderCommandConnectionAcquireMeanMs` | `19.992ms` | `32.865ms` |
+| `orderSubmissionAppendInitialAppendCteMeanMs` | `8.292ms` | `8.305ms` |
+| `walletOrderSubmittedTransactionMeanMs` | `15.060ms` | `17.367ms` |
+| `matchEngineReserveRedisEvalMeanMs` | `6.906ms` | `7.708ms` |
+
+Decision:
+
+- Reject the raw JDBC candidate.
+- It did not reduce the actual CTE cost and worsened whole-chain throughput in the observed run.
+- Keep the more maintainable `NamedParameterJdbcTemplate` implementation.
+- The result reinforces TPS-145: the blocker is not Java parameter binding inside the CTE call; it is the full-chain DB/relay envelope around the durable accept boundary.
+
+Next action:
+
+- Keep optimizing the accepted boundary by reducing required durable facts or isolating hot-window DB pressure, not by replacing Spring JDBC call style.
+- Add hot-window DB attribution before another code change:
+  - Hikari active/pending samples during the 5-10 second burst;
+  - PostgreSQL `pg_stat_activity.wait_event_type/wait_event`;
+  - WAL/checkpoint/IO counters if available in the local PostgreSQL image.
+
+### 2026-07-29 - TPS-147 Order admission hot-path cleanup: DB pool prewarm and RateLimit extractor cache
+
+Status: implemented and validated.
+
+Context:
+
+- TPS-145 showed the public Order API admission chain is dominated by the minimal durable accept boundary:
+  - write command-side stream head state in `order_stream_heads`;
+  - append the source event in `order_event_store`;
+  - write the reliable publication record in `order_event_outbox`;
+  - return after the local Order DB transaction commits.
+- This is no longer the older four-write model:
+  - TPS-144 removed the synchronous `order_matching_state(PENDING_ASSET_CHECK)` write from the initial submission path;
+  - `order_matching_state(OPEN)` is created later by the asset-confirmed apply path.
+- A hot-window diagnostics run showed `OrderCommandPool` reaching:
+  - `active=35`;
+  - `pending=63-99`;
+  - while the loadtest profile still used `minimum-idle=10`.
+- This means part of the first burst was paying connection warm-up cost even though the benchmark advertised a 35-connection command pool.
+- Another baseline run showed `rate_limit_key_extraction` at `1.247ms` mean, caused by per-request SpEL parsing / parameter-name lookup / evaluation-context creation in `RateLimitAspect`.
+
+Change:
+
+- Updated the Order loadtest profile so `OrderCommandPool minimum-idle` defaults to `maximum-pool-size`.
+  - Default is now `EAP_ORDER_COMMAND_POOL_MIN_IDLE=${EAP_ORDER_COMMAND_POOL_SIZE}` for load tests.
+  - This keeps the capacity profile warm before the burst rather than building JDBC connections during the request wave.
+- Added a cached `RateLimitAspect` key extractor:
+  - simple expressions such as `#request.bidder`, `#request.seller`, and `#request.userId` use cached getter reflection;
+  - complex expressions still fall back to cached parsed SpEL expression;
+  - rate-limit semantics are unchanged.
+
+Validation:
+
+- Root script syntax:
+  - `bash -n scripts/load-test/start-loadtest-services.sh` PASS.
+  - `bash -n scripts/load-test/run-order-admission-chain-10k.sh` PASS.
+- `eap-order`:
+  - `./gradlew --no-daemon testClasses` PASS.
+- 10k baseline after pool prewarm only:
+  - run `GLT_20260729_ORDER_ADMISSION_POOL_PREWARM_SEQBLOCK1000_BASELINE_10K_R1`;
+  - correctness PASS;
+  - `capacityInvalidReasons=[]`;
+  - `finalQueueBacklog=0`.
+- 10k baseline after pool prewarm plus RateLimit extractor cache:
+  - run `GLT_20260729_ORDER_ADMISSION_RATELIMIT_CACHE_POOL_PREWARM_SEQBLOCK1000_BASELINE_10K_R1`;
+  - correctness PASS;
+  - `capacityInvalidReasons=[]`;
+  - `finalQueueBacklog=0`.
+
+Result:
+
+| Metric | TPS-145 light baseline | Pool prewarm only | Pool prewarm + RateLimit cache |
+| --- | ---: | ---: | ---: |
+| `httpAcceptedTps` | `1429.87/s` | `1454.50/s` | `1448.24/s` |
+| `businessOrderbookAdmissionTps` | `1264.32/s` | `1406.54/s` | `1388.59/s` |
+| `businessOrderAdmissionConvergenceTps` | `1263.79/s` | `1404.96/s` | `1386.62/s` |
+| `httpAcceptedP95Ms` | `144.81ms` | `150.04ms` | `139.38ms` |
+| `httpAcceptedP99Ms` | `206.98ms` | `279.23ms` | `255.73ms` |
+| `orderCommandConnectionAcquireMeanMs` | `19.992ms` | `17.112ms` | `11.166ms` |
+| `orderSubmissionEventStoreRequestMeanMs` | `35.330ms` | `32.018ms` | `25.112ms` |
+| `orderSubmissionAppendTransactionTotalMeanMs` | `35.294ms` | `31.980ms` | `25.083ms` |
+| `orderSubmissionAppendTransactionBeforeCallbackMeanMs` | `20.022ms` | `17.140ms` | `11.207ms` |
+| `orderSubmissionAppendInitialAppendCteMeanMs` | `8.292ms` | `8.042ms` | `7.506ms` |
+| `orderSubmissionRateLimitKeyExtractionMeanMs` | `0.131ms` | `1.247ms` | `0.039ms` |
+
+Finding:
+
+- Pool prewarm reduced DB connection acquisition pressure and improved orderbook admission throughput versus the sampled TPS-145 light baseline.
+- RateLimit extractor cache removed a real Java hot-path cost:
+  - `rate_limit_key_extraction` dropped from `1.247ms` to `0.039ms` in the controlled baseline comparison.
+- The remaining accepted-boundary cost is still DB transaction occupancy:
+  - even after cleanup, `event_store_request` is about `25ms`;
+  - the required initial append CTE is about `7.5ms`;
+  - transaction entry and commit/envelope still account for the larger share.
+
+Decision:
+
+- Keep both changes.
+- Treat them as hygiene and measurable hot-path cleanup, not as the full 2000 TPS fix.
+- Continue by reducing the durable accept transaction cost and by making the load generator's pressure model explicit.
+
+### 2026-07-29 - TPS-149 Order API single-durable-intake architecture candidate
+
+Status: prototype implemented and measured; not accepted as the production default yet.
+
+Context:
+
+- The current Order API contract is still intentionally stronger than a pure message intake:
+  - HTTP success means the Order DB transaction committed;
+  - the transaction stores enough state to keep Order event sourcing, command-state validation, and transactional outbox publication consistent.
+- After TPS-144, the initial submission path no longer writes pending `order_matching_state`, but it still writes:
+  - `order_stream_heads`;
+  - `order_event_store`;
+  - `order_event_outbox`.
+- This differs from the later trade-application hot path, where derived event-store style writes were reduced and the business gate relies on cheaper command-side durable facts.
+
+Candidate:
+
+- Change Order submission into a single durable intake append:
+  - synchronously write only an append-only `OrderSubmissionRequested` durable fact;
+  - make command-state head creation / update a projector;
+  - make publication a checkpoint relay over the append-only event log instead of an outbox row inserted inside the API transaction.
+
+Potential benefit:
+
+- The API accepted boundary could shrink from three durable writes to one durable append.
+- This would align the Order entry path with the current principle that derived state should not be maintained synchronously unless it is required for the immediate business decision.
+
+Architecture risks:
+
+- `order_event_store` currently has a foreign key to `order_stream_heads`, so event append cannot become independent without schema changes.
+- `order_stream_heads` currently carries command-side state used by later cancel, asset confirmation, and event-version checks.
+- Removing synchronous `order_event_outbox` means the relay must become a checkpoint-based publisher with its own exactly-once-enough publication tracking, retry, and reconciliation.
+- API success semantics would need a new name:
+  - `orderDurableIntakeAccepted`;
+  - not `orderCommandStateAccepted`;
+  - not `orderPublishedToWallet`.
+- Immediate cancel after submit must define behavior while command-state projection is not caught up:
+  - read the append log directly;
+  - or return retryable `409/202 state not materialized`;
+  - or keep a minimal head row.
+
+Decision:
+
+- Do not silently change this inside a TPS tuning patch.
+- Open this as the next architecture/performance ticket because it changes the source-of-truth boundary and recovery model.
+- First A/B should be an isolated SQL/load-test prototype, not a full production path rewrite.
+
+Acceptance criteria for the next ticket:
+
+1. Define the new API success contract precisely.
+2. Prototype the single-durable-intake schema without breaking idempotency.
+3. Measure isolated write throughput:
+   - current `head + event + outbox`;
+   - `event only`;
+   - `event + minimal head`;
+   - `event + checkpoint relay`.
+4. Prove recovery:
+   - replay projector builds `order_stream_heads`;
+   - checkpoint relay republishes missed `OrderSubmittedEvent`;
+   - duplicate relay publication is absorbed by Wallet idempotency.
+5. Run 10k order-admission chain and compare:
+   - `httpAcceptedTps`;
+   - `orderDurableIntakeTps`;
+   - `walletOrderSubmissionClaimRows`;
+   - `businessOrderbookAdmissionTps`;
+   - final queue drain and DLQ.
+
+Initial isolated DB probe:
+
+- Extended `OrderSubmissionDbCeilingProbe` with three write paths:
+  - `current_order_path`: current initial submission write model, aligned with TPS-144 after removing the old pending `order_matching_state` write;
+  - `event_store_only`: append a rich append-only event row without `order_stream_heads` FK or synchronous outbox;
+  - `intake_log_only`: append a typed intake row that can act as the front-door durable fact.
+- Smoke validation:
+  - `100` events / `4` workers PASS for all three paths.
+- 10k isolated DB ceiling, `35` workers, `transaction_per_row`:
+
+| Write path | Completed | Failures | Elapsed | TPS | p50 | p95 | p99 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `current_order_path` | `10000` | `0` | `1.710s` | `5847.13/s` | `3.114ms` | `7.889ms` | `33.362ms` |
+| `event_store_only` | `10000` | `0` | `0.778s` | `12850.62/s` | `2.035ms` | `4.662ms` | `11.938ms` |
+| `intake_log_only` | `10000` | `0` | `1.022s` | `9784.44/s` | `2.289ms` | `5.070ms` | `15.248ms` |
+
+Interpretation:
+
+- `event_store_only` was about `2.2x` faster than the current three-write path in isolated DB terms.
+- `intake_log_only` was also much faster than the current path, but slower than `event_store_only` in this probe because it keeps typed intake columns plus both `command_id` and `order_id` uniqueness.
+- Therefore the first production candidate should be:
+  - reshape Order `event_store` so initial submission can be the single synchronous durable intake fact;
+  - remove the synchronous dependency on `order_stream_heads` for the first append;
+  - replace synchronous `order_event_outbox` insert with checkpoint relay over the append-only event log.
+
+Important caveat:
+
+- This probe measures only DB append cost.
+- It does not yet prove full Order admission chain throughput because production still needs:
+  - checkpoint relay publication with RabbitMQ confirms;
+  - command-state projector catch-up;
+  - Wallet idempotency and reservation;
+  - MatchEngine orderbook admission;
+  - recovery/replay validation.
+
+Prototype implementation:
+
+- Added an experimental Order submission write mode:
+  - `eap.order.submission.write-mode=event_store_intake`;
+  - HTTP success appends only `OrderSubmissionRequestedV1` into `order_service.order_event_store`;
+  - synchronous `order_stream_heads` and `order_event_outbox` writes are skipped for initial submission.
+- Added `OrderSubmissionHeadProjector`:
+  - asynchronously materializes `order_stream_heads` from `OrderSubmissionRequestedV1`;
+  - uses `projection_checkpoints` with projection name `order_submission_stream_heads`.
+- Added `OrderSubmissionEventStoreRelay`:
+  - publishes `OrderSubmittedEvent` from the append-only event log;
+  - advances `order_event_store_relay_checkpoints` only after RabbitMQ publisher confirm.
+- Added `event-store-intake-10k` load-test profile and schema-v2 report fields:
+  - `orderSubmissionWriteMode`;
+  - `orderSubmittedCheckpointPublishedRows`;
+  - `orderSubmittedPublicationRows`;
+  - `orderSubmittedPublicationReachedSeconds`.
+
+Correctness fixes found during prototype:
+
+- `global_position` is a PostgreSQL sequence value, not commit order.
+- A checkpoint scanner that selects only `OrderSubmissionRequestedV1` can skip low-position rows that commit later.
+- A scanner that expects only submission events also stalls once `OrderAssetReservationConfirmedV1` starts occupying the same global event stream.
+- Fix:
+  - projector and relay now scan the full event stream in `global_position` order;
+  - they only apply/publish `OrderSubmissionRequestedV1`;
+  - other event types are checkpointed but not published;
+  - the relay has an in-JVM drain guard to avoid overlapping scheduled drains.
+
+Full order-admission A/B, same codebase and local load-test environment:
+
+| Run | Write mode | Valid | HTTP accepted TPS | Submission append tx mean | Event insert / CTE mean | Publication reached | Business orderbook admission TPS | Queue backlog |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GLT_TPS149_CURRENT_PATH_BASELINE_10K` | `current_order_path` | PASS | `1817.86/s` | `9.969ms` | `3.859ms` CTE | `5.75s` | `1706.22/s` | `0` |
+| `GLT_TPS149_EVENT_STORE_INTAKE_10K_REENTRANT_GUARD` | `event_store_intake` | PASS | `1808.49/s` | `5.051ms` | `2.195ms` insert | `7.07s` | `1406.09/s` | `0` |
+
+Interpretation after full-chain validation:
+
+- The single-durable-intake path does reduce synchronous Order API write cost:
+  - append transaction mean improved from `9.969ms` to `5.051ms`;
+  - event insert/CTE mean improved from `3.859ms` to `2.195ms`.
+- However, it is not a net TPS win in the current full order-admission chain:
+  - publication reached later, `5.75s -> 7.07s`;
+  - business orderbook admission dropped, `1706.22/s -> 1406.09/s`.
+- The current synchronous outbox path remains the better production default for this benchmark.
+- The prototype is still useful because it proved a specific tradeoff:
+  - removing synchronous writes can improve API append latency;
+  - but replacing outbox with a projector plus checkpoint relay can move the cost into async publication and lower end-to-end convergence.
+
+Decision:
+
+- Do not merge `event_store_intake` as the default path.
+- Keep it behind load-test flags for further relay design experiments only.
+- Any future checkpoint relay must first solve:
+  - commit-order safety without relying on gapless sequence semantics;
+  - duplicate-publication control;
+  - lower relay convergence latency than the current outbox relay.
+- Next optimization should return to proven bottlenecks in the current path:
+  - Order market-sequence / pre-event-store cost;
+  - Order current-path append transaction envelope;
+  - Wallet outbox publish/confirm cost.
+
+### 2026-07-29 - TPS-148 Order admission max-in-flight pressure experiment
+
+Status: measured; high in-flight setting rejected as a default.
+
+Problem:
+
+- The order-admission HTTP load generator used a fixed in-flight cap of `workers * 2`.
+- At `workers=128`, this means at most 256 submitted-but-unfinished requests.
+- When p95/p99 latency rises, the sender can block on this cap and stretch a nominal 5-second offered window.
+
+Change:
+
+- Added explicit `--max-in-flight` / `MAX_IN_FLIGHT` support to `OrderHttpLoadGenerator` and `run-order-admission-chain-10k.sh`.
+- Kept the default at the previous conservative behavior: `workers * 2`.
+- This makes pressure experiments explicit without silently changing baseline semantics.
+
+Validation run:
+
+- `GLT_20260729_ORDER_ADMISSION_MAX_IN_FLIGHT1024_RATELIMIT_CACHE_POOL_PREWARM_SEQBLOCK1000_BASELINE_10K_R1`
+- Configuration:
+  - `targetTps=2000`;
+  - `events=10000`;
+  - `workers=128`;
+  - `maxInFlight=1024`;
+  - pool prewarm enabled;
+  - RateLimit extractor cache enabled.
+- Correctness still PASS:
+  - `httpAccepted=10000`;
+  - `finalQueueBacklog=0`;
+  - `queueMetricsReadFailures=0`;
+  - `capacityInvalidReasons=[]`.
+
+Result:
+
+| Metric | Conservative in-flight baseline | `maxInFlight=1024` |
+| --- | ---: | ---: |
+| `httpSendElapsedSeconds` | `6.90s` | `9.22s` |
+| `httpAcceptedTps` | `1448.24/s` | `1084.54/s` |
+| `httpAcceptedP95Ms` | `139.38ms` | `308.16ms` |
+| `httpAcceptedP99Ms` | `255.73ms` | `531.14ms` |
+| `businessOrderbookAdmissionTps` | `1388.59/s` | `944.48/s` |
+| `orderCommandConnectionAcquireMeanMs` | `11.166ms` | `51.657ms` |
+| `orderSubmissionEventStoreRequestMeanMs` | `25.112ms` | `80.066ms` |
+| `orderSubmissionAppendInitialAppendCteMeanMs` | `7.506ms` | `16.043ms` |
+| `walletOrderSubmittedTransactionMeanMs` | `13.478ms` | `27.502ms` |
+| `matchEngineReserveRedisEvalMeanMs` | `5.762ms` | `9.637ms` |
+
+Finding:
+
+- Raising `maxInFlight` to 1024 did not create a better open workload model for this Java HTTP load generator.
+- It over-pressured the local service and database envelope:
+  - request latency increased;
+  - DB connection acquisition wait increased sharply;
+  - downstream wallet and match timings also worsened;
+  - `matchEngine.orderConfirmed.queue` briefly reached `ready=407, unacked=650` before draining.
+- This was useful as a stress experiment, but it should not be the default benchmark profile.
+
+Decision:
+
+- Keep `--max-in-flight` as an explicit experiment knob.
+- Keep the default at `workers * 2` for the current local 10k baseline.
+- Do not use high in-flight results as an optimization target by themselves.
+- For a proper fixed-arrival / open-workload benchmark, implement a dedicated sender model that can report:
+  - attempted request schedule;
+  - actually started request timestamp;
+  - response timestamp;
+  - sender-side queueing;
+  - server accepted/rejected outcome.

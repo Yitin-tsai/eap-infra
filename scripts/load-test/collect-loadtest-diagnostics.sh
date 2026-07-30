@@ -45,6 +45,17 @@ psql_tsv_exec() {
   docker exec "${container}" psql -U admin -d "${db}" -v ON_ERROR_STOP=1 -P pager=off -t -A -F $'\t' -c "${sql}"
 }
 
+safe_psql_tsv_stdout() {
+  local label="$1"
+  local container="$2"
+  local db="$3"
+  local sql="$4"
+  echo "## ${label}"
+  if ! psql_tsv_exec "${container}" "${db}" "${sql}"; then
+    echo "[WARN] ${label} unavailable"
+  fi
+}
+
 safe_psql_exec() {
   local label="$1"
   local container="$2"
@@ -152,6 +163,68 @@ FROM order_service.order_trade_execution_inbox
 GROUP BY status
 ORDER BY status;
 " "${DIAG_DIR}/order-trade-executed-inbox-status.txt"
+}
+
+sample_db_hot_window() {
+  local label="$1"
+  local container="$2"
+  local db="$3"
+
+  safe_psql_tsv_stdout "${label} pg_stat_activity waits" "${container}" "${db}" "
+SELECT COALESCE(wait_event_type, 'none') AS wait_event_type,
+       COALESCE(wait_event, 'none') AS wait_event,
+       state,
+       count(*) AS sessions,
+       round(max(EXTRACT(EPOCH FROM now() - COALESCE(query_start, xact_start, backend_start)))::numeric, 3)
+           AS max_age_seconds,
+       left(regexp_replace(COALESCE(max(query), ''), '\s+', ' ', 'g'), 120) AS sample_query
+FROM pg_stat_activity
+WHERE datname = current_database()
+GROUP BY COALESCE(wait_event_type, 'none'), COALESCE(wait_event, 'none'), state
+ORDER BY sessions DESC, wait_event_type, wait_event, state;
+"
+
+  safe_psql_tsv_stdout "${label} pg_stat_database" "${container}" "${db}" "
+SELECT numbackends,
+       xact_commit,
+       xact_rollback,
+       blks_read,
+       blks_hit,
+       tup_inserted,
+       tup_updated,
+       tup_deleted,
+       deadlocks,
+       temp_files,
+       temp_bytes
+FROM pg_stat_database
+WHERE datname = current_database();
+"
+}
+
+sample_all_dbs_hot_window() {
+  echo "# postgres hot-window"
+  sample_db_hot_window order "${ORDER_DB_CONTAINER}" eap_order_db
+  sample_db_hot_window wallet "${WALLET_DB_CONTAINER}" eap_wallet_db
+  sample_db_hot_window match "${MATCH_DB_CONTAINER}" eap_match_db
+}
+
+sample_actuator_hot_window() {
+  echo "# actuator hot-window"
+  for spec in \
+    "wallet http://localhost:8081/eap-wallet/actuator/prometheus" \
+    "order http://localhost:8080/eap-order/actuator/prometheus" \
+    "match http://localhost:8082/match-engine/actuator/prometheus http://localhost:8082/actuator/prometheus"; do
+    name="${spec%% *}"
+    urls="${spec#* }"
+    echo "## ${name}"
+    for url in ${urls}; do
+      echo "# url=${url}"
+      if curl -fsS "${url}" \
+        | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|process_cpu_usage|system_cpu_usage|jvm_gc_pause_seconds_(count|sum|max)).*'; then
+        break
+      fi
+    done
+  done
 }
 
 rabbitmq_queue_lines_http() {
@@ -511,6 +584,8 @@ sample_loop() {
         echo "# rabbitmq channels"
         rabbitmq_channels_http || echo "[WARN] RabbitMQ management HTTP API channels unavailable"
       fi
+      sample_all_dbs_hot_window
+      sample_actuator_hot_window
       echo "# processes"
       for repo in eap-wallet eap-order eap-matchEngine; do
         local_pid="$(service_pid "${repo}")"
