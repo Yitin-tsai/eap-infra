@@ -109,6 +109,12 @@ Order API
 - Completion definition: a trade is business-complete only after MatchEngine has `TradeExecuted`, Order has applied the trade, Wallet has settled it, completion markers converge, and queues drain.
 - Read models: projections are rebuildable and measured as lag, not as the command-side source of truth.
 
+## AI 工程協作流程
+
+EAP 使用有明確邊界的 AI 角色，把工程問題轉成可否證的假設，而不是把架構、風險、部署或公開宣稱交給 AI。每個修改都需要 baseline、控制變因、實作、測試、監測證據、correctness gate、review 與人工 adopt/reject 決策；被拒絕的實驗也必須保留。
+
+詳見 [evidence-driven AI engineering workflow](docs/ai-engineering-workflow.md) 與 [Hello World Dev Conference 2026 EAP 案例](docs/talks/hello-world-dev-conference-2026-case-study.md)。
+
 ## Reproduce Locally
 
 ```bash
@@ -163,9 +169,12 @@ Public benchmark runbook 記錄在 [docs/benchmarks/2026-07-public-benchmark.md]
 
 ## Reading Order
 
-1. [docs/architecture.md](docs/architecture.md) - system boundaries and event flow.
-2. [docs/performance-report.md](docs/performance-report.md) - benchmark definitions, latest results, and bottlenecks.
-3. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - pinned public benchmark plan.
-4. Service READMEs: [Order](eap-order/README.md), [Wallet](eap-wallet/README.md), [MatchEngine](eap-matchEngine/README.md), [MCP](eap-mcp/README.md), [AI Client](eap-ai-client/README.md), [Common](eap-common/README.md).
+1. [docs/architecture.md](docs/architecture.md) - 服務邊界與事件流程。
+2. [docs/ai-engineering-workflow.md](docs/ai-engineering-workflow.md) - 角色契約、證據關卡，以及真實採用／拒絕案例。
+3. [docs/talks/hello-world-dev-conference-2026-case-study.md](docs/talks/hello-world-dev-conference-2026-case-study.md) - EAP 如何用 AI 角色完成自我審查、功能擴充與證據決策。
+4. [docs/benchmarks/load-test-taxonomy.md](docs/benchmarks/load-test-taxonomy.md) - benchmark boundary definitions。
+5. [docs/performance-report.md](docs/performance-report.md) - benchmark 定義、最新結果與瓶頸。
+6. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - 固定版本的公開 benchmark 計畫。
+7. Service READMEs: [Order](eap-order/README.md), [Wallet](eap-wallet/README.md), [MatchEngine](eap-matchEngine/README.md), [MCP](eap-mcp/README.md), [AI Client](eap-ai-client/README.md), [Common](eap-common/README.md).
 
 完整實驗歷史保留在 `docs/archive/performance/`，但不列入一般閱讀順序。

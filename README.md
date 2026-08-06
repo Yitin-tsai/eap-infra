@@ -123,6 +123,12 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture overv
 - Completion definition: a trade is business-complete only after MatchEngine has `TradeExecuted`, Order has applied the trade, Wallet has settled it, all three services contain the same completed `trade_id` set, and measured queues drain.
 - Read models: projections are rebuildable and measured as lag, not used as the command-side source of truth.
 
+## AI-Assisted Engineering Workflow
+
+EAP uses bounded AI roles to turn engineering questions into falsifiable hypotheses, not to delegate architecture, risk, deployment, or public claims. Each change moves through an explicit baseline, controlled implementation, tests, observability evidence, correctness gates, review, and a human adopt/reject decision; rejected experiments remain part of the evidence.
+
+See the [evidence-driven AI engineering workflow](docs/ai-engineering-workflow.md) and the [Hello World Dev Conference 2026 EAP case study](docs/talks/hello-world-dev-conference-2026-case-study.md).
+
 ## Reproduce Locally
 
 ```bash
@@ -195,9 +201,11 @@ The public benchmark runbook is tracked in [docs/benchmarks/2026-07-public-bench
 ## Reading Order
 
 1. [docs/architecture.md](docs/architecture.md) - system boundaries and event flow.
-2. [docs/benchmarks/load-test-taxonomy.md](docs/benchmarks/load-test-taxonomy.md) - benchmark boundary definitions.
-3. [docs/performance-report.md](docs/performance-report.md) - benchmark definitions, latest results, and bottlenecks.
-4. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - pinned public benchmark plan.
-5. Service READMEs: [Order](eap-order/README.md), [Wallet](eap-wallet/README.md), [MatchEngine](eap-matchEngine/README.md), [MCP](eap-mcp/README.md), [AI Client](eap-ai-client/README.md), [Common](eap-common/README.md).
+2. [docs/ai-engineering-workflow.md](docs/ai-engineering-workflow.md) - role contracts, evidence gates, and real adopted/rejected experiments.
+3. [docs/talks/hello-world-dev-conference-2026-case-study.md](docs/talks/hello-world-dev-conference-2026-case-study.md) - how EAP uses AI roles for self-review, feature expansion, and evidence-based decisions.
+4. [docs/benchmarks/load-test-taxonomy.md](docs/benchmarks/load-test-taxonomy.md) - benchmark boundary definitions.
+5. [docs/performance-report.md](docs/performance-report.md) - benchmark definitions, latest results, and bottlenecks.
+6. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - pinned public benchmark plan.
+7. Service READMEs: [Order](eap-order/README.md), [Wallet](eap-wallet/README.md), [MatchEngine](eap-matchEngine/README.md), [MCP](eap-mcp/README.md), [AI Client](eap-ai-client/README.md), [Common](eap-common/README.md).
 
 The frozen detailed experiment history is available under `docs/archive/performance/` but is not part of the normal reading path.
