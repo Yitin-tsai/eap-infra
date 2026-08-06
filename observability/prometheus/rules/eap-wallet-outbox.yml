@@ -1,0 +1,42 @@
+groups:
+  - name: eap-wallet-outbox
+    rules:
+      - alert: WalletOutboxFailedEvents
+        expr: eap_wallet_outbox_failed > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: eap-wallet
+        annotations:
+          summary: "Wallet outbox contains permanently failed events"
+          description: "{{ $value }} wallet outbox event(s) reached the retry limit and require investigation or replay."
+
+      - alert: WalletOutboxOldestPendingTooOld
+        expr: eap_wallet_outbox_oldest_pending_age_seconds > 30
+        for: 2m
+        labels:
+          severity: warning
+          service: eap-wallet
+        annotations:
+          summary: "Wallet outbox pending event is older than 30 seconds"
+          description: "The oldest wallet outbox event has been pending for {{ $value | humanizeDuration }}."
+
+      - alert: WalletOutboxPendingGrowing
+        expr: deriv(eap_wallet_outbox_pending[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: eap-wallet
+        annotations:
+          summary: "Wallet outbox backlog is continuously growing"
+          description: "Wallet outbox pending count has grown by more than one event per second over the last five minutes."
+
+      - alert: WalletOutboxPublishFailures
+        expr: increase(eap_wallet_outbox_publish_failed_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: eap-wallet
+        annotations:
+          summary: "Wallet outbox publish failures detected"
+          description: "{{ $value }} wallet outbox publish attempt(s) failed in the last five minutes."

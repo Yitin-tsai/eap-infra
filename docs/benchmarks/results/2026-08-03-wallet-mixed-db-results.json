@@ -1,0 +1,51 @@
+{
+  "benchmarkSchemaVersion": 1,
+  "benchmarkContract": "wallet-mixed-db-ceiling-probe",
+  "workload": {
+    "trades": 10000,
+    "usersPerSide": 500,
+    "reservationWorkers": 28,
+    "settlementWorkers": 12,
+    "transactionMode": "transaction_per_row",
+    "reservationAndSettlementRunConcurrently": true,
+    "sharedHotWalletRows": true
+  },
+  "runs": [
+    {
+      "runId": "GLT_20260803_TPS171_WALLET_MIXED_DB_10K_R1",
+      "reservationFailures": 0,
+      "settlementFailures": 0,
+      "reservationSeconds": 1.411,
+      "settlementSeconds": 1.884,
+      "mixedSeconds": 1.884,
+      "reservationTps": 7086.35,
+      "settlementTps": 5307.81,
+      "mixedTradeCyclesTps": 5307.62,
+      "combinedDbOperationsTps": 10615.25,
+      "reservationP50Ms": 3.112,
+      "reservationP95Ms": 7.509,
+      "reservationP99Ms": 15.902,
+      "settlementP50Ms": 1.289,
+      "settlementP95Ms": 5.192,
+      "settlementP99Ms": 11.026
+    },
+    {
+      "runId": "GLT_20260803_TPS171_WALLET_MIXED_DB_10K_R2",
+      "reservationFailures": 0,
+      "settlementFailures": 0,
+      "reservationSeconds": 1.348,
+      "settlementSeconds": 1.808,
+      "mixedSeconds": 1.808,
+      "reservationTps": 7417.90,
+      "settlementTps": 5530.39,
+      "mixedTradeCyclesTps": 5530.29,
+      "combinedDbOperationsTps": 11060.59,
+      "reservationP50Ms": 2.998,
+      "reservationP95Ms": 6.580,
+      "reservationP99Ms": 20.935,
+      "settlementP50Ms": 1.371,
+      "settlementP95Ms": 4.822,
+      "settlementP99Ms": 9.723
+    }
+  ]
+}

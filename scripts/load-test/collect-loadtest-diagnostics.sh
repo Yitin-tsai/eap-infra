@@ -90,7 +90,11 @@ reset_db_diagnostics() {
     psql_exec "${container}" "${db}" "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" || true
     psql_exec "${container}" "${db}" "SELECT pg_stat_reset();" || true
     psql_exec "${container}" "${db}" "SELECT pg_stat_statements_reset();" || true
+    psql_exec "${container}" "${db}" "SELECT pg_stat_reset_shared('wal');" || true
     psql_exec "${container}" "${db}" "SHOW shared_preload_libraries;" || true
+    psql_exec "${container}" "${db}" "SHOW synchronous_commit;" || true
+    psql_exec "${container}" "${db}" "SHOW fsync;" || true
+    psql_exec "${container}" "${db}" "SHOW track_wal_io_timing;" || true
   } > "${out_file}" 2>&1
 }
 
@@ -198,6 +202,18 @@ SELECT numbackends,
        temp_bytes
 FROM pg_stat_database
 WHERE datname = current_database();
+"
+
+  safe_psql_tsv_stdout "${label} pg_stat_wal" "${container}" "${db}" "
+SELECT wal_records,
+       wal_fpi,
+       wal_bytes,
+       wal_buffers_full,
+       wal_write,
+       wal_sync,
+       wal_write_time,
+       wal_sync_time
+FROM pg_stat_wal;
 "
 }
 
@@ -431,7 +447,7 @@ WHERE market_id = '${MARKET_ID}';
 
   if ! psql_tsv_exec "${ORDER_DB_CONTAINER}" eap_order_db "
 SELECT trade_id,
-       EXTRACT(EPOCH FROM applied_at) * 1000
+       EXTRACT(EPOCH FROM inserted_at) * 1000
 FROM order_service.order_trade_applications
 WHERE trade_id LIKE '${MARKET_ID}-%';
 " > "${lag_dir}/order-trade-applications.tsv" 2> "${lag_dir}/order-trade-applications.err"; then
@@ -455,7 +471,7 @@ WHERE trade_id LIKE '${MARKET_ID}-%';
       next
     }
     FILENAME ~ /order-trade-applications.tsv$/ {
-      orderApplied[$1] = $2
+      orderInserted[$1] = $2
       next
     }
     FILENAME ~ /wallet-trade-settlement-times.tsv$/ {
@@ -465,26 +481,26 @@ WHERE trade_id LIKE '${MARKET_ID}-%';
     END {
       print "trade_id",
             "match_created_ms",
-            "order_application_applied_ms",
+            "order_application_inserted_ms",
             "wallet_settlement_inserted_ms",
             "match_to_order_application_ms",
             "match_to_wallet_settlement_inserted_ms",
             "durable_convergence_ms",
             "order_wallet_durable_skew_ms"
       for (tradeId in matchCreated) {
-        if (!(tradeId in orderApplied) || !(tradeId in walletSettlementInserted)) {
+        if (!(tradeId in orderInserted) || !(tradeId in walletSettlementInserted)) {
           continue
         }
-        maxDurable = orderApplied[tradeId] > walletSettlementInserted[tradeId] ? orderApplied[tradeId] : walletSettlementInserted[tradeId]
+        maxDurable = orderInserted[tradeId] > walletSettlementInserted[tradeId] ? orderInserted[tradeId] : walletSettlementInserted[tradeId]
         convergence = maxDurable - matchCreated[tradeId]
-        durableSkew = orderApplied[tradeId] > walletSettlementInserted[tradeId] \
-          ? orderApplied[tradeId] - walletSettlementInserted[tradeId] \
-          : walletSettlementInserted[tradeId] - orderApplied[tradeId]
+        durableSkew = orderInserted[tradeId] > walletSettlementInserted[tradeId] \
+          ? orderInserted[tradeId] - walletSettlementInserted[tradeId] \
+          : walletSettlementInserted[tradeId] - orderInserted[tradeId]
         print tradeId,
               matchCreated[tradeId],
-              orderApplied[tradeId],
+              orderInserted[tradeId],
               walletSettlementInserted[tradeId],
-              orderApplied[tradeId] - matchCreated[tradeId],
+              orderInserted[tradeId] - matchCreated[tradeId],
               walletSettlementInserted[tradeId] - matchCreated[tradeId],
               convergence,
               durableSkew
@@ -506,7 +522,7 @@ WHERE trade_id LIKE '${MARKET_ID}-%';
     echo "Notes:"
     echo
     echo '- Match time uses `trade_executions.created_at`.'
-    echo '- Order time uses `order_trade_applications.applied_at`, the durable command-side trade-application fact.'
+    echo '- Order time uses `order_trade_applications.inserted_at`, the database-generated durable insertion time.'
     echo '- Wallet settlement apply time uses `trade_settlements.inserted_at`, the durable settlement fact insert time.'
     echo '- Completion marker timing is intentionally absent because Order/Wallet no longer publish per-trade marker events to MatchEngine.'
     echo

@@ -1,0 +1,52 @@
+groups:
+  - name: eap-order-backpressure
+    rules:
+      - alert: WalletOrderQueueHasNoConsumers
+        expr: eap_order_wallet_queue_consumers == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: eap-order
+        annotations:
+          summary: "Wallet order queue has no active consumer"
+          description: "eap-order is rejecting new orders because the wallet queue has no active consumer."
+
+      - alert: WalletOrderQueueBacklogWarning
+        expr: eap_order_wallet_queue_depth >= 5000
+        for: 2m
+        labels:
+          severity: warning
+          service: eap-order
+        annotations:
+          summary: "Wallet order queue backlog is elevated"
+          description: "Wallet order queue depth is {{ $value }}. This warning does not reject orders; the default hard rejection threshold is 10000."
+
+      - alert: OrderBackpressureHardRejections
+        expr: increase(eap_order_backpressure_hard_rejected_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: eap-order
+        annotations:
+          summary: "Orders are being rejected by hard backpressure"
+          description: "{{ $value }} order request(s) were rejected by hard backpressure in the last five minutes."
+
+      - alert: OrderBackpressureProbeFailures
+        expr: increase(eap_order_backpressure_probe_failed_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: eap-order
+        annotations:
+          summary: "eap-order cannot inspect the wallet queue"
+          description: "RabbitMQ queue probe failures prevent eap-order from determining downstream capacity."
+
+      - alert: OrderSubmittedPublishFailures
+        expr: increase(eap_order_submitted_publish_failed_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: eap-order
+        annotations:
+          summary: "OrderSubmittedEvent publish failed"
+          description: "{{ $value }} OrderSubmittedEvent publish attempt(s) failed RabbitMQ confirmation or routing in the last five minutes."

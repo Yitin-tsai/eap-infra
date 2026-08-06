@@ -1,0 +1,8 @@
+### order trade-executed inbox status
+capturedAt=2026-08-05T08:51:42Z
+      status      | rows | min_attempt | max_attempt | unapplied |     first_received_at      |      last_updated_at       
+------------------+------+-------------+-------------+-----------+----------------------------+----------------------------
+ APPLIED          |  385 |           2 |           3 |         0 | 2026-08-05 16:41:32.266138 | 2026-08-05 16:47:52.250002
+ FAILED_PERMANENT |  451 |           1 |           1 |       451 | 2026-08-05 16:35:59.100905 | 2026-08-05 16:36:01.402976
+(2 rows)
+

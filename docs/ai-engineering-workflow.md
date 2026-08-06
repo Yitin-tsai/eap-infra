@@ -50,6 +50,24 @@ Ticket
 - Bottleneck evidence is tied to metrics, not guesses.
 - Result is documented with exact command, parameters, and environment.
 
+## Agent safety
+
+- Give each specialist one bounded question and only the context/files it needs.
+- Architect, Performance, QA, and Reviewer roles do not edit files.
+- Review roles do not spawn child agents; Implementation starts only after a decision is accepted.
+- A stalled specialist gets one finalize request, then the lead continues locally and records the gap.
+- AI output is input to a decision. The developer owns architecture, risk acceptance, verification, and published claims.
+
+Recommended task shape:
+
+```text
+Role: Performance
+Task: Determine whether Wallet settlement or Order matched append limits full-chain completion.
+Allowed files: exact listener, SQL appender, load-test result JSON.
+Forbidden: no file edits, no architecture redesign, no child agents.
+Output: evidence, bottleneck conclusion, one next experiment, and stop condition.
+```
+
 ## Resume positioning
 
 Suggested phrasing:

@@ -1,6 +1,6 @@
 # EAP Performance Report
 
-This report summarizes the current 2000 TPS investigation in a public, interview-readable format. The detailed engineering log is in [docs/features/2026-06-global-loadtest-2000-tps.md](features/2026-06-global-loadtest-2000-tps.md).
+This report is the canonical current EAP capacity summary. The append-only experiment history is frozen in [archive/performance/2026-06-global-loadtest-2000-tps.md](archive/performance/2026-06-global-loadtest-2000-tps.md).
 
 ## Throughput Definitions
 
@@ -10,7 +10,9 @@ The current benchmark suite is split into contracts:
 
 - `order-admission-chain` (implemented): `Order API -> Wallet reservation -> OrderConfirmedEvent -> MatchEngine orderbook admission`.
 - `matched-trade-completion-chain` (implemented): seeded confirmed orders enter MatchEngine and the benchmark waits for MatchEngine, Order, and Wallet durable trade completion.
-- `public-order-lifecycle` (planned): user-facing HTTP submission through reservation, matching, settlement, durable convergence, and queue drain.
+- `http-matched-trade-completion-chain` (implemented): BUY and SELL use the public HTTP path, followed by reservation, matching, settlement, three-service trade-ID convergence, and queue drain.
+- `http-matched-steady-state-chain` (implemented): the same public lifecycle under a warmup plus fixed-rate measurement window with backlog trend sampling.
+- `http-matched-staircase-chain` (implemented): progressively increases full-lifecycle order load to locate the first unsustainable stage.
 - `rabbitmq-publish-only` (implemented diagnostic): RabbitMQ broker-confirmed input ceiling with service processing removed.
 
 | Metric | Meaning | Can It Be Called Completed Business TPS? |
@@ -93,6 +95,309 @@ Decision:
 - The next bottleneck is no longer only OrderSubmitted relay. The orderbook-admission stage is now around the `600/s` class, while the full drained gate remains around the `460/s` class because confirmed-event queues still have late unacked tails.
 - Latest tail sample: `wallet.orderSubmitted.queue(ready=0,unacked=20)`, `order.orderConfirmed.queue(ready=0,unacked=350)`, `matchEngine.orderConfirmed.queue(ready=0,unacked=87)` shortly before final drain.
 
+## Full HTTP Matched Lifecycle
+
+The full HTTP contract sends both BUY and SELL orders through the user-facing Order API and does not count a trade as complete until:
+
+- MatchEngine has persisted the durable `TradeExecuted` fact;
+- Order and Wallet have persisted the same `trade_id`;
+- buyer and seller asset balances match the expected settlement;
+- all BUY/SELL orderbook entries and active match reservations are gone;
+- all measured RabbitMQ queues and the Order DLQ have drained.
+
+The load driver reports request scheduling TPS, accepted-response TPS, response drain tail, and completed trade TPS separately. Its throttle uses fixed open-loop deadlines, so one late scheduler wake-up does not shift every later request deadline.
+
+### 100K Full HTTP Phase Validation
+
+Run: `GLT_20260803_HTTP_MATCHED_TRADE_COMPLETION_100K_R2`.
+
+This single-host run sent `100000` SELL orders through HTTP and waited for admission before sending `100000` BUY orders through the same public path. Both phases were configured for `1000 HTTP orders/s`. The run did not start from seeded confirmed orders.
+
+| Metric | Result |
+| --- | ---: |
+| SELL / BUY HTTP accepted | `100000 / 100000` |
+| SELL / BUY accepted TPS | `999.95 / 999.84 orders/s` |
+| SELL HTTP p95 / p99 | `16.78 ms / 56.03 ms` |
+| BUY HTTP p95 / p99 | `58.54 ms / 107.91 ms` |
+| BUY-triggered completion | `707.43 trades/s` over `141.3566s` |
+| Full sequential lifecycle | `410.16 trades/s` over `243.8083s` |
+| Full-lifecycle order convergence | `820.32 orders/s` |
+| Match / Order / Wallet trade rows | `100000 / 100000 / 100000` |
+| Three-service trade-ID equality | `true` |
+| Final queue / DLQ / books / reservations / locks | `0` |
+
+Independent post-run database checks found `100000` rows and `100000` distinct trade IDs in every service-owned trade table. Wallet aggregate locked amount and currency were both zero, and a separate RabbitMQ query found no ready or unacked messages.
+
+Interpretation:
+
+- The strongest current phase-completion evidence is `200000/200000` accepted HTTP orders converging into `100000/100000` durable trades with exact final state.
+- `707.43 trades/s` starts when BUY traffic begins with SELL inventory already admitted. It is not the full two-phase lifecycle rate.
+- `410.16 trades/s` includes SELL HTTP admission, BUY HTTP processing, durable convergence, and final drain.
+- This result is one 100K run, not a repeat median or a 30-minute steady-state SLA.
+- The sequential per-phase `1000 orders/s` contract is different from the staircase's mixed BUY/SELL `1000 total orders/s` contract.
+
+The complete evidence record is in [docs/benchmarks/2026-08-03-full-http-100k.md](benchmarks/2026-08-03-full-http-100k.md).
+
+The 100K run used benchmark schema v1, which repeatedly queried exact trade-ID sets during drain and included that observer cost in the completion window. Its `100000/100000` correctness evidence remains valid, but its throughput is a conservative historical value. Schema v2 freezes business completion before running exact set verification.
+
+### 2026-08-04 Schema-v2 100K Validation
+
+Run: `GLT_20260804_HTTP_MATCHED_SCHEMA_V2_STABLE_LOCK_C8_100K_R1`.
+
+This schema-v2 run exercised that revision's Wallet bounded-retry/DLQ path and stable batch-settlement wallet locking. It accepted `100000` SELL plus `100000` BUY HTTP orders and converged to `100000` identical Match, Order, and Wallet trade IDs with exact assets and zero final queue, DLQ, orderbook, reservation, or locked balance.
+
+| Metric | Result |
+| --- | ---: |
+| SELL / BUY accepted rate | `999.90 / 991.35 orders/s` |
+| Completion after SELL inventory was ready | `613.33 trades/s` over `163.0433s` |
+| Full sequential lifecycle | `378.86 trades/s` over `263.9527s` |
+| Full-lifecycle order convergence | `757.71 orders/s` |
+| Peak / final queue backlog | `3592 / 0` |
+| Match-to-Order p95 | `25.494ms` |
+| Match-to-Wallet p95 | `20.534s` |
+| Exact post-completion verification | `5.7601s`, excluded from timing |
+
+This is strong high-volume correctness evidence for the tested revision, not a new throughput record or a current-code validation. Its `613.33 trades/s` completion rate is below the historical schema-v1 100K result (`707.43/s`) and the 30K best run (`922.38/s`). A repeat set is required before attributing the difference; the integrated lag pointed to the Wallet settlement/listener transaction tail rather than Match-to-Order persistence. The published artifact is [`2026-08-04-full-http-100k-schema-v2-result.json`](benchmarks/results/2026-08-04-full-http-100k-schema-v2-result.json).
+
+### 30K Schema-v2 Cleanup Optimization
+
+The latest controlled full-HTTP runs use `30000` SELL plus `30000` BUY requests at `1300 orders/s` per sequential phase. MatchEngine reservation cleanup remains durable and retryable, but successful cleanup tasks are now marked `COMPLETED` once per claimed batch instead of one JDBC update per trade.
+
+| Run | BUY accepted | BUY-triggered completion | Full lifecycle | Order convergence | Max backlog | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| baseline `...BASELINE_1300_30K_R2` | `1299.38/s` | `664.26 trades/s` | `434.79 trades/s` | `869.58 orders/s` | `14110` | valid |
+| cleanup batch R1 | `1296.43/s` | `842.04 trades/s` | `505.10 trades/s` | `1010.21 orders/s` | `10854` | valid |
+| cleanup batch + requeue R3 | `1298.26/s` | `922.38 trades/s` | `530.43 trades/s` | `1060.85 orders/s` | `6261` | valid |
+
+Across the two valid optimized runs, BUY-triggered completion averaged `882.21 trades/s`, `32.8%` above the clean baseline. The equivalent full-lifecycle order-convergence average was `1035.53 orders/s`. Post-run durable timestamp windows independently measured:
+
+| Durable stage | Optimized R1 | Optimized R3 |
+| --- | ---: | ---: |
+| Match trade persistence | `1056.03/s` | `1158.06/s` |
+| Order trade application | `1054.16/s` | `1155.39/s` |
+| Wallet settlement | `1041.92/s` | `1154.33/s` |
+
+In R3, Match-to-Wallet settlement p95 fell to `4.478s`, compared with `13.624s` in the clean baseline. The cleanup completion SQL fell from `30000` per-row updates to roughly `32` batch statements in R1 and R3. All valid runs accepted every HTTP request and ended with identical 30K trade-ID sets, exact assets, empty books/reservations, and zero queue/DLQ backlog.
+
+### Wallet Code-vs-Host Attribution
+
+A Wallet-only JFR recording was captured around a correctness-valid 10K full-HTTP run. Deep diagnostics and profiling reduced that run to `564.85 BUY-triggered trades/s`, so it is attribution evidence rather than a replacement capacity result. Machine CPU averaged `86.14%` and reached `100%`; no reservation or settlement application method dominated the `148` Wallet execution samples.
+
+For 20K Wallet reservations in the profiled run, PostgreSQL executed the reservation CTE in `35.978s` cumulative (`1.799ms` mean). The application observed `247.399s` inside the JDBC CTE call and `477.290s` for the complete Spring transaction. The after-body/commit-return segment alone consumed `204.370s`; non-CTE transaction-body work was only `2.422s`. This rejects JSON construction and raw CTE execution as the primary full-chain cost.
+
+The production-shaped reservation and settlement CTEs were then run concurrently against the same 500 buyer and 500 seller hot rows, retaining one commit per operation and a combined 40 workers:
+
+| Run | Reservation TPS | Settlement TPS | Mixed trade cycles/s | Combined DB ops/s | Failures |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TPS-171 R1 | `7086.35` | `5307.81` | `5307.62` | `10615.25` | `0` |
+| TPS-171 R2 | `7417.90` | `5530.39` | `5530.29` | `11060.59` | `0` |
+
+The two-run mixed SQL floor is about `5.75x` the `922.38 trades/s` sequential upper-bound diagnostic. Concurrent Wallet SQL is therefore not the current ceiling. The remaining gap is in integrated Spring transaction/commit, Rabbit listener and acknowledgement, outbox, cross-service work, and same-host scheduling. A code optimization still needs to reduce those boundaries under the full correctness-gated mixed contract; raising connection or consumer counts is not supported by this evidence.
+
+A follow-up grouped two or five Wallet order reservations into one Spring transaction to amortize commit return. Its first 10K batch-5 attempt produced repeated cross-path Wallet deadlocks. Aligning Java/PostgreSQL UUID ordering and pre-locking settlement wallets eliminated deadlocks, but did not improve throughput: batch 5 completed at `779.98 trades/s`, batch 2 at `677.70 trades/s`, and the contemporaneous restored single-transaction control at `816.15 trades/s`. Every completed run passed exact trade-ID, asset, reservation, and queue-drain gates. The grouped candidate and settlement pre-lock were therefore reverted; longer multi-user lock ownership outweighed commit amortization.
+
+One repeat was invalid after the host reported Hikari scheduler starvation/clock leaps up to `6m16s`. It exposed a Wallet batch recovery gap: exhausted listener retries could return control and ACK an uncommitted batch. A temporary immediate-requeue recoverer prevented that loss but could cycle a poison batch forever and bypass the configured DLQ. The current listener uses bounded retries followed by `AmqpRejectAndDontRequeueException`; a real-broker integration test verifies that the exhausted message reaches the configured DLQ. The invalid repeat is excluded from throughput calculations, and this post-run failure-path hardening does not change the published TPS169 measurement.
+
+A subsequent 30K control run exposed a separate batch-settlement deadlock: concurrent batches locked overlapping buyer/seller wallets in different orders. Bounded retry correctly rejected `377` exhausted messages to the DLQ, making that run invalid instead of silently losing work. Wallet settlement now materializes all involved wallet IDs and locks them in stable user-ID order before applying buyer and seller updates. A PostgreSQL concurrency integration test reproduces reversed buyer/seller roles; after the fix, two 30K controls and the schema-v2 100K run completed with no deadlock, exact assets and trade IDs, and zero final queue/DLQ backlog.
+
+Changing Wallet settlement consumer concurrency from `12` to `8` produced only a small same-host improvement: the two C8 30K controls averaged `822.09 trades/s` after SELL inventory was ready and `496.93 trades/s` across both HTTP phases, versus `807.06` and `491.51 trades/s` in the C12 control. Average peak backlog fell from `15303` to `13614`. C8 is retained as a lower-contention load-test default, not presented as a capacity breakthrough.
+
+### Balanced Mixed HTTP Staircase
+
+The canonical capacity workload now creates equal BUY and SELL populations and shuffles their HTTP arrival order with a recorded seed. It no longer submits strict `SELL, BUY` pairs.
+
+Runs `GLT_20260804_HTTP_MATCHED_SHUFFLED_STAIRCASE_CORE_R1` and `...PRODEQ_R4` used seed `20260804`, `5s` warm-up, and `15s` measurement per stage:
+
+| Target Orders/s | Core Completed Trades/s | Production-Equivalent Completed Trades/s | Result |
+| ---: | ---: | ---: | --- |
+| `700` | `381.48` | `346.43` | both pass |
+| `800` | `402.92` | `227.95` | core pass; production-equivalent fail |
+| `900` | `450.58` | not attempted | core pass |
+| `1000` | `447.87` | not attempted | core fail |
+
+The core run accepted `68000/68000` HTTP orders and converged to `34000 / 34000 / 34000` Match, Order, and Wallet trade rows. The production-equivalent run stopped earlier, accepted `30000/30000` orders, and converged to `15000 / 15000 / 15000` rows. Both had exact assets, empty books and reservations, and zero final queue/DLQ backlog.
+
+The provisional optimized boundary is `900 pass / 1000 fail`. With normal projection frequency, pools, batching, completion-view writes, and reconcilers restored, the provisional production-equivalent boundary is `700 pass / 800 fail`. Both remain single-seed, short-stage, same-host results.
+
+The complete evidence record is [docs/benchmarks/2026-08-04-balanced-mixed-http-staircase.md](benchmarks/2026-08-04-balanced-mixed-http-staircase.md).
+
+### 2026-08-05 Wallet Boundary and Repeated Steady State
+
+The 2026-08-05 experiment removed the Wallet listener's outer
+`TransactionTemplate`. Its isolated 30K, eight-worker happy-path A/B improved from
+`11799.16` to `20405.04 settlements/s` (`+72.9%`), while full-chain average Wallet
+transaction time fell from `21.13ms` to `9.26ms` (`-56.2%`). This optimization was
+subsequently rejected: statement autocommit occurred before Java verified that the
+settlement row and both wallet updates succeeded, so an incomplete outcome could not
+be rolled back. A forced PostgreSQL integration rerun also reproduced a reversed-role
+wallet deadlock that the cached test invocation had not executed.
+
+The corrected implementation retains single-event consumption, restores one explicit
+transaction per event, and locks both wallet UUIDs in deterministic order. Fresh
+PostgreSQL tests cover reversed-role concurrency, a missing counterparty wallet, and
+insufficient seller balance. The `20405.04 settlements/s` value remains useful as a
+rejected happy-path ceiling experiment, not as a safe/current Wallet throughput claim.
+
+### MatchEngine Compact Permanent Idempotency Boundary
+
+`IncomingOrderProcessingStore` previously kept one permanent `COMPLETED` UUID field per
+order in 256 Redis hashes. Adding TTL was rejected because an old `OrderConfirmed`
+redelivery could then rematch a resting or already completed order.
+
+The 2026-08-06 implementation instead uses the Order-owned `(market_id,
+market_sequence)` identity as a permanent Redis bitmap. Each market is split into
+10-million-sequence shards, so one full shard consumes about 1.25 MB of bitmap payload
+and does not hit Redis's single-bitmap offset limit. UUID hashes now contain only
+in-flight `PROCESSING` leases. The guarded reserve-or-add Lua checks the completed bit
+before claiming; completion atomically sets the bit and deletes the processing field.
+Legacy `COMPLETED` hash entries are migrated lazily by the same Lua operation.
+
+A forced PostgreSQL/Redis crash-recovery suite passed crashes after Lua reservation,
+after durable trade commit, and before completion-marker persistence. A 900 orders/s
+mixed smoke stored 18,000 permanent markers in 2,250 payload bytes / 3,160 bytes reported
+Redis memory, with `BITCOUNT=18000` and no remaining processing-state keys. Production
+Redis uses AOF and `noeviction`, matching the existing durable order-book fault model.
+Recovering from total Redis data loss remains a broader architecture task: it requires
+rebuilding both the active order book and completed identities, not merely adding a
+PostgreSQL inbox table.
+
+The following 2026-08-05 short-window results used the Wallet autocommit experiment
+that was later rejected for rollback safety. They remain useful historical throughput
+diagnostics, but they no longer establish current-code capacity.
+
+The historical short-window test independently reset data and restarted services
+for each run. Seeds `20260805`, `20260806`, and `20260807` each used a `30s`
+warmup and a `180s` measurement window:
+
+| Evidence | Result |
+| --- | ---: |
+| HTTP accepted | `567000 / 567000`, zero failures |
+| Expected / Match / Order / Wallet trades | `283500 / 283500 / 283500 / 283500` |
+| Mean accepted load | `900.06 orders/s` |
+| Mean same-window completion | `449.54 trades/s` |
+| Mean fully converged throughput | `445.32 trades/s` |
+| Full-convergence range | `445.03-445.59 trades/s` |
+| Largest sampled backlog | `806` |
+| Final queues / DLQ / reservations / locked balances | `0` |
+| Three-service trade-ID equality | `true` in 3/3 runs |
+
+The three-seed result showed that revision accepting `900 orders/s`, equivalent to
+about `445` fully converged trades/s, for the three-minute window. A 30-minute run
+accepted all `1674000` HTTP orders at `899.94/s`, but same-window completion fell
+to `301.68 trades/s` and only about `619k/837k` trades had reached each service when
+the 900-second drain timeout expired.
+
+The long-run hidden debt was `order_service.order_event_outbox`, not a Rabbit queue:
+one drain snapshot contained `471102 PENDING` and `1202898 SENT` rows while all
+Rabbit queues were empty. The synchronous Order relay drained only about 114
+events/s over the next three minutes. Order PostgreSQL showed active `DataFileRead`
+waits; the 950 deep run separately showed Order command-pool pending up to `91`,
+about `938 MB` of Order WAL, and seven `WALInsert` waiters, while Wallet pool pending
+peaked at `1`.
+
+The bounded Order async A/B removed the Order trade-application tail
+(`Match -> Order p95 79.97 ms`) but did not make 900 orders/s sustainable. One
+15-minute run hit 6,142 HTTP failures. A second run with Wallet batch confirms
+accepted all 864,000 orders but completed only 253.79 trades/s in the measurement
+window. It also exposed a correctness blocker: Match produced 432,190 trades for
+432,000 expected trades, with 431 `amount=1` orders reused by two trades. Order
+rejected the contradictory facts and retained 451 permanent inbox failures.
+Rabbit queues and durable outboxes accounted for the remaining data; this was not
+silent message loss. Both experimental relay settings remain disabled by default.
+
+The historical `900 orders/s` number is not a current capacity claim because its Wallet
+transaction boundary was later rejected. A lower current-code long-duration knee and
+an external load generator remain required.
+
+The corrected atomic incoming-order claim subsequently completed a shuffled
+15-minute reliability run with all `864000` HTTP orders accepted and exactly
+`432000` identical Match, Order, and Wallet trade facts. No order ID was used in
+more than one Match trade; final queues, DLQ, reservations, order books, and pending
+outboxes were zero. The run required `1717.39s` to converge, reached only `277.98`
+steady completed trades/s, and accumulated a maximum backlog of `46451`, so it
+failed the sustained-capacity contract. A focused Gradle run overlapped its first
+minute; the result is retained as correctness evidence, not a clean capacity
+comparison.
+
+Real PostgreSQL/Redis integration tests now force crashes at three matching
+boundaries: before durable trade commit, after commit but before Redis cleanup, and
+before the incoming-order completion marker. Recovery preserves quantity, avoids
+duplicate trades on repeated delivery, completes cleanup, and leaves no active
+reservation. The complete MatchEngine test suite passes.
+
+A real MatchEngine SIGKILL with 28 unacknowledged Rabbit deliveries also passed.
+After restart, all `29250` expected trades converged identically across Match,
+Order, and Wallet; duplicate order use, queues, DLQ, reservations, and pending
+outboxes were zero.
+
+The clean current-code `1000 orders/s x 180s` saturation run reached `497.48`
+completed trades/s, up `12.05-12.48%` from the comparable `442.28-443.97`
+baselines. It is not a sustained claim because backlog growth exceeded the limit.
+A 15-minute 800 orders/s run reached `377.32` trades/s but accumulated durable debt
+and failed the sustained gate. The first 700 orders/s run had eight local HTTP
+timeouts and was rejected even though its backend metrics passed. A clean repeat
+then passed at `699.14` accepted orders/s and `343.05` completed trades/s with a
+98.01% completion ratio, `+1.05/s` backlog slope, and 6,916 maximum backlog. All
+336,000 trades and 672,000 order uses converged without duplication.
+
+The steady-state harness now resolves ambiguous HTTP timeouts from durable Order
+facts. It derives pairable trades from durable BUY/SELL counts and verifies any
+imbalance against open orders and Wallet locks, while retaining HTTP failure as a
+capacity-invalid reason and still producing the final JSON artifact.
+
+The complete evidence record is
+[docs/benchmarks/2026-08-05-wallet-settlement-robustness.md](benchmarks/2026-08-05-wallet-settlement-robustness.md).
+
+Fresh 30-second deep diagnostics on the corrected Wallet transaction boundary
+passed at both 800 and 900 total orders/s. Two 900 seeds accepted `899.50-899.85`
+orders/s and completed `455.56-470.34` trades/s in the measurement window, with
+negative backlog slopes and exact 15,750-trade three-service convergence. These are
+short diagnostics, not a replacement for the failed long-duration 900 soak.
+
+The same work corrected an attribution defect: Order's former stage timestamp was
+the source event time. A database-generated Order insertion timestamp now shows
+Match-to-Order p95 `429.21ms` and Match-to-Wallet p95 `410.38ms`, with only
+`68.07ms` p95 skew. The shared Match trade-outbox publication path is therefore the
+next controlled A/B target; Wallet SQL is not independently responsible for the
+full convergence tail. The run also reached 95-100% system CPU on the shared host,
+so any improvement must be repeated under low-observer diagnostics before being
+called a code-path gain.
+
+### Legacy Alternating Staircase
+
+Historical boundary run: `GLT_20260730_HTTP_MATCHED_STAIRCASE_BOUNDARY_700_1100_R3`. It used strict alternating `SELL, BUY` pairs and is retained for regression comparison.
+
+| Target Orders/s | Scheduled Orders/s | Accepted Responses/s | Completed Trades/s | Result |
+| ---: | ---: | ---: | ---: | --- |
+| `700` | `699.99` | `699.94` | `351.36` | pass |
+| `800` | `799.99` | `799.55` | `397.77` | pass |
+| `900` | `899.98` | `899.61` | `458.38` | pass |
+| `1000` | `999.98` | `999.83` | `511.85` | pass |
+| `1100` | `1099.99` | `1098.84` | `431.56` | fail: completion rate and backlog growth |
+
+At `1000 orders/s`, one BUY and one SELL form one trade, so the target is `500 trades/s`, not `1000 trades/s`. The stage completed at `511.85 trades/s`; its backlog peaked at `2011` and returned to `0` by stage end. HTTP p95 and p99 upper bounds were both `200 ms`.
+
+At `1100 orders/s`, all `16500` measured HTTP requests were accepted and the response drain tail was only `16.6 ms`. The driver therefore maintained input. Business completion reached only `431.56 trades/s` against a `550 trades/s` target, while backlog grew from `110` to `4074`.
+
+Final run-wide correctness:
+
+| Signal | Result |
+| --- | ---: |
+| HTTP orders accepted | `90000/90000` |
+| Match / Order / Wallet trade rows | `45000 / 45000 / 45000` |
+| Three-service trade-ID equality | `true` |
+| Remaining BUY / SELL orders | `0 / 0` |
+| Active match reservations | `0` |
+| Final queue backlog / DLQ | `0 / 0` |
+| Asset settlement | exact |
+
+Interpretation:
+
+- HTTP input generation is not the observed `1100 orders/s` failure.
+- The historical alternating boundary was `1000 orders/s`, approximately `500 completed trades/s`; the canonical shuffled workload has replaced this as the current capacity signal.
+- Diagnostics at the failed stage showed high shared-host CPU and a growing `wallet.orderSubmitted.queue`, with pressure also visible in the Order command path.
+- This is a 15-second-stage capacity search with a co-located load generator. It is not a 30-minute steady-state or production-cluster claim.
+
 ## Matched-Trade-Completion Chain Semantics
 
 The current global 10k benchmark is a controlled `matched-trade-completion-chain` workload. It is not the public API order lifecycle.
@@ -109,11 +414,11 @@ The current global 10k benchmark is a controlled `matched-trade-completion-chain
 
 This means input order confirmations/s and completed trades/s are intentionally different units. The first describes load pressure; the second describes fully gated business completion.
 
-## Latest Contract-v2 Diagnostic Result
+## TPS126 Seeded Contract-v2 Diagnostic
 
 Run: `GLT_TPS126_DIRECT_CONFIRM_LIGHT_10K_R1`, one 10k light diagnostic sample.
 
-This is the first 10k run after hardening the benchmark contract with RabbitMQ publisher confirms and trade-ID set equality across MatchEngine, Order, and Wallet. It is not a valid 2000-input capacity comparison because broker-confirmed input did not reach the configured `95%` offered-load threshold. It is still useful because the correctness gate passed cleanly and the completed-trade path reached the current `1200/s` class under contract-v2 validation.
+This was the first 10k run after hardening the seeded benchmark contract with RabbitMQ publisher confirms and trade-ID set equality across MatchEngine, Order, and Wallet. It is not a valid 2000-input capacity comparison because broker-confirmed input did not reach the configured `95%` offered-load threshold. It remains useful historical evidence because the correctness gate passed cleanly and the seeded completed-trade path reached the `1200/s` class under contract-v2 validation.
 
 | Metric | Result |
 | --- | ---: |
@@ -255,8 +560,12 @@ Interpretation: the core Redis order book is not the current global E2E bottlene
 | Redis user-open-order index OFF repeat | Latest 10k run completed at `749.07` trades/s with final queues/DLQ at zero; `reserve_order.redis_eval` was `19.784s`, not better than TPS-93 R2 `15.888s` | keep as diagnostic flag; not the current TPS fix |
 | Integrated stage-lag diagnostics | TPS98 10k run completed at `622.05` trades/s with final queues/DLQ at zero. Wallet insert attribution shows p95 `Match persisted -> Wallet settlement inserted = 2073.250ms`, `Wallet settlement inserted -> WALLET_SETTLED marker = 1172.450ms`, and `Wallet settlement inserted -> relay mark-SENT = 1483.760ms` | keep; Wallet is visible in the convergence cost, but it is not independently slower than Order apply |
 | MatchEngine tryMatch outcome attribution | TPS99 10k run completed at `580.10` trades/s with final queues/DLQ at zero. `added_to_book` cost `20.594s / 10000`, `fully_matched` cost `29.333s / 10000`, and `reserve_order.redis_eval` cost `27.705s / 20000` | keep; the common Redis reserve-or-add path is a major integrated cost under full pressure |
+| Match trade/outbox/cleanup single-CTE A/B | Two correctness-valid 30K full-HTTP runs completed at only `687.48` and `769.27` BUY-triggered trades/s versus the accepted `842.04-922.38` range; the deep run's combined SQL consumed `42.975s` cumulative DB time versus about `18.281s` for the accepted run's two statements | rejected and reverted; keep separate durable inserts plus cleanup-worker batch completion |
+| Wallet settlement batch-size 100 A/B | Original overlap fallback produced `5206` singleton transactions and only `644.86/s`; ordered partitioning exposed cross-batch wallet-row deadlocks; deterministic row pre-locking removed deadlocks and reduced singleton work to `12`, but CTE application time rose to `32.556s`, Match-to-Wallet p95 to `9.114s`, and throughput reached only `716.58/s` | runtime candidate rejected and reverted; keep `50/75ms`, retain load-test batch-size/timeout controls |
+| Wallet JFR plus concurrent reservation/settlement DB probe | Full-chain Wallet transaction wall was `477.290s` for 20K reservations versus `35.978s` PostgreSQL executor time; two direct mixed-SQL runs reached `5307.62-5530.29 trade cycles/s` with zero failures | raw Wallet SQL interaction rejected as the `922.38/s` ceiling; target transaction/listener/outbox boundary reduction next |
+| Wallet reservation grouped-transaction A/B | Initial batch 5 deadlocked repeatedly; deterministic locking restored correctness, but batch 5 reached `779.98/s` and batch 2 `677.70/s` versus the contemporaneous single-transaction control's `816.15/s` | rejected and reverted; commit amortization did not offset longer multi-user lock ownership |
 
-## Current Bottleneck
+## Seeded Matched-Completion Bottleneck
 
 The strongest current signal is durable write and relay cost across the `matched-trade-completion-chain`:
 
@@ -287,14 +596,17 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 
 ## Known Gaps
 
-- The latest global E2E report does not yet publish API p95/p99 or end-to-end p95/p99 latency.
-- The strongest 10k runs are short benchmark scenarios, not 30-minute soak claims.
-- The latest contract-v2 result is a single diagnostic run. A five-run repeat with broker-confirmed input is still required before publishing a new public median/range.
-- The first 15-minute steady-state attempt was rejected because Redis eviction invalidated the order-book state. Clean Redis runs now keep `evicted_keys=0`, but the latest three-run steady-state attempt produced `2/3` valid samples and one correctness rejection with `19` missing completed trades.
+- The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
+- The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
+- The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
+- The current safe code has one clean short `700 orders/s` mixed regression. It needs longer runs and at least two more seeds with median/range and backlog-slope comparison.
+- The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
+- One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - Result artifacts are still local and should be attached to a release or otherwise published.
-- Failure-injection results should be split into a reliability report: duplicate messages, consumer restart, outbox retry, DLQ, and projection replay.
+- Atomic MatchEngine incoming-order redelivery protection now passes a real RabbitMQ duplicate injection, a real MatchEngine SIGKILL/redelivery run, an 864K-order reliability run, and deterministic PostgreSQL/Redis crash-window tests. Outbox crash/retry and projection replay fault injection remain pending.
+- The current 700 orders/s point has one clean 15-second mixed regression. Longer runs, additional seeds, and an external load generator are required before treating it as sustained capacity or a production SLA.
 
-## Steady-State Stability Evidence
+## Historical Seeded Steady-State Evidence
 
 The clean Redis single-run result `EAP_STEADY_500TPS_15M_20260713_R2` completed successfully and established the first valid near-500 offered-load steady-state signal.
 
@@ -344,29 +656,33 @@ Valid-sample summary:
 
 Rejected sample `R3` matters more than its raw `165.96/s` computed throughput. It failed because the target completion counts never reached `450000`: `tradeExecutions=449981`, `walletTradeSettlements=449981`, `orderCommandMatchedRows=899962`, `remainingBuyOrders=19`, `lockedCurrency=1900`, and `lockedAmount=19`. RabbitMQ queues and DLQ drained to zero, and Redis stayed on `noeviction` with `evicted_keys=0`, so this is not the earlier Redis eviction failure.
 
-Interpretation: EAP can complete near-500 offered-load steady-state runs on the local environment, but it should not yet be described as three-run stable. The next engineering task is to investigate the `19` missing trades in `R3` using the preserved diagnostics.
+Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs, but this set was not three-run stable. The later reservation-convergence work addressed the hidden-reservation class exposed by sustained tests and passed a 120k correctness run. This historical set still must not be presented as a successful three-run full HTTP soak.
 
 ## Next Measurement Plan
 
-Before pushing for higher completed TPS, the next public-quality benchmark should add:
+Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. API and end-to-end p50/p95/p99 latency.
-2. Published result artifacts for the 10k repeat runs.
-3. Investigate the `EAP_STEADY_500TPS_15M_20260714_R3` correctness miss before treating the steady-state result as a stable public median.
-4. Queue backlog over time, not only final queue drain.
-5. Failure-injection results for retry and restart behavior.
+1. Re-run the corrected 15-minute mixed workload and require zero reused orders, exact three-service trade IDs, and empty inbox/outbox/queue debt.
+2. Search downward from 800 orders/s to establish a passing 30-minute full HTTP knee before retesting 900.
+3. Repeat the production-equivalent `600-800 orders/s` boundary with multiple seeds.
+4. Run the same contract from a separate load-generator host when one is available.
+5. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.
 
 The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchmark.md](benchmarks/2026-07-public-benchmark.md).
 
 ## Interview-Safe Claim
 
-Historical wording for TPS93 discussions only:
+Latest full HTTP lifecycle wording:
 
-> I built a production-style Java/Spring Boot electricity trading platform and defined completed-trade TPS as TradeExecuted persistence plus Order application, Wallet settlement, completion-marker convergence, and final queue drain. After reducing Order and Wallet batch-path overhead, a 3-run 10k local benchmark sustained about 1999 offered order confirmations/s and reached a median fully gated throughput of 833.58 completed trades/s, with a 729.71-940.93 range and final queues/DLQ at zero. I also report orderbook admission and blended market-flow throughput separately to avoid mixing accepted input with completed business throughput.
+> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, and settlement. The current safe revision passed a shuffled mixed HTTP regression at about 700 accepted orders/s and 350 completed trades/s during the measurement window; all 14,000 orders converged into 7,000 identical Match, Order, and Wallet trade records with exact balances and empty final queues. Historical high-volume tests also validated 100,000 completed trades from 200,000 HTTP orders without record or asset loss. I report these as local evidence rather than a production SLA.
 
-Use this contract-v2 wording for current discussions:
+Sequential diagnostic wording, when the benchmark distinction is relevant:
 
-> I built a production-style Java/Spring Boot electricity trading platform and define completed-trade TPS as TradeExecuted persistence, Order trade application, Wallet settlement, identical completed trade-ID sets across the three services, and final RabbitMQ queue drain. After hardening the benchmark with RabbitMQ publisher confirms, a 10k local diagnostic run completed 10000 trades at 1234.47 completed trades/s with all measured queues and DLQ at zero, but broker-confirmed input reached only 1377.80/s, so I do not report it as a valid 2000-input capacity result yet.
+> With sell-side liquidity prepared before the measured BUY phase, the best 30K sequential diagnostic completed 922 trades/s. This is an optimized upper-bound workload, not the mixed-flow capacity claim.
+
+Historical seeded matched-completion wording:
+
+> A separate seeded matched-completion benchmark reached a three-run median of 833.58 completed trades/s, but it starts from confirmed orders and therefore does not represent the full public HTTP lifecycle.
 
 Avoid this wording:
 

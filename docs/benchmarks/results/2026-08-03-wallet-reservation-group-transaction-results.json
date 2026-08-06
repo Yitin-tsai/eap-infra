@@ -1,0 +1,76 @@
+{
+  "ticket": "TPS-172",
+  "date": "2026-08-03",
+  "benchmarkContract": "http-matched-trade-completion-chain",
+  "decision": "rejected-and-reverted",
+  "acceptedReference": {
+    "runId": "GLT_20260803_HTTP_MATCHED_CLEANUP_BATCH_REQUEUE_1300_30K_R3",
+    "expectedTrades": 30000,
+    "buyTriggeredTradeCompletionTps": 922.38
+  },
+  "runs": [
+    {
+      "runId": "GLT_20260803_TPS172_WALLET_RESERVATION_GROUPTX_B5_SMOKE500_R1",
+      "expectedTrades": 500,
+      "groupSize": 5,
+      "orderedSettlementLocks": false,
+      "buyTriggeredTradeCompletionTps": 265.48,
+      "validForCapacityComparison": true,
+      "correct": true
+    },
+    {
+      "runId": "GLT_20260803_TPS172_WALLET_RESERVATION_GROUPTX_B5_1300_10K_R1",
+      "expectedTrades": 10000,
+      "groupSize": 5,
+      "orderedSettlementLocks": false,
+      "completed": false,
+      "observedDeadlockLogMatches": 96,
+      "decision": "stopped-repeated-deadlocks"
+    },
+    {
+      "runId": "GLT_20260803_TPS172_WALLET_LOCKORDER_GROUPTX_B5_SMOKE500_R1",
+      "expectedTrades": 500,
+      "groupSize": 5,
+      "orderedSettlementLocks": true,
+      "buyTriggeredTradeCompletionTps": 303.21,
+      "validForCapacityComparison": true,
+      "correct": true
+    },
+    {
+      "runId": "GLT_20260803_TPS172_WALLET_LOCKORDER_GROUPTX_B5_1300_10K_R1",
+      "expectedTrades": 10000,
+      "groupSize": 5,
+      "orderedSettlementLocks": true,
+      "buyTriggeredTradeCompletionTps": 779.98,
+      "businessHttpMatchedTradeCompletionTps": 465.47,
+      "businessHttpOrderConvergenceTps": 930.94,
+      "maxQueueBacklog": 10953,
+      "validForCapacityComparison": true,
+      "correct": true
+    },
+    {
+      "runId": "GLT_20260803_TPS172_WALLET_LOCKORDER_GROUPTX_B2_1300_10K_R1",
+      "expectedTrades": 10000,
+      "groupSize": 2,
+      "orderedSettlementLocks": true,
+      "buyTriggeredTradeCompletionTps": 677.70,
+      "businessHttpMatchedTradeCompletionTps": 428.68,
+      "businessHttpOrderConvergenceTps": 857.35,
+      "maxQueueBacklog": 5469,
+      "validForCapacityComparison": true,
+      "correct": true
+    },
+    {
+      "runId": "GLT_20260803_TPS172_WALLET_SINGLE_TX_CONTROL_1300_10K_R1",
+      "expectedTrades": 10000,
+      "groupSize": 1,
+      "orderedSettlementLocks": false,
+      "buyTriggeredTradeCompletionTps": 816.15,
+      "businessHttpMatchedTradeCompletionTps": 478.89,
+      "businessHttpOrderConvergenceTps": 957.79,
+      "maxQueueBacklog": 7271,
+      "validForCapacityComparison": true,
+      "correct": true
+    }
+  ]
+}

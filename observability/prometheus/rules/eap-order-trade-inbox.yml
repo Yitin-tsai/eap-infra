@@ -1,0 +1,22 @@
+groups:
+  - name: eap-order-trade-inbox
+    rules:
+      - alert: OrderTradeInboxPermanentFailure
+        expr: eap_order_trade_inbox_rows{status="FAILED_PERMANENT"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: eap-order
+        annotations:
+          summary: "Order has permanently failed TradeExecuted applications"
+          description: "{{ $value }} trade application(s) require investigation before controlled replay."
+
+      - alert: OrderTradeInboxNotConverging
+        expr: sum(eap_order_trade_inbox_rows{status=~"PENDING_PREREQUISITE|FAILED_RETRYABLE|IN_PROGRESS"}) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: eap-order
+        annotations:
+          summary: "Order TradeExecuted inbox is not converging"
+          description: "{{ $value }} trade application(s) have remained pending or retryable for more than two minutes."

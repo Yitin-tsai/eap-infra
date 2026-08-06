@@ -200,6 +200,68 @@ emit_postgres_database_delta() {
   }
 }
 
+emit_postgres_wal_delta() {
+  {
+    echo "| Service | WAL records | WAL FPI | WAL bytes | Buffers full | Writes | Syncs | Write time ms | Sync time ms |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
+    awk -F '\t' '
+    /^## (order|wallet|match) pg_stat_wal$/ {
+      label = $0
+      sub(/^## /, "", label)
+      split(label, parts, " ")
+      service = parts[1]
+      section = "pgwal"
+      next
+    }
+    /^## / { section = ""; next }
+    /^#/ { section = ""; next }
+    section == "pgwal" && NF >= 8 {
+      records = $1 + 0
+      fpi = $2 + 0
+      bytes = $3 + 0
+      buffers_full = $4 + 0
+      writes = $5 + 0
+      syncs = $6 + 0
+      write_time = $7 + 0
+      sync_time = $8 + 0
+      if (!(service in seen)) {
+        min_records[service] = records
+        min_fpi[service] = fpi
+        min_bytes[service] = bytes
+        min_buffers_full[service] = buffers_full
+        min_writes[service] = writes
+        min_syncs[service] = syncs
+        min_write_time[service] = write_time
+        min_sync_time[service] = sync_time
+      }
+      seen[service] = 1
+      max_records[service] = records
+      max_fpi[service] = fpi
+      max_bytes[service] = bytes
+      max_buffers_full[service] = buffers_full
+      max_writes[service] = writes
+      max_syncs[service] = syncs
+      max_write_time[service] = write_time
+      max_sync_time[service] = sync_time
+    }
+    END {
+      for (service in seen) {
+        printf "| %s | %.0f | %.0f | %.0f | %.0f | %.0f | %.0f | %.3f | %.3f |\n",
+          service,
+          max_records[service] - min_records[service],
+          max_fpi[service] - min_fpi[service],
+          max_bytes[service] - min_bytes[service],
+          max_buffers_full[service] - min_buffers_full[service],
+          max_writes[service] - min_writes[service],
+          max_syncs[service] - min_syncs[service],
+          max_write_time[service] - min_write_time[service],
+          max_sync_time[service] - min_sync_time[service]
+      }
+    }
+    ' "${SAMPLES_FILE}" | sort
+  }
+}
+
 emit_postgres_wait_summary() {
   local mode="$1"
   awk -F '\t' -v mode="${mode}" '
@@ -366,6 +428,12 @@ emit_cpu_summary() {
   echo "Deltas are derived from the first and last observed sampler values in this diagnostics window."
   echo
   emit_postgres_database_delta
+  echo
+  echo "## PostgreSQL WAL Delta"
+  echo
+  echo "Each service uses a separate PostgreSQL container, so cluster-wide pg_stat_wal deltas are service-specific here."
+  echo
+  emit_postgres_wal_delta
   echo
   echo "## PostgreSQL Actionable Wait Peaks"
   echo

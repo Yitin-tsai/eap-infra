@@ -21,6 +21,8 @@ RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-false}"
 ASSERT_LOADTEST_ENVIRONMENT="${ASSERT_LOADTEST_ENVIRONMENT:-true}"
 LOADTEST_RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
 LOADTEST_REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER:-eap-redis-loadtest}"
+ORDER_ADMISSION_SERVICE_LAUNCH_MODE="${ORDER_ADMISSION_SERVICE_LAUNCH_MODE:-boot-run}"
+ORDER_ADMISSION_SERVICE_JAVA_BIN="${ORDER_ADMISSION_SERVICE_JAVA_BIN:-java}"
 ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED:-false}"
 ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE:-35}"
 ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE:-${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}}"
@@ -41,6 +43,7 @@ ORDER_ADMISSION_ORDER_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS="${ORDER_ADMISSION_ORDER_
 ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_CONCURRENCY="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_CONCURRENCY:-16}"
 ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE:-50}"
 ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS:-25}"
+ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_SINGLE_ROUND_TRIP_ENABLED="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_SINGLE_ROUND_TRIP_ENABLED:-true}"
 ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED="${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED:-false}"
 ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES="${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES:-4}"
 ORDER_ADMISSION_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS="${ORDER_ADMISSION_WALLET_OUTBOX_IN_FLIGHT_TIMEOUT_SECONDS:-30}"
@@ -60,6 +63,7 @@ BENCHMARK_PROFILE="${BENCHMARK_PROFILE:-custom}"
 GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
 REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
 RUN_REPORT_LOG="${REPORT_DIR}/order-admission-${RUN_ID}.log"
+RUN_REPORT_JSON="${REPORT_DIR}/order-admission-${RUN_ID}-result.json"
 RUN_DIAG_DIR="${REPORT_DIR}/order-admission-${RUN_ID}-diagnostics"
 
 DIAG_SAMPLER_PID=""
@@ -100,6 +104,8 @@ Common options:
   --start-services VALUE       true or false
   --stop-services-after-run VALUE
                               true or false. Defaults to --start-services.
+  --service-launch-mode VALUE  boot-run or jar
+  --service-java-bin VALUE     Java executable used by jar launch mode
   --flush-redis-on-reset VALUE true or false
   --order-outbox-batch-size VALUE
   --order-outbox-publish-concurrency VALUE
@@ -335,6 +341,16 @@ while [[ $# -gt 0 ]]; do
       STOP_SERVICES_AFTER_RUN="$2"
       shift 2
       ;;
+    --service-launch-mode)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --service-launch-mode requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_SERVICE_LAUNCH_MODE="$2"
+      shift 2
+      ;;
+    --service-java-bin)
+      [[ $# -ge 2 ]] || { echo "[ERROR] --service-java-bin requires a value" >&2; exit 2; }
+      ORDER_ADMISSION_SERVICE_JAVA_BIN="$2"
+      shift 2
+      ;;
     --assert-loadtest-environment)
       [[ $# -ge 2 ]] || { echo "[ERROR] --assert-loadtest-environment requires a value" >&2; exit 2; }
       ASSERT_LOADTEST_ENVIRONMENT="$2"
@@ -447,6 +463,7 @@ if [[ -z "${STOP_SERVICES_AFTER_RUN}" ]]; then
 fi
 
 RUN_REPORT_LOG="${REPORT_DIR}/order-admission-${RUN_ID}.log"
+RUN_REPORT_JSON="${REPORT_DIR}/order-admission-${RUN_ID}-result.json"
 RUN_DIAG_DIR="${REPORT_DIR}/order-admission-${RUN_ID}-diagnostics"
 
 collect_diagnostics() {
@@ -470,6 +487,42 @@ collect_diagnostics() {
       exit 2
       ;;
   esac
+}
+
+extract_last_json_object() {
+  local source_log="$1"
+  local target_json="$2"
+  local temp_json="${target_json}.tmp.$$"
+
+  if ! awk '
+    /^\{/ {
+      in_json = 1
+      buffer = $0 ORS
+      next
+    }
+    in_json {
+      buffer = buffer $0 ORS
+      if ($0 ~ /^\}/) {
+        last = buffer
+        in_json = 0
+        buffer = ""
+      }
+    }
+    END {
+      if (last == "") {
+        exit 1
+      }
+      printf "%s", last
+    }
+  ' "${source_log}" > "${temp_json}"; then
+    rm -f "${temp_json}"
+    return 1
+  fi
+  if ! jq -e . "${temp_json}" >/dev/null; then
+    rm -f "${temp_json}"
+    return 1
+  fi
+  mv "${temp_json}" "${target_json}"
 }
 
 start_diagnostic_sampler() {
@@ -530,6 +583,8 @@ if [[ "${START_SERVICES}" == "true" ]]; then
     bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
 
   EAP_MATCH_USER_OPEN_ORDER_INDEX_ENABLED="${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}" \
+    LOADTEST_SERVICE_LAUNCH_MODE="${ORDER_ADMISSION_SERVICE_LAUNCH_MODE}" \
+    LOADTEST_SERVICE_JAVA_BIN="${ORDER_ADMISSION_SERVICE_JAVA_BIN}" \
     EAP_ORDER_COMMAND_POOL_SIZE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}" \
     EAP_ORDER_COMMAND_POOL_MIN_IDLE="${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE}" \
     EAP_ORDER_SUBMISSION_WRITE_MODE="${ORDER_ADMISSION_SUBMISSION_WRITE_MODE}" \
@@ -550,6 +605,7 @@ if [[ "${START_SERVICES}" == "true" ]]; then
     EAP_RATE_LIMIT_BACKEND="${ORDER_ADMISSION_RATE_LIMIT_BACKEND}" \
     EAP_ORDER_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE="${ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE}" \
     EAP_ORDER_ASSET_RESERVATION_CONFIRMED_CONCURRENCY="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_CONCURRENCY}" \
+    EAP_ORDER_ASSET_RESERVATION_CONFIRMED_SINGLE_ROUND_TRIP_ENABLED="${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_SINGLE_ROUND_TRIP_ENABLED}" \
     EAP_REDIS_SHARE_NATIVE_CONNECTION="${ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION}" \
     EAP_REDIS_LETTUCE_POOL_ENABLED="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED}" \
     EAP_REDIS_LETTUCE_POOL_MAX_ACTIVE="${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE}" \
@@ -572,6 +628,7 @@ echo "[INFO] Order admission chain benchmark"
 echo "[INFO] profile=${BENCHMARK_PROFILE}"
 echo "[INFO] runId=${RUN_ID}"
 echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, users=${USERS}, workers=${WORKERS}, maxInFlight=${MAX_IN_FLIGHT}, side=${SIDE}"
+echo "[INFO] serviceLaunchMode=${ORDER_ADMISSION_SERVICE_LAUNCH_MODE}, serviceJavaBin=${ORDER_ADMISSION_SERVICE_JAVA_BIN}"
 echo "[INFO] matchUserOpenOrderIndexEnabled=${ORDER_ADMISSION_MATCH_USER_OPEN_ORDER_INDEX_ENABLED}"
 echo "[INFO] orderCommandPoolSize=${ORDER_ADMISSION_ORDER_COMMAND_POOL_SIZE}, orderCommandPoolMinIdle=${ORDER_ADMISSION_ORDER_COMMAND_POOL_MIN_IDLE}"
 echo "[INFO] orderSubmissionWriteMode=${ORDER_ADMISSION_SUBMISSION_WRITE_MODE}, orderSubmissionHeadProjectorEnabled=${ORDER_ADMISSION_SUBMISSION_HEAD_PROJECTOR_ENABLED}, orderSubmissionEventStoreRelayEnabled=${ORDER_ADMISSION_SUBMISSION_EVENT_STORE_RELAY_ENABLED}"
@@ -580,7 +637,7 @@ echo "[INFO] orderSubmissionEventStoreRelayBatchSize=${ORDER_ADMISSION_SUBMISSIO
 echo "[INFO] orderOutboxBatchSize=${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_SIZE}, orderOutboxPublishConcurrency=${ORDER_ADMISSION_ORDER_OUTBOX_PUBLISH_CONCURRENCY}, orderOutboxBatchConfirmEnabled=${ORDER_ADMISSION_ORDER_OUTBOX_BATCH_CONFIRM_ENABLED}, orderOutboxAsyncRelayEnabled=${ORDER_ADMISSION_ORDER_OUTBOX_ASYNC_RELAY_ENABLED}"
 echo "[INFO] rateLimitEnabled=${ORDER_ADMISSION_RATE_LIMIT_ENABLED}, rateLimitBackend=${ORDER_ADMISSION_RATE_LIMIT_BACKEND}, marketSequenceAllocationBlockSize=${ORDER_ADMISSION_MARKET_SEQUENCE_ALLOCATION_BLOCK_SIZE}"
 echo "[INFO] redisShareNativeConnection=${ORDER_ADMISSION_REDIS_SHARE_NATIVE_CONNECTION}, redisLettucePoolEnabled=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_ENABLED}, redisLettucePoolMaxActive=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_ACTIVE}, redisLettucePoolMaxIdle=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_IDLE}, redisLettucePoolMinIdle=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MIN_IDLE}, redisLettucePoolMaxWait=${ORDER_ADMISSION_REDIS_LETTUCE_POOL_MAX_WAIT}"
-echo "[INFO] orderAssetReservationConfirmedCollectorCount=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_CONCURRENCY}, orderAssetReservationConfirmedBatchSize=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE}, orderAssetReservationConfirmedReceiveTimeoutMs=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS}"
+echo "[INFO] orderAssetReservationConfirmedCollectorCount=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_CONCURRENCY}, orderAssetReservationConfirmedBatchSize=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_BATCH_SIZE}, orderAssetReservationConfirmedReceiveTimeoutMs=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_RECEIVE_TIMEOUT_MS}, orderAssetReservationConfirmedSingleRoundTripEnabled=${ORDER_ADMISSION_ASSET_RESERVATION_CONFIRMED_SINGLE_ROUND_TRIP_ENABLED}"
 echo "[INFO] walletOutboxBatchSize=${ORDER_ADMISSION_WALLET_OUTBOX_BATCH_SIZE}, walletOutboxBatchConfirmEnabled=${ORDER_ADMISSION_WALLET_OUTBOX_BATCH_CONFIRM_ENABLED}, walletOutboxAsyncRelayEnabled=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_RELAY_ENABLED}, walletOutboxAsyncMaxInFlightBatches=${ORDER_ADMISSION_WALLET_OUTBOX_ASYNC_MAX_IN_FLIGHT_BATCHES}"
 echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
@@ -588,6 +645,7 @@ echo "[INFO] diagnosticSampleIntervalSeconds=${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE
 echo "[INFO] resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
 echo "[INFO] assertLoadtestEnvironment=${ASSERT_LOADTEST_ENVIRONMENT}, loadtestRabbitContainer=${LOADTEST_RABBIT_CONTAINER}, loadtestRedisContainer=${LOADTEST_REDIS_CONTAINER}, startServices=${START_SERVICES}, stopServicesAfterRun=${STOP_SERVICES_AFTER_RUN}"
 echo "[INFO] runReportLog=${RUN_REPORT_LOG}"
+echo "[INFO] runReportJson=${RUN_REPORT_JSON}"
 
 cd "${ROOT_DIR}/eap-order"
 if [[ "${RESET_PG_STATS_BEFORE_RUN}" == "true" ]]; then
@@ -626,5 +684,11 @@ if [[ -d "${RUN_DIAG_DIR}" && -f "${RUN_DIAG_DIR}/runtime-samples.log" ]]; then
   else
     echo "[WARN] could not generate runtime hot-window summary" >&2
   fi
+fi
+if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
+  echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
+else
+  echo "[WARN] could not extract run result JSON from ${RUN_REPORT_LOG}" >&2
+  rm -f "${RUN_REPORT_JSON}"
 fi
 exit "${run_status}"
