@@ -28,7 +28,7 @@ For resume/interview value, the strongest target is fully completed end-to-end t
 | ID | Task | Owner Role | Acceptance Criteria | Dependencies |
 | --- | --- | --- | --- | --- |
 | TPS-001 | Define 2000 TPS target and measurement method | Performance | Metric distinguishes submit/match/settle/E2E completion TPS | None |
-| TPS-002 | Map current service ownership and event flow | Architect | Diagram or written flow identifies source of truth and completion view | TPS-001 |
+| TPS-002 | Map current service ownership and event flow | Architect | Diagram or written flow identifies each service-owned durable fact and the external convergence gate | TPS-001 |
 | TPS-003 | Inventory current load-test tooling and configs | Implementation Lead | Key scripts, compose files, profiles, and service configs listed | None |
 | TPS-004 | Build cost model per trade | Performance | DB writes, MQ messages, outbox writes, and completion writes estimated | TPS-002 |
 | TPS-005 | Identify first bottleneck with baseline run | Performance | Baseline report includes throughput, p95/p99, errors, queue depth, DB/pool stats | TPS-001, TPS-003 |

@@ -1,265 +1,144 @@
-# EAP 開發環境快速指南
+# EAP 本機開發與壓測指南
 
-## 🚀 快速開始（最簡單的方式）
+EAP 是多 repository 專案。日常開發與容量壓測使用不同的 Docker 拓樸，不能混用資料庫位址或把開發環境結果當成壓測證據。
+
+## Repository 配置
+
+```text
+eap-workspace/       eap-infra：compose、壓測、公開文件
+eap-order/           Order Service，8080 /eap-order
+eap-wallet/          Wallet Service，8081 /eap-wallet
+eap-matchEngine/     MatchEngine，8082 /match-engine
+eap-common/          共用 Java 契約
+eap-mcp/             選用控制面，8083
+eap-ai-client/       選用本機 AI client，8084
+eap-trigger/         Go 實驗模組，尚未接入現行 TradeExecuted 事件
+```
+
+## 日常開發環境
+
+`docker-compose.yml` 提供共用 PostgreSQL、RabbitMQ 與 Redis。三個核心服務使用不同 schema，但開發時連到同一個 `eapdb`。
 
 ```bash
-# 1. 啟動所有開發服務（PostgreSQL, RabbitMQ, Redis）
+make dev-env
 make dev-up
-
-# 2. 啟動應用
 make run-all
-
-# 3. 停止服務（完成開發後）
-make dev-down
 ```
 
----
-## 📦 方式 1: 使用 Makefile（推薦）
-
-### 開發服務管理
-```bash
-make dev-up         # 啟動開發服務
-make dev-down       # 停止開發服務
-make dev-status     # 查看狀態和資源使用
-make dev-logs       # 查看日誌
-make dev-restart    # 重啟服務
-make dev-clean      # 清理所有數據
-```
-
-### 應用管理
-```bash
-make run-all        # 啟動所有應用
-make run-order      # 只啟動 Order Service
-make run-wallet     # 只啟動 Wallet Service
-make run-match      # 只啟動 MatchEngine
-```
-
----
-
-## 🛠️ 方式 2: 使用腳本
+常用命令：
 
 ```bash
-# 基本命令
-./dev-services.sh start       # 啟動服務
-./dev-services.sh stop        # 停止服務
-./dev-services.sh status      # 查看狀態
-./dev-services.sh logs        # 查看日誌
-
-# 進入容器
-./dev-services.sh shell postgres    # 進入 PostgreSQL
-./dev-services.sh shell redis       # 進入 Redis CLI
-./dev-services.sh shell rabbitmq    # 進入 RabbitMQ
-```
-
----
-
-## 🐳 方式 3: 直接使用 Docker Compose
-
-```bash
-# 啟動服務
-docker-compose up -d
-
-# 停止服務
-docker-compose down
-
-# 查看狀態
-docker-compose ps
-
-# 查看日誌
-docker-compose logs -f
-
-# 查看資源使用
-docker stats eap-postgres eap-rabbitmq eap-redis
-```
-
----
-
-## 💡 優化說明
-
-### 為什麼不會那麼燙了？
-
-1. **使用 Alpine 映像** - 體積減少 50%+
-   - `postgres:15` → `postgres:15-alpine`
-   - `rabbitmq:3-management` → `rabbitmq:3-management-alpine`
-   - `redis:7` → `redis:7-alpine`
-
-2. **資源限制**
-   - PostgreSQL: 最多 0.5 CPU, 512MB 記憶體
-   - RabbitMQ: 最多 0.5 CPU, 512MB 記憶體
-   - Redis: 最多 0.25 CPU, 256MB 記憶體（總共約 200MB）
-
-3. **記憶體優化**
-   - Redis: `maxmemory 200mb` + LRU 淘汰策略
-   - RabbitMQ: `VM_MEMORY_HIGH_WATERMARK: 256MB`
-   - PostgreSQL: `SHARED_BUFFERS: 128MB`, `MAX_CONNECTIONS: 20`
-
-4. **重啟策略**
-   - 改為 `unless-stopped`（不需要時可完全停止）
-
----
-
-## 🔍 常用操作
-
-### 連接資料庫
-```bash
-# PostgreSQL
-./dev-services.sh shell postgres
-# 或
-docker exec -it eap-postgres psql -U admin -d eapdb
-```
-
-### 連接 Redis
-```bash
-# Redis CLI
-./dev-services.sh shell redis
-# 或
-docker exec -it eap-redis redis-cli
-
-# 查看所有 keys
-redis-cli keys '*'
-
-# 查看 matchId 序列
-redis-cli GET match:id:sequence
-```
-
-### 查看 RabbitMQ
-```bash
-# Web UI
-open http://localhost:15672
-# 用戶名: admin, 密碼: admin123
-
-# 命令行
-./dev-services.sh shell rabbitmq
-rabbitmqctl list_queues
-```
-
----
-
-## 🧪 測試流程
-
-```bash
-# 1. 啟動開發服務
-make dev-up
-
-# 2. 確認服務健康
 make dev-status
-
-# 3. 運行測試
+make dev-logs
+make build
 make test
-
-# 4. 啟動應用並手動測試
-make run-all
-
-# 5. 測試完成後停止
+make app-status
+make app-stop
 make dev-down
 ```
 
----
-
-## 📊 監控資源使用
+只啟動單一服務：
 
 ```bash
-# 實時監控
-docker stats eap-postgres eap-rabbitmq eap-redis
-
-# 查看記憶體使用
-docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
+make run-order
+make run-wallet
+make run-match
+make run-mcp
+make run-ai
 ```
 
----
-
-## 🔧 故障排除
-
-### 服務無法啟動
-```bash
-# 查看日誌
-docker-compose logs postgres
-docker-compose logs rabbitmq
-docker-compose logs redis
-
-# 重新創建容器
-docker-compose down
-docker-compose up -d
-```
-
-### 埠號衝突
-```bash
-# 查看哪個程序佔用了埠號
-lsof -i :5432  # PostgreSQL
-lsof -i :6379  # Redis
-lsof -i :5672  # RabbitMQ
-
-# 停止衝突的服務
-kill -9 <PID>
-```
-
-### 清理所有數據重新開始
-```bash
-make dev-clean
-make dev-up
-```
-
----
-
-## 💻 Colima 優化（針對 Mac）
-
-如果你使用 Colima，可以限制它的資源使用：
+服務也可以在各 repository 直接執行：
 
 ```bash
-# 停止當前的 Colima
-colima stop
-
-# 重新啟動並限制資源
-colima start --cpu 2 --memory 4 --disk 20
-
-# 查看狀態
-colima status
+cd eap-order && ./gradlew bootRun
+cd eap-wallet && ./gradlew bootRun
+cd eap-matchEngine && ./gradlew bootRun
 ```
 
----
+## 日常開發拓樸
 
-## 🎯 最佳實踐
+| 元件 | 位址 | 容器 |
+| --- | --- | --- |
+| PostgreSQL | `localhost:5432/eapdb` | `eap-postgres` |
+| RabbitMQ | `localhost:5672` | `eap-rabbitmq` |
+| RabbitMQ UI | `http://localhost:15672` | `eap-rabbitmq` |
+| Redis | `localhost:6379` | `eap-redis` |
 
-1. **開發時**
-   - 使用 `make dev-up` 啟動服務
-   - 開發完成後使用 `make dev-down` 停止
-   - 不需要時不要讓服務持續運行
+開發 Redis 使用 AOF 與 `noeviction`，因為任意淘汰 order-book key 會破壞訂單簿一致性。
 
-2. **測試時**
-   - 考慮使用嵌入式服務（H2、嵌入式 Redis）
-   - 只在集成測試時啟動完整環境
+## 測試
 
-3. **資源管理**
-   - 定期使用 `make dev-clean` 清理不需要的數據
-   - 監控資源使用：`make dev-status`
-
----
-
-## 📝 服務連接資訊
-
-| 服務 | 連接地址 | 用戶名 | 密碼 | 備註 |
-|------|---------|--------|------|------|
-| PostgreSQL | localhost:5432 | admin | admin123 | 資料庫: eapdb |
-| RabbitMQ | localhost:5672 | admin | admin123 | AMQP |
-| RabbitMQ UI | http://localhost:15672 | admin | admin123 | 管理界面 |
-| Redis | localhost:6379 | - | - | 無密碼 |
-
----
-
-## ❓ 常見問題
-
-**Q: 為什麼還是有點燙？**
-A: 可以進一步減少資源限制，或考慮使用遠程服務（見下方「方案 2」）
-
-**Q: 可以只啟動部分服務嗎？**
-A: 可以，使用：
 ```bash
-docker-compose up -d postgres redis  # 只啟動 PostgreSQL 和 Redis
+make test
+make test-trigger
 ```
 
-**Q: 如何完全停止 Docker？**
-A: 
+各 Java repository 也能個別執行：
+
 ```bash
-make dev-down          # 停止服務
-colima stop            # 停止 Colima（Mac）
+GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle \
+  ./gradlew --no-daemon test
 ```
+
+需要 PostgreSQL、Redis 或 RabbitMQ 的整合測試，必須依該 repository 的測試 profile 與 Testcontainers／本機服務要求執行；不要把未實際執行的測試報告為通過。
+
+## 容量壓測環境
+
+容量壓測使用 `docker-compose.loadtest.yml`，不是日常開發 compose：
+
+| 服務資料庫 | 位址 | 容器 |
+| --- | --- | --- |
+| Order PostgreSQL | `localhost:15432/eap_order_db` | `eap-order-postgres-loadtest` |
+| Wallet PostgreSQL | `localhost:15433/eap_wallet_db` | `eap-wallet-postgres-loadtest` |
+| MatchEngine PostgreSQL | `localhost:15434/eap_match_db` | `eap-match-postgres-loadtest` |
+| RabbitMQ | `localhost:5672` | `eap-rabbitmq-loadtest` |
+| Redis | `localhost:6379` | `eap-redis-loadtest` |
+
+公開 runner 會啟動 `loadtest` profile、檢查環境、重設狀態並在結束時停止自己啟動的服務。不要同時啟動日常 RabbitMQ/Redis 與壓測容器占用相同埠號。
+
+主要入口：
+
+```bash
+# 隨機混合 HTTP 階梯測試
+START_ORDER_TPS=700 END_ORDER_TPS=1100 STEP_ORDER_TPS=100 \
+STAGE_WARMUP_SECONDS=30 STAGE_DURATION_SECONDS=60 \
+WORKLOAD_SEED=20260807 DIAGNOSTICS_LEVEL=light \
+bash scripts/load-test/run-http-matched-staircase.sh
+
+# 30 分鐘隨機混合 HTTP 穩態測試
+TARGET_ORDER_TPS=300 WARMUP_SECONDS=60 DURATION_SECONDS=1800 \
+WORKLOAD_SEED=20260807 DIAGNOSTICS_LEVEL=light \
+bash scripts/load-test/run-http-matched-steady-state.sh
+
+# 已確認訂單後端診斷，不包含 HTTP admission
+TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
+DIAGNOSTICS_LEVEL=none \
+bash scripts/load-test/run-matched-trade-completion-10k.sh
+```
+
+完整 HTTP 容量 runner 固定使用 CDA 隨機混合 BUY/SELL 與各服務自己的 `application-loadtest.yml`。使用者數以各 side 的實際送出順序輪替，避免製造不合理的單一使用者瞬間突發。買賣 phase 順序、worker 數與 runtime profile 不再是公開容量開關；這些 runner 不驗證 TDA。
+
+## 診斷層級
+
+| 層級 | 用途 |
+| --- | --- |
+| `none` | 最低觀測負擔的容量或重複測試 |
+| `light` | queue、HTTP、完成量與基本主機指標 |
+| `deep` | PostgreSQL、WAL、pool、應用計時器與 durable lag 歸因 |
+
+Deep 會在同機產生 observer effect。deep 結果可以定位瓶頸，但不能直接取代低觀測容量結果。
+
+壓測輸出位於 `build/load-test-reports/`。正式宣稱必須同時記錄 run ID、參數、各 repository 版本、正確性關卡與工作負載邊界。詳見 [壓測分類](docs/benchmarks/load-test-taxonomy.md) 與 [效能報告](docs/performance-report.md)。
+
+## 清理與故障排除
+
+```bash
+make dev-down
+bash scripts/load-test/stop-loadtest-services.sh
+docker compose -f docker-compose.loadtest.yml ps
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+lsof -nP -iTCP:8081 -sTCP:LISTEN
+lsof -nP -iTCP:8082 -sTCP:LISTEN
+```
+
+`make dev-clean` 會要求確認並刪除日常開發 volume。壓測資料清理由 runner 負責；不要手動刪除歷史報告或 frozen archive。

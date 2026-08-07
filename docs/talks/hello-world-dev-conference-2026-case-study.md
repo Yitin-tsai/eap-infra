@@ -4,50 +4,52 @@ Hello World Dev Conference 2026 講題：**用 AI 工作流重整事件驅動交
 
 ## 為什麼 EAP 需要 AI 工作流
 
-EAP 是個人開發的事件驅動電力交易後端，涵蓋下單、資產保留、撮合與結算。一次交易跨越三個服務，必須核對 `trade_id`、資產、冪等、DLQ 與 queue drain；單一 API 或單一服務 TPS 不代表業務完成。
+EAP 是個人開發的事件驅動電力交易後端，支援連續雙向競價（CDA）與定時集合競價（TDA）。本次工程案例聚焦已建立完整證據鏈的 CDA：一次交易跨越三個服務，必須核對 `trade_id`、資產、冪等、DLQ 與 RabbitMQ 佇列是否清空；單一 API 或單一服務 TPS 不代表業務完成。MatchEngine 只擁有成交事實，不保存 Order 或 Wallet 的完成狀態；跨服務結果由交易路徑外的驗證工具核對。TDA 用於說明「功能存在不代表可靠性與容量已被證明」，不沿用 CDA 的壓測數據。
 
-個人開發容易讓同一人提出假設、實作並驗收。EAP 將 AI 拆成 Product、Architect、Performance、Implementation、QA 與 Reviewer，最後由 Human Owner 決定。AI 只是 decision input，不擁有架構、風險、部署或公開宣稱權限。
+個人開發容易讓同一人提出假設、實作並驗收。EAP 將 AI 拆成產品範圍、架構審查、效能分析、實作、品質驗證與最終審查等角色，最後由人工負責人決定。AI 只是決策參考，不擁有架構、風險、部署或公開宣稱權限。
 
 ## 自我審查與功能擴充
 
-Architect、Performance、QA 與 Reviewer 預設只讀；Implementation 只執行已接受的 spec。變更必須記錄 baseline、完成定義、一致性限制、單一變因、測試與 correctness gate。角色以不同觀點挑戰個人直覺，被拒絕或無法歸因的方案也會保留。
+架構、效能、品質驗證與最終審查角色預設只讀；實作角色只執行已接受的規格。變更必須記錄基準、完成定義、一致性限制、單一變因、測試與正確性關卡。角色以不同觀點挑戰個人直覺，被拒絕、無法判定或尚待下一個實驗的方案也會保留。
 
-流程已用於擴充 durable inbox、冪等、crash recovery、安全 transaction boundary，以及 mixed HTTP 與三服務核對。版本：[Order `376a4e1`](https://github.com/Yitin-tsai/eap-order/commit/376a4e181e278d2ab594e7b694aee0b87132f56e)、[Wallet `a5065d6`](https://github.com/Yitin-tsai/eap-wallet/commit/a5065d6b4eb54daead8357495e8b2bfe5f2dbc84)、[MatchEngine `b4caa39`](https://github.com/Yitin-tsai/eap-matchEngine/commit/b4caa39dc4d109de7f13318a8f0fc9439c85c7e9)、[infra `dfcd2dd`](https://github.com/Yitin-tsai/eap-infra/commit/dfcd2dd89b1bff57fd0ef0d7480af953f1ce6d83)。
+流程已用於擴充持久化收件匣、冪等、當機復原、安全的資料庫交易邊界，以及混合 HTTP 壓測與三服務核對。最近的自我審查也發現：TDA 雖已能出價與清算，但直接發布事件、出價重送冪等、驗資拒絕回授與整場收斂尚未達 CDA 證據標準，因此保留功能、公開缺口，而且不沿用 CDA TPS。公開基準版本：[Order `376a4e1`](https://github.com/Yitin-tsai/eap-order/commit/376a4e181e278d2ab594e7b694aee0b87132f56e)、[Wallet `a5065d6`](https://github.com/Yitin-tsai/eap-wallet/commit/a5065d6b4eb54daead8357495e8b2bfe5f2dbc84)、[MatchEngine `b4caa39`](https://github.com/Yitin-tsai/eap-matchEngine/commit/b4caa39dc4d109de7f13318a8f0fc9439c85c7e9)、[infra `96f688a`](https://github.com/Yitin-tsai/eap-infra/commit/96f688a64889013f30a70e6e9d0a391a9f75a114)。尚未提交的工作樹診斷會明確標示，不能假裝成上述固定版本結果。
 
 ## 證據決策案例
 
-**採用：reservation cleanup batching。** TPS169 sequential contract 的 BUY-triggered throughput `664.26 -> 922.38 trades/s`、cleanup SQL 約 `30000 -> 32` batch statements、最大 backlog `14110 -> 6261`、Match-to-Wallet p95 `13.624s -> 4.478s`。前後都通過三服務 ID、資產與 drain；它仍只是 upper-bound diagnostic。
+**採用：撮合訂單保留清理批次化。** TPS169 依序測試的 BUY 觸發完成速率為 `664.26 -> 922.38 trades/s`，清理 SQL 約由 `30000` 次降至 `32` 次批次陳述式，最大積壓為 `14110 -> 6261`，MatchEngine 到 Wallet 的 p95 延遲為 `13.624s -> 4.478s`。修改前後都通過三服務 ID、資產與清空關卡；它仍只是上限診斷。
 
-**拒絕：Wallet autocommit。** isolated settlement `11799.16 -> 20405.04 settlements/s`，full-chain mean `21.13ms -> 9.26ms`；但 postcondition 發生在 autocommit 後，錯誤不能 rollback，forced PostgreSQL rerun 又發現 reversed-role deadlock。因此恢復 explicit transaction、固定 UUID lock order，並補上 missing wallet、insufficient balance 與 concurrency tests。
+**拒絕：Wallet 自動提交。** 隔離結算吞吐量為 `11799.16 -> 20405.04 settlements/s`，全鏈 Wallet 資料庫交易平均時間為 `21.13ms -> 9.26ms`；但後置條件發生在自動提交之後，錯誤無法回復，強制重新執行 PostgreSQL 測試又發現買賣角色對調時的死結。因此恢復明確資料庫交易、固定 UUID 鎖定順序，並補上 Wallet 不存在、餘額不足與併行測試。
+
+**採用後仍被正確性關卡推翻高 TPS 宣稱：MatchEngine 排程與撮合訂單保留修復。** 監測先發現 1 條排程執行緒同時承擔撮合訂單保留清理與交易事件外送。相同條件比較中，排程隔離讓 800 階段從 `167.93` 提升到 `383.45 trades/s`、最大積壓從 `4090` 降到 `246`，並通過完整核對，因此採用。後續較高階梯雖一度通過 900，最終卻發現 1 張買單被重複撮合，整次高 TPS 結果因此作廢。修正方式是讓 Redis 撮合訂單保留狀態直接核對預期 `tradeId`；修正後 52500 筆訂單全部收斂，但 800 仍未穩定通過，公開下界維持 700 orders/s。這個案例示範 AI 輔助假設如何被觀測資料採用，也如何被正確性證據限制。
 
 ## 30 分鐘分享安排
 
-EAP 背景只占 3–8 分，共 5 分鐘，約為整場 `16.7%`；主體是工作流如何促成自我審查、功能擴充與可追溯決策。
+EAP 的專案背景與架構介紹安排在 3–8 分，共 5 分鐘，約為整場 `16.7%`。後續仍以 EAP 的採用與拒絕案例作為證據，但教學主體是可移植的 AI 工作流、驗證方式與人工決策，不是繼續介紹專案功能。
 
 | 時間 | 內容 |
 | --- | --- |
 | 0–3 分 | 個人開發的審查缺口與核心主張 |
-| 3–8 分 | EAP 架構與 business-complete 定義 |
+| 3–8 分 | EAP 架構與完整業務交易定義 |
 | 8–14 分 | AI 角色分工、只讀邊界與人工決策 |
-| 14–22 分 | 採用與拒絕案例 |
-| 22–26 分 | 對應 Jira、ADR、scoped PR、CI、Code Owner 的企業泛化 |
-| 26–28 分 | 可重用模板與 correctness gate |
+| 14–22 分 | 採用、拒絕與尚待驗證案例 |
+| 22–26 分 | 對應 Jira、ADR、限定範圍 PR、CI、Code Owner 的企業泛化 |
+| 26–28 分 | 可重用模板與正確性關卡 |
 | 28–30 分 | 總結與提問 |
 
 ## 可帶走的方法
 
 - 問題／假設／單一變因／證據／決策模板。
-- AI role contract 與人工 checkpoint。
-- correctness gate。
-- throughput boundary 定義。
-- rejected experiment、rollback 與 follow-up 的紀錄方法。
+- AI 角色契約與人工檢查點。
+- 正確性關卡。
+- 吞吐量邊界定義。
+- 已拒絕實驗、回復方式與後續工作的紀錄方法。
 
-流程也能用於同步 API、批次、ETL 與既有系統，並對應 Jira、ADR、PR、CI 與 change approval。
+流程也能用於同步 API、批次、ETL 與既有系統，並對應 Jira、ADR、PR、CI 與變更核准。
 
 ## 公開證據與限制
 
-公開證據：[README](../../README.zh-TW.md)、[Architecture](../architecture.md)、[AI workflow](../ai-engineering-workflow.md)、[Performance](../performance-report.md)、[Wallet report](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[Mixed staircase](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)。
+公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[現行工作樹混合流量診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)。
 
-EAP 不宣稱 `2000 completed TPS`。現行安全下界是單機短時間約 `700 accepted orders/s`、`350 same-window trades/s`、`320 full-lifecycle trades/s` 的 shuffled mixed HTTP 證據；`922.38/s` 是 sequential upper bound；`20405.04/s` 是已拒絕的 isolated 診斷。Seeded、mixed、short-window、soak、isolated、historical 與 deep diagnostics 必須分開。
+EAP 不宣稱 `2000 completed TPS`。最新工作樹下界是單機短時間 `699.98 accepted orders/s`、`346.12 same-window trades/s`、`320.47 full-lifecycle trades/s` 的 CDA 隨機混合 HTTP 證據，但尚未固定為發布版本；`922.38/s` 是 CDA 依序上限診斷；`20405.04/s` 是已拒絕版本的隔離診斷。已確認訂單、混合流量、短時間窗、長時間、元件隔離、歷史版本、深度診斷與 TDA 必須分開。
 
 內容與數據來自個人公開 EAP 專案，不涉及現職公司的程式碼、架構、資料或機密。

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
 
 RUN_PREFIX="${1:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_REPEAT}"
-PROFILE="${PROFILE:-light-10k}"
+DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-light}"
 REPEATS="${REPEATS:-3}"
 WARMUP_ENABLED="${WARMUP_ENABLED:-false}"
 WARMUP_TARGET_TPS="${WARMUP_TARGET_TPS:-1000}"
@@ -21,6 +21,14 @@ if (( REPEATS < 2 )); then
   exit 2
 fi
 
+case "${DIAGNOSTICS_LEVEL}" in
+  none|light|deep) ;;
+  *)
+    echo "[ERROR] DIAGNOSTICS_LEVEL must be one of: none, light, deep" >&2
+    exit 2
+    ;;
+esac
+
 if [[ "${WARMUP_ENABLED}" == "true" && "${RESTART_SERVICES_EACH_REPEAT}" == "true" ]]; then
   echo "[INFO] warm-up mode reuses the warmed service JVMs; overriding restartServicesEachRepeat=false"
   RESTART_SERVICES_EACH_REPEAT=false
@@ -35,7 +43,7 @@ mkdir -p "${REPORT_DIR}"
 
 echo "[INFO] repeated order-admission-chain load test"
 echo "[INFO] runPrefix=${RUN_PREFIX}"
-echo "[INFO] profile=${PROFILE}, repeats=${REPEATS}, warmupEnabled=${WARMUP_ENABLED}, warmupTargetTps=${WARMUP_TARGET_TPS}, warmupDurationSeconds=${WARMUP_DURATION_SECONDS}, warmupEvents=${WARMUP_EVENTS}"
+echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}, repeats=${REPEATS}, warmupEnabled=${WARMUP_ENABLED}, warmupTargetTps=${WARMUP_TARGET_TPS}, warmupDurationSeconds=${WARMUP_DURATION_SECONDS}, warmupEvents=${WARMUP_EVENTS}"
 echo "[INFO] minOrderbookTpsRatio=${MIN_ORDERBOOK_TPS_RATIO}, stopServicesBeforeRun=${STOP_SERVICES_BEFORE_RUN}, restartServicesEachRepeat=${RESTART_SERVICES_EACH_REPEAT}"
 if [[ "${SERVICE_METRICS_CUMULATIVE_ACROSS_RUNS}" == "true" ]]; then
   echo "[WARN] service component metrics are cumulative across the reused JVM lifetime; use adjacent count/sum deltas for per-run component means"
@@ -85,7 +93,6 @@ if [[ "${WARMUP_ENABLED}" == "true" ]]; then
   echo "[INFO] warm-up: runId=${WARMUP_RUN_ID}"
   SERVICES_STARTED_BY_REPEAT=true
   bash "${ROOT_DIR}/scripts/load-test/run-order-admission-chain-10k.sh" \
-    --profile "${PROFILE}" \
     --run-id "${WARMUP_RUN_ID}" \
     --target-tps "${WARMUP_TARGET_TPS}" \
     --duration-seconds "${WARMUP_DURATION_SECONDS}" \
@@ -114,11 +121,14 @@ for run_index in $(seq 1 "${REPEATS}"); do
   if [[ "${START_SERVICES_FOR_REPEAT}" == "true" ]]; then
     SERVICES_STARTED_BY_REPEAT=true
   fi
-  bash "${ROOT_DIR}/scripts/load-test/run-order-admission-chain-10k.sh" \
-    --profile "${PROFILE}" \
-    --run-id "${RUN_ID}" \
-    --start-services "${START_SERVICES_FOR_REPEAT}" \
+  RUN_ARGS=(
+    --run-id "${RUN_ID}"
+    --start-services "${START_SERVICES_FOR_REPEAT}"
     --stop-services-after-run false
+    --diagnostics-level "${DIAGNOSTICS_LEVEL}"
+  )
+  bash "${ROOT_DIR}/scripts/load-test/run-order-admission-chain-10k.sh" \
+    "${RUN_ARGS[@]}"
 
   extract_result_json "${RUN_ID}"
   if [[ ! -s "${RESULT_JSON}" ]]; then
@@ -131,7 +141,7 @@ done
 SUMMARY_JSON="${REPORT_DIR}/order-admission-repeat-${RUN_PREFIX}-summary.json"
 jq -s \
   --arg runPrefix "${RUN_PREFIX}" \
-  --arg profile "${PROFILE}" \
+  --arg diagnosticsLevel "${DIAGNOSTICS_LEVEL}" \
   --argjson repeats "${REPEATS}" \
   --argjson minOrderbookTpsRatio "${MIN_ORDERBOOK_TPS_RATIO}" \
   --argjson warmupEnabled "${WARMUP_ENABLED}" \
@@ -204,7 +214,7 @@ jq -s \
   | ($runs | map(select(.validForRepeatSummary))) as $validRuns
   | {
     runPrefix: $runPrefix,
-    profile: $profile,
+    diagnosticsLevel: $diagnosticsLevel,
     config: {
       repeats: $repeats,
       minOrderbookTpsRatio: $minOrderbookTpsRatio,

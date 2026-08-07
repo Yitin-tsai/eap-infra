@@ -367,24 +367,6 @@ snapshot_processes() {
   } > "${DIAG_DIR}/service-processes.txt" 2>&1
 }
 
-snapshot_match_completion_markers() {
-  safe_psql_exec "match completion markers for market" "${MATCH_DB_CONTAINER}" eap_match_db "
-WITH marker_rows AS (
-  SELECT trade_id, marker_type, marker_at
-  FROM match_engine.trade_completion_markers
-  WHERE trade_id LIKE '${MARKET_ID}-%'
-)
-SELECT marker_type,
-       count(*) AS marker_rows,
-       count(DISTINCT trade_id) AS distinct_trades,
-       min(marker_at) AS first_marker_at,
-       max(marker_at) AS last_marker_at
-FROM marker_rows
-GROUP BY marker_type
-ORDER BY marker_type;
-" "${DIAG_DIR}/match-completion-markers.txt"
-}
-
 percentile_column() {
   local file="$1"
   local column="$2"
@@ -524,7 +506,7 @@ WHERE trade_id LIKE '${MARKET_ID}-%';
     echo '- Match time uses `trade_executions.created_at`.'
     echo '- Order time uses `order_trade_applications.inserted_at`, the database-generated durable insertion time.'
     echo '- Wallet settlement apply time uses `trade_settlements.inserted_at`, the durable settlement fact insert time.'
-    echo '- Completion marker timing is intentionally absent because Order/Wallet no longer publish per-trade marker events to MatchEngine.'
+    echo '- Business completion is measured directly from the three service-owned durable tables.'
     echo
     echo "| Stage | Count | p50 ms | p95 ms | p99 ms | max ms |"
     echo "|---|---:|---:|---:|---:|---:|"
@@ -545,7 +527,7 @@ snapshot_actuator() {
     for url in "$@"; do
       echo "# url=${url}"
       if curl -fsS "${url}" \
-        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_completion_marker_.*|trade_outbox_.*|match_engine_.*).*'; then
+        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_outbox_.*|match_engine_.*).*'; then
         return 0
       fi
     done
@@ -557,7 +539,6 @@ snapshot_runtime() {
   snapshot_rabbitmq
   snapshot_redis
   snapshot_processes
-  snapshot_match_completion_markers
   snapshot_actuator wallet "http://localhost:8081/eap-wallet/actuator/prometheus"
   snapshot_actuator order "http://localhost:8080/eap-order/actuator/prometheus"
   snapshot_actuator match "http://localhost:8082/match-engine/actuator/prometheus" "http://localhost:8082/actuator/prometheus"
@@ -567,7 +548,6 @@ snapshot_runtime_light() {
   snapshot_rabbitmq
   snapshot_redis
   snapshot_processes
-  snapshot_match_completion_markers
   snapshot_actuator wallet "http://localhost:8081/eap-wallet/actuator/prometheus"
   snapshot_actuator order "http://localhost:8080/eap-order/actuator/prometheus"
   snapshot_actuator match "http://localhost:8082/match-engine/actuator/prometheus" "http://localhost:8082/actuator/prometheus"
@@ -623,7 +603,7 @@ sample_loop() {
           for url in ${urls}; do
             echo "# url=${url}"
             if curl -fsS "${url}" \
-              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_completion_marker_.*|trade_outbox_.*).*'; then
+              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_outbox_.*).*'; then
               break
             fi
           done

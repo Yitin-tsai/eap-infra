@@ -15,19 +15,16 @@ STEP_ORDER_TPS="${STEP_ORDER_TPS:-100}"
 STAGE_WARMUP_SECONDS="${STAGE_WARMUP_SECONDS:-30}"
 STAGE_DURATION_SECONDS="${STAGE_DURATION_SECONDS:-60}"
 USERS_PER_SIDE="${USERS_PER_SIDE:-500}"
-WORKERS="${WORKERS:-128}"
-MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-$((WORKERS * 2))}"
+WORKERS=128
+MAX_IN_FLIGHT=256
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
-SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-1}"
-PROGRESS_INTERVAL_SECONDS="${PROGRESS_INTERVAL_SECONDS:-10}"
+SAMPLE_INTERVAL_SECONDS=1
+PROGRESS_INTERVAL_SECONDS=10
 MIN_OFFERED_LOAD_RATIO="${MIN_OFFERED_LOAD_RATIO:-0.95}"
 MIN_COMPLETION_RATIO="${MIN_COMPLETION_RATIO:-0.95}"
 MAX_BACKLOG_GROWTH_PER_SECOND="${MAX_BACKLOG_GROWTH_PER_SECOND:-}"
 MAX_STEADY_BACKLOG="${MAX_STEADY_BACKLOG:-}"
-STOP_ON_FAILED_STAGE="${STOP_ON_FAILED_STAGE:-true}"
-ARRIVAL_PATTERN="${ARRIVAL_PATTERN:-shuffled}"
 WORKLOAD_SEED="${WORKLOAD_SEED:-20260804}"
-BENCHMARK_RUNTIME_PROFILE="${BENCHMARK_RUNTIME_PROFILE:-core-capacity}"
 RUN_ID="${RUN_ID:-${1:-GLT_$(date +%Y%m%d_%H%M%S)_HTTP_MATCHED_STAIRCASE}}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 ORDER_URL="${ORDER_URL:-http://localhost:8080/eap-order}"
@@ -46,7 +43,7 @@ RABBIT_PASSWORD="${RABBIT_PASSWORD:-admin123}"
 START_SERVICES="${START_SERVICES:-true}"
 STOP_SERVICES_AFTER_RUN="${STOP_SERVICES_AFTER_RUN:-${START_SERVICES}}"
 ASSERT_LOADTEST_ENVIRONMENT="${ASSERT_LOADTEST_ENVIRONMENT:-true}"
-FLUSH_REDIS_ON_RESET="${FLUSH_REDIS_ON_RESET:-true}"
+FLUSH_REDIS_ON_RESET=true
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-light}"
 DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS="${DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS:-5}"
 LOADTEST_RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
@@ -81,7 +78,6 @@ if (( STAGE_WARMUP_SECONDS < 10 || STAGE_DURATION_SECONDS < 2 )); then
   exit 2
 fi
 http_matched_validate_common
-http_matched_configure_runtime_profile
 http_matched_assert_environment
 http_matched_start_services
 
@@ -92,10 +88,8 @@ nominal_seconds=$((stage_count * (STAGE_WARMUP_SECONDS + STAGE_DURATION_SECONDS)
 echo "[INFO] HTTP matched staircase chain"
 echo "[INFO] runId=${RUN_ID}, totalOrderTps=${START_ORDER_TPS}..${END_ORDER_TPS} step=${STEP_ORDER_TPS}"
 echo "[INFO] stageWarmupSeconds=${STAGE_WARMUP_SECONDS}, stageMeasurementSeconds=${STAGE_DURATION_SECONDS}"
-echo "[INFO] arrivalPattern=${ARRIVAL_PATTERN}, workloadSeed=${WORKLOAD_SEED}, runtimeProfile=${BENCHMARK_RUNTIME_PROFILE}"
-echo "[INFO] rateLimitEnabled=${EAP_RATE_LIMIT_ENABLED}"
-echo "[INFO] walletTradeConcurrency=${EAP_WALLET_TRADE_EXECUTED_CONCURRENCY:-8}, walletTradeSettlementMode=single-event"
-echo "[INFO] stages=${stage_count}, nominalTrafficSeconds=${nominal_seconds}, stopOnFailedStage=${STOP_ON_FAILED_STAGE}"
+echo "[INFO] arrivalPattern=shuffled, workloadSeed=${WORKLOAD_SEED}, runtimeProfile=canonical"
+echo "[INFO] stages=${stage_count}, nominalTrafficSeconds=${nominal_seconds}, stopOnFailedStage=true"
 echo "[INFO] samples=${RUN_SAMPLES_CSV}, stages=${RUN_STAGES_CSV}, result=${RUN_REPORT_JSON}"
 
 http_matched_start_diagnostics
@@ -116,10 +110,10 @@ args="--run-id ${RUN_ID} \
 --progress-interval-seconds ${PROGRESS_INTERVAL_SECONDS} \
 --min-offered-load-ratio ${MIN_OFFERED_LOAD_RATIO} \
 --min-completion-ratio ${MIN_COMPLETION_RATIO} \
---stop-on-failed-stage ${STOP_ON_FAILED_STAGE} \
---arrival-pattern ${ARRIVAL_PATTERN} \
+--stop-on-failed-stage true \
+--arrival-pattern shuffled \
 --workload-seed ${WORKLOAD_SEED} \
---runtime-profile ${BENCHMARK_RUNTIME_PROFILE} \
+--runtime-profile canonical \
 --sample-output ${RUN_SAMPLES_CSV} \
 --stage-output ${RUN_STAGES_CSV} \
 --order-url ${ORDER_URL} \

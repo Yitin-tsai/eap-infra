@@ -15,8 +15,6 @@ current_queues=(
   "wallet.auctionBidSubmitted.queue"
   "wallet.auctionCleared.queue"
   "matchEngine.orderConfirmed.queue"
-  "matchEngine.orderTradeApplied.queue"
-  "matchEngine.walletTradeSettled.queue"
   "matchEngine.auctionBidConfirmed.queue"
   "order.orderConfirmed.queue"
   "order.orderFailed.queue"

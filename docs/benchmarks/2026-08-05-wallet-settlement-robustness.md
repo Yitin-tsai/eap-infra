@@ -367,9 +367,9 @@ the backlog exceeded its limit. A focused Gradle suite also overlapped roughly t
 first minute, so the throughput numbers are host-contaminated and must not be used
 as a clean capacity comparison. The correctness result remains usable because the
 run ultimately reached exact facts, balances, fingerprints, and empty durable and
-broker state. The core-capacity profile intentionally disabled completion markers;
-this run therefore validates durable facts and final convergence, not that optional
-projection.
+broker state. This run validates the service-owned durable facts and final
+convergence. The downstream completion-marker projection was not part of this
+contract and has since been retired.
 
 ## Deterministic crash-recovery gates
 
@@ -378,7 +378,7 @@ PostgreSQL and Redis and covers the three state boundaries around a match:
 
 - crash after Redis reserves the resting order but before the trade commit;
 - crash after the trade and outbox commit but before Redis reservation cleanup;
-- crash after matching completes but before the incoming-order completion marker.
+- crash after matching completes but before the incoming-order completed bitmap bit is written.
 
 Each case forces stale recovery, replays the same `OrderConfirmed` event twice, and
 asserts quantity conservation, one trade per resting order, unique trade facts,

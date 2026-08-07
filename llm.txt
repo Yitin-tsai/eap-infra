@@ -1,93 +1,60 @@
-# EAP (Electricity Auction Platform) — LLM Context
+# EAP - LLM Context
 
-> Cross-service overview. For per-service details, see `{module}/llm.txt`.
-> For precise API schemas, see `docs/api/*.json`.
+> Current cross-service contract. Prefer the service README and source code for implementation details; use `docs/architecture.md` for the public architecture.
 
-## 1. Project Overview
+## Platform
 
-EAP is an event-driven electricity trading platform built with Spring Boot microservices.
-Users place buy/sell orders, the system validates wallet balances, matches orders via a
-Redis-based engine, and broadcasts results in real-time via WebSocket.
+EAP is an event-driven electricity auction backend supporting Continuous Double Auction (CDA) and Timed Double Auction (TDA), built from standalone repositories. Core services use Java 17, Spring Boot 3.5.3, PostgreSQL, RabbitMQ, and Redis Lua.
 
-Tech: Java 17 / Spring Boot 3.5.3 / Gradle 8 / PostgreSQL 15 / Redis 7 / RabbitMQ 3
+| Module | Port | Responsibility |
+| --- | ---: | --- |
+| `eap-order` | 8080 | HTTP order acceptance, order event stream/outbox, durable trade inbox/application, query projection |
+| `eap-wallet` | 8081 | asset reservation, explicit-transaction settlement, Wallet outbox |
+| `eap-matchEngine` | 8082 | Redis order book, matching, durable `TradeExecuted`, trade outbox, reservation cleanup |
+| `eap-common` | - | compiled integration contracts; no business state |
+| `eap-mcp` | 8083 | optional control-plane tools |
+| `eap-ai-client` | 8084 | optional local LLM client |
+| `eap-trigger` | - | legacy Go experiment; still consumes retired `order.matched` and is not in the current core flow |
 
-## 2. Module Map
+## Core Event Flow
 
-| Module | Port | Context Path | Responsibility | Detail |
-|--------|------|-------------|----------------|--------|
-| eap-common | — | — | Shared library: events, constants, DTOs (not a runnable service) | [eap-common/llm.txt](eap-common/llm.txt) |
-| eap-order | 8080 | /eap-order | Order CRUD, WebSocket market data, SSE order status, MCP API | [eap-order/llm.txt](eap-order/llm.txt) |
-| eap-wallet | 8081 | /eap-wallet | Wallet management, balance check, Outbox event publishing | [eap-wallet/llm.txt](eap-wallet/llm.txt) |
-| eap-matchEngine | 8082 | /match-engine | Redis order book, Lua-script atomic matching, distributed locks | [eap-matchEngine/llm.txt](eap-matchEngine/llm.txt) |
-| eap-mcp | 8083 | / | MCP Server (Spring AI), exposes trading tools for LLM agents | [eap-mcp/llm.txt](eap-mcp/llm.txt) |
-| eap-ai-client | 8084 | / | AI chat frontend, connects to Ollama LLM via MCP | [eap-ai-client/llm.txt](eap-ai-client/llm.txt) |
-
-Dependency: all services depend on eap-common (compile-time library).
-
-## 3. Event Flow (Order Lifecycle)
-
-```
-[User] → POST /bid/buy or /bid/sell
-  → eap-order creates OrderSubmittedEvent
-  → RabbitMQ (order.submitted)
-  → eap-wallet: balance check + lock funds
-    → IF OK: write OrderConfirmedEvent to Outbox table (same DB transaction)
-      → OutboxPoller (@Scheduled 500ms) publishes to RabbitMQ (order.confirmed)
-      → eap-matchEngine: try match
-        → IF matched:
-          - matchEngine 同步清理 Redis 訂單簿（在 tryMatch() 內完成，非獨立 listener）
-          - 若 partial fill：Redisson 分散式鎖保護，剩餘數量重新加回訂單簿
-          - publish OrderMatchedEvent (order.matched)
-          → Fan-out to 2 queues:
-            - eap-order: save match_history, update orders status, push WebSocket
-            - eap-wallet: settle funds (unlock + transfer)
-        → IF no match: add to Redis order book (ZSet)
-    → IF FAIL: write OrderFailedEvent to Outbox → published to RabbitMQ (order.failed)
-      → eap-order: update order status via SSE
+```text
+HTTP BUY/SELL
+  -> Order: lifecycle event + OrderSubmitted outbox
+  -> Wallet: reserve assets + OrderConfirmed/OrderFailed outbox
+  -> Order: persist reservation result
+  -> MatchEngine: Redis Lua match or rest order
+  -> MatchEngine DB transaction: TradeExecuted + trade_outbox + optional cleanup task
+  -> trade.exchange / trade.executed
+       -> Order durable inbox + command-side trade application
+       -> Wallet explicit-transaction settlement
 ```
 
-## 4. RabbitMQ Topology
+Current routing keys:
 
-Exchange: `order.exchange` (Topic)
-Dead Letter: `order.dlx` (Fanout) → `order.dlq` (single DLQ for all failures)
+| Exchange / key | Consumers |
+| --- | --- |
+| `order.exchange / order.submitted` | Wallet |
+| `order.exchange / order.confirmed` | Order, MatchEngine |
+| `order.exchange / order.failed` | Order |
+| `trade.exchange / trade.executed` | Order, Wallet |
 
-| Routing Key | Queue(s) | Consumer |
-|-------------|----------|----------|
-| order.submitted | wallet.orderSubmitted.queue | eap-wallet CreateOrderListener |
-| order.confirmed | matchEngine.orderConfirmed.queue | eap-matchEngine OrderConfirmedListener |
-| | order.orderConfirmed.queue | eap-order OrderStatusUpdateListener |
-| order.matched | order.orderMatched.queue | eap-order MatchEventListener |
-| | wallet.orderMatched.queue | eap-wallet MatchedOrderListener |
+There is no Order/Wallet completion callback to MatchEngine. `OrderTradeAppliedEvent`, `WalletTradeSettledEvent`, the legacy `order.matched` bus, and MatchEngine completion views are retired.
 
-Note: matchEngine **不消費** order.matched — 訂單簿清理在 tryMatch() 內同步完成。
-| order.failed | order.orderFailed.queue | eap-order OrderStatusUpdateListener |
+TDA flow: Order publishes an auction bid, Wallet reserves assets and publishes `AuctionBidConfirmedEvent` through its outbox, and MatchEngine collects and clears bids on a schedule before Order and Wallet consume `AuctionClearedEvent`. Order bid submission and MatchEngine auction lifecycle events currently publish directly to RabbitMQ, so TDA does not inherit the CDA outbox or capacity evidence.
 
-All queues bind to DLX. Spring Retry: 3 attempts, exponential backoff (1s → 2s → 4s), max 10s.
+## Completion Contract
 
-## 5. Domain Glossary
+A trade is business-complete only when MatchEngine, Order, and Wallet have the same durable `trade_id` set, assets reconcile, relevant order books/reservations are empty, and measured RabbitMQ/DLQ plus durable retry debt drain. Order query projections are rebuildable and do not block the command-side gate.
 
-| Term | Meaning |
-|------|---------|
-| Order Book | Price-time priority queue of pending buy/sell orders |
-| Bid / Ask | Buy offer / Sell offer |
-| Match | A trade where buy price >= sell price |
-| Maker Price | Pricing model: resting (passive) order's price becomes deal price |
-| Outbox Pattern | Write events to DB table + poll to publish, avoiding dual-write |
-| DLX / DLQ | Dead Letter Exchange / Queue — captures failed messages for retry/inspection |
-| Spread | Difference between best ask and best bid |
-| Depth | Number of price levels shown in order book |
-| Partial Fill | Order matched for less than full quantity; remainder stays in book |
+## Reliability Rules
 
-## 6. Key File Locations
+- Local business state and outbox records commit atomically.
+- Consumers ACK after durable handling.
+- Duplicate delivery is expected and absorbed by `trade_id`/`order_id` claims and unique constraints.
+- Each service owns its retry, inbox/outbox, and failed state.
+- AI/MCP modules never own core transaction correctness.
 
-| What | Path |
-|------|------|
-| Events & Constants | eap-common/src/main/java/com/eap/common/ |
-| RabbitMQ Config | {module}/src/main/java/.../configuration/config/RabbitMQConfig.java |
-| Lua Scripts | eap-matchEngine/src/main/resources/lua/*.lua |
-| Liquibase Changelogs | {module}/src/main/resources/db/changelog/ |
-| OpenAPI Specs (static) | docs/api/*.json |
-| OpenAPI Spec (hand-written) | eap-order/src/main/resources/openapi/orderService.yml |
-| Docker Compose | docker-compose.yml |
-| App Startup Script | app-services.sh |
-| Planning & Stories | _bmad-output/planning/ |
+## Current Performance Boundary
+
+The current CDA mixed HTTP lower-bound class is about 700 accepted orders/s, 350 same-window trades/s, and 320 full-lifecycle trades/s on one host. A 2026-08-07 deep diagnostic passed 700 and failed 800 within the stage window while all work eventually converged. MatchEngine's single Spring scheduler worker currently serializes reservation cleanup and trade-outbox polling; scheduler isolation is only a pending experiment. There is no equivalent published TDA capacity result.

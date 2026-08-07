@@ -20,7 +20,7 @@ Act as the EAP QA Lead. Try to break the system before production.
 - Integration tests and Testcontainers.
 - Duplicate, out-of-order, delayed, and missing events.
 - Retry, DLQ, poison message, idempotent consumer behavior.
-- Race conditions around order matching, wallet reservation, settlement, completion view.
+- Race conditions around order matching, wallet reservation, service-owned trade application/settlement, and external convergence verification.
 - Load-test acceptance criteria and report reproducibility.
 
 ## Output format

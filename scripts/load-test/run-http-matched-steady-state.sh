@@ -13,18 +13,16 @@ TARGET_ORDER_TPS="${TARGET_ORDER_TPS:-300}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-60}"
 DURATION_SECONDS="${DURATION_SECONDS:-1800}"
 USERS_PER_SIDE="${USERS_PER_SIDE:-500}"
-WORKERS="${WORKERS:-128}"
-MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-$((WORKERS * 2))}"
+WORKERS=128
+MAX_IN_FLIGHT=256
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
-SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-1}"
-PROGRESS_INTERVAL_SECONDS="${PROGRESS_INTERVAL_SECONDS:-10}"
+SAMPLE_INTERVAL_SECONDS=1
+PROGRESS_INTERVAL_SECONDS=10
 MIN_OFFERED_LOAD_RATIO="${MIN_OFFERED_LOAD_RATIO:-0.95}"
 MIN_COMPLETION_RATIO="${MIN_COMPLETION_RATIO:-0.95}"
 MAX_BACKLOG_GROWTH_PER_SECOND="${MAX_BACKLOG_GROWTH_PER_SECOND:-}"
 MAX_STEADY_BACKLOG="${MAX_STEADY_BACKLOG:-}"
-ARRIVAL_PATTERN="${ARRIVAL_PATTERN:-shuffled}"
 WORKLOAD_SEED="${WORKLOAD_SEED:-20260804}"
-BENCHMARK_RUNTIME_PROFILE="${BENCHMARK_RUNTIME_PROFILE:-core-capacity}"
 RUN_ID="${RUN_ID:-${1:-GLT_$(date +%Y%m%d_%H%M%S)_HTTP_MATCHED_STEADY_30M}}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 ORDER_URL="${ORDER_URL:-http://localhost:8080/eap-order}"
@@ -43,7 +41,7 @@ RABBIT_PASSWORD="${RABBIT_PASSWORD:-admin123}"
 START_SERVICES="${START_SERVICES:-true}"
 STOP_SERVICES_AFTER_RUN="${STOP_SERVICES_AFTER_RUN:-${START_SERVICES}}"
 ASSERT_LOADTEST_ENVIRONMENT="${ASSERT_LOADTEST_ENVIRONMENT:-true}"
-FLUSH_REDIS_ON_RESET="${FLUSH_REDIS_ON_RESET:-true}"
+FLUSH_REDIS_ON_RESET=true
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-light}"
 DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS="${DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS:-5}"
 LOADTEST_RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER:-eap-rabbitmq-loadtest}"
@@ -65,7 +63,6 @@ if (( TARGET_ORDER_TPS <= 0 || TARGET_ORDER_TPS % 2 != 0 )); then
   exit 2
 fi
 http_matched_validate_common
-http_matched_configure_runtime_profile
 http_matched_assert_environment
 http_matched_start_services
 
@@ -74,9 +71,7 @@ mkdir -p "${GRADLE_USER_HOME_DIR}" "${REPORT_DIR}"
 echo "[INFO] HTTP matched steady-state chain"
 echo "[INFO] runId=${RUN_ID}, targetTotalOrderTps=${TARGET_ORDER_TPS}"
 echo "[INFO] warmupSeconds=${WARMUP_SECONDS}, measurementSeconds=${DURATION_SECONDS}, usersPerSide=${USERS_PER_SIDE}"
-echo "[INFO] arrivalPattern=${ARRIVAL_PATTERN}, workloadSeed=${WORKLOAD_SEED}, runtimeProfile=${BENCHMARK_RUNTIME_PROFILE}"
-echo "[INFO] rateLimitEnabled=${EAP_RATE_LIMIT_ENABLED}"
-echo "[INFO] walletTradeConcurrency=${EAP_WALLET_TRADE_EXECUTED_CONCURRENCY:-8}, walletTradeSettlementMode=single-event"
+echo "[INFO] arrivalPattern=shuffled, workloadSeed=${WORKLOAD_SEED}, runtimeProfile=canonical"
 echo "[INFO] minOfferedLoadRatio=${MIN_OFFERED_LOAD_RATIO}, minCompletionRatio=${MIN_COMPLETION_RATIO}"
 echo "[INFO] samples=${RUN_SAMPLES_CSV}, result=${RUN_REPORT_JSON}"
 
@@ -96,9 +91,9 @@ args="--run-id ${RUN_ID} \
 --progress-interval-seconds ${PROGRESS_INTERVAL_SECONDS} \
 --min-offered-load-ratio ${MIN_OFFERED_LOAD_RATIO} \
 --min-completion-ratio ${MIN_COMPLETION_RATIO} \
---arrival-pattern ${ARRIVAL_PATTERN} \
+--arrival-pattern shuffled \
 --workload-seed ${WORKLOAD_SEED} \
---runtime-profile ${BENCHMARK_RUNTIME_PROFILE} \
+--runtime-profile canonical \
 --sample-output ${RUN_SAMPLES_CSV} \
 --order-url ${ORDER_URL} \
 --wallet-url ${WALLET_URL} \

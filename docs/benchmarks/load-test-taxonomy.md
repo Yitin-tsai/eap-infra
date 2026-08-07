@@ -2,6 +2,8 @@
 
 EAP uses multiple load-test contracts because different parts of the trading workflow answer different engineering questions. Do not compare their TPS numbers as if they were the same unit.
 
+All contracts below exercise the CDA order/trade path. TDA uses separate auction events and currently has no equivalent public completion or capacity contract.
+
 ## Benchmark Contracts
 
 | Contract | Status | Entry Point | What It Measures | What It Does Not Measure |
@@ -12,6 +14,8 @@ EAP uses multiple load-test contracts because different parts of the trading wor
 | `http-matched-steady-state-chain` | implemented | `scripts/load-test/run-http-matched-steady-state.sh` | sustained balanced, seeded, mixed-side HTTP traffic; steady accepted-order and completed-trade rates; queue backlog level/slope; three-service durable convergence; asset settlement; and final drain | side-imbalanced, cancellation-heavy, or multi-price market behavior; multi-node failover |
 | `http-matched-staircase-chain` | implemented | `scripts/load-test/run-http-matched-staircase.sh` | one uninterrupted balanced, seeded, mixed-side HTTP run with progressively higher total order rates, per-stage throughput/latency/backlog gates, automatic knee detection, and final full-chain convergence | a long-duration guarantee at the provisional knee; side-imbalanced flow; multi-host load generation |
 | `rabbitmq-publish-only` | implemented diagnostic | `scripts/load-test/run-rabbitmq-publish-only-10k.sh` | RabbitMQ broker-confirmed input ceiling for persistent `OrderConfirmedEvent` messages | service processing, DB writes, matching, settlement |
+
+Scripts named `run-global-matched-e2e*` are lower-level seed/project/run drivers used by the backend wrapper and isolated diagnostics. Their publisher fan-out and phase controls do not define additional public capacity contracts. Use the entry points in the table for comparable results.
 
 ## Implemented Contracts
 
@@ -63,7 +67,7 @@ The result reports two non-interchangeable throughput values:
 
 This contract answers whether the full system can sustain continuous matched traffic without a growing queue. It creates equal BUY and SELL populations, shuffles their HTTP arrival order with a reproducible seed, and sends the resulting mixed stream at a target expressed as total orders per second. One eventual trade therefore requires two units of offered load.
 
-`ARRIVAL_PATTERN=shuffled` is the canonical capacity workload. `WORKLOAD_SEED` must be recorded with every result and changed across repeat runs. `ARRIVAL_PATTERN=alternating` preserves the former `SELL, BUY` sequence only for regression comparison; it is not the default capacity claim.
+The runner always shuffles BUY and SELL arrivals. Within each side, users rotate by actual send order so the workload does not create artificial per-user bursts that violate the normal Order API rate limit. `WORKLOAD_SEED` must be recorded with every result and changed across repeat runs. Sequential SELL-then-BUY behavior belongs to the separate upper-bound diagnostic and cannot be enabled in the mixed-flow capacity runner.
 
 The standard local profile uses:
 
@@ -82,13 +86,9 @@ In addition to final correctness and drain gates, a sustained run is valid only 
 
 Registered load-test wallets are funded during setup according to the planned run length. Registration and funding are outside the measurement window; every measured order, reservation, match, trade application, and settlement still uses the real service path.
 
-The runner also records one of these runtime profiles:
+Current full HTTP capacity runners use one canonical runtime configuration: each service owns its settings in `application-loadtest.yml`, and normal recovery behavior remains enabled. The public runners do not switch listener concurrency, pools, outbox batching, projections, reservation recovery, or rate limiting. Historical reports retain `core-capacity` and `production-equivalent` labels only to describe the revisions that produced those artifacts; those profiles are no longer selectable and are not current capacity contracts.
 
-- `core-capacity` uses the optimized load-test listener, batch, pool, and completion-view settings. It locates an implementation ceiling but is not a production-profile claim.
-- `production-equivalent` retains local split databases and quiet load-test logging while restoring the normal application defaults for transaction pools, listeners, batching, outbox polling, completion-view writes, and reconcilers.
-- `custom` leaves runtime tuning to explicitly supplied environment variables and must be reported with its configuration overrides.
-
-`production-equivalent` is a local configuration comparison, not evidence of a deployed cloud topology. Results from different runtime profiles are not interchangeable.
+The runner's fixed workers and in-flight limits are implementation details, not workload-selection controls. Changing service concurrency, pool size, outbox mode, cleanup behavior, rate limiting, arrival pattern, or BUY/SELL phase order creates a different experiment and must be done in a lower-level diagnostic with the override recorded explicitly.
 
 ### `http-matched-staircase-chain`
 
@@ -112,8 +112,8 @@ The load driver uses fixed open-loop deadlines. A late scheduler wake-up does no
 
 ## Next Benchmark Work
 
-1. Re-establish the staircase knee with `ARRIVAL_PATTERN=shuffled` across at least three seeds under `core-capacity`.
-2. Repeat the same seed and rates under `production-equivalent` to quantify the cost of normal completion and recovery behavior.
-3. Confirm the lower repeated knee with `http-matched-steady-state-chain` for 30 minutes.
+1. Isolate MatchEngine reservation cleanup from trade-outbox scheduling, then repeat the 2026-08-07 700/800 same-seed diagnostic.
+2. Re-establish the staircase knee on the resulting code revision across at least three workload seeds using the canonical runtime configuration.
+3. Establish a passing 30-minute `http-matched-steady-state-chain` rate below the historical failed 900 orders/s soak.
 4. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
-5. Repeat the knee run with the load generator on a separate CPU/host before attributing the same-host offered-load failure to a service.
+5. Repeat the knee run with the load generator on a separate CPU/host before attributing the final same-host boundary to a service.

@@ -66,10 +66,10 @@ Neither rejected attempt is capacity evidence.
 ## Interpretation
 
 - The optimized core-capacity boundary is provisionally `900 pass / 1000 fail`, equivalent to a `450 completed trades/s` passing target.
-- The production-equivalent boundary is provisionally `700 pass / 800 fail`, equivalent to a `350 completed trades/s` passing target.
+- For that historical revision, the production-equivalent boundary was provisionally `700 pass / 800 fail`, equivalent to a `350 same-window trades/s` passing target. It was not a full-lifecycle TPS value and is superseded as the current-worktree reference by the 2026-08-07 diagnostic.
 - Both failed stages accepted all input and eventually converged; they failed because business completion could not keep pace during the measurement window.
 - The earlier strict-alternating boundary of `1000 pass / 1100 fail` was workload-sensitive and should be treated as historical regression evidence.
-- Runtime profile work matters: restoring normal projection frequency, smaller pools and batches, completion-view writes, and reconcilers moved the provisional knee down by two `100 orders/s` stages.
+- Runtime profile work mattered at this historical revision: restoring normal projection frequency, smaller pools and batches, the then-active completion-view writes, and reconcilers moved the provisional knee down by two `100 orders/s` stages. The completion feedback loop has since been retired, so this is not a description of the current runtime profile.
 - Follow-up testing passed three seeds at 900 orders/s for three-minute windows, but a 30-minute 900 orders/s soak failed as the Order event outbox accumulated durable debt. See the [2026-08-05 robustness report](2026-08-05-wallet-settlement-robustness.md). A lower long-duration knee and an external load generator are still required before publishing a sustained capacity claim.
 
 ## Artifacts

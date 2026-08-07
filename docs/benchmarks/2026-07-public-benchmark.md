@@ -79,9 +79,8 @@ REPEATS=5 \
 TARGET_TPS=2000 \
 DURATION_SECONDS=5 \
 EVENTS=10000 \
-PUBLISHERS=1 \
 TIMEOUT_SECONDS=300 \
-DIAGNOSTICS_LEVEL=baseline \
+DIAGNOSTICS_LEVEL=none \
 MIN_OFFERED_TPS_RATIO=0.95 \
 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
 ```
@@ -139,7 +138,7 @@ TPS126 also split input measurement from integrated service work:
 
 This is the pinned public result under the older input-attempt contract. It remains useful history, but it should not be used as proof of 2000/s broker-confirmed input.
 
-Command prefix:
+Historical command prefix (the former `baseline` diagnostics alias is now named `none`):
 
 ```bash
 REPEATS=5 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
@@ -173,7 +172,7 @@ Valid-runs-only summary:
 | trade execution reach TPS | `1082.09` | `1036.83` | `1176.72` |
 | Order command match reach TPS | `843.92` | `825.46` | `974.14` |
 | Wallet settlement reach TPS | `843.92` | `825.46` | `974.14` |
-| completion marker reach TPS | `745.60` | `701.99` | `803.90` |
+| legacy completion marker reach TPS | `745.60` | `701.99` | `803.90` |
 
 Per-run business TPS:
 

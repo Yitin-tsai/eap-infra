@@ -2,17 +2,19 @@
 
 # EAP - Event-Driven Auction Platform for Electricity Markets
 
-EAP is a production-style electricity market backend built with Java / Spring Boot, RabbitMQ, PostgreSQL, and a Redis Lua order book. The project focuses on completed-transaction throughput, transaction correctness, idempotent event processing, reliable outbox publishing, and operational observability rather than CRUD.
+EAP is a production-style electricity market backend supporting Continuous Double Auction (CDA) and Timed Double Auction (TDA), built with Java / Spring Boot, RabbitMQ, PostgreSQL, and Redis Lua. The project focuses on completed-transaction throughput, transaction correctness, idempotent event processing, reliable outbox publishing, and operational observability rather than CRUD.
 
 ## Latest Benchmark Summary
 
 > The project does not claim 2000 completed TPS. Its benchmark contracts separate scheduled HTTP input, accepted responses, RabbitMQ broker-confirmed input, isolated core operations, and fully business-gated completed trades. A completed-trade run is not valid unless Order / Wallet / MatchEngine durable trade ID sets are identical and final queues drain.
 >
 > The canonical capacity contract sends a seeded, shuffled, balanced BUY/SELL stream through the Order API and waits for reservation, matching, settlement, three-service convergence, and queue drain. Sequential phase and seeded backend results are reported separately because they use different starting conditions.
+>
+> Current capacity and full-lifecycle benchmark claims cover the CDA path only. TDA is implemented, but it has a different event contract and has not passed an equivalent published capacity and recovery campaign.
 
 | Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
 | --- | ---: | ---: | --- | --- |
-| Current safe shuffled mixed HTTP lower bound, 2026-08-06 | `699.31 accepted orders/s` | `350.09 same-window`; `319.97 full-lifecycle trades/s` | `14000/14000` HTTP accepted; `7000` exact three-service trades; assets/queues/DLQ drained | 15-second current-code regression only; the rejected autocommit revision's 900 orders/s results remain historical diagnostics, not current capacity |
+| Latest shuffled mixed HTTP worktree regression, 2026-08-07 | `699.98 accepted orders/s` | `346.12 same-window`; `320.47 full-lifecycle trades/s` | `17500/17500` HTTP accepted; `8750` exact three-service trades; assets/queues/DLQ drained | 15-second, one-seed, same-host lower-bound diagnostic; not release-pinned or long-duration capacity |
 | Sequential SELL-then-BUY 30K optimized diagnostic, TPS169 | `1299.71 SELL`, `1298.26 BUY accepted orders/s` | `922.38 BUY-triggered trades/s`; `530.43 full-lifecycle trades/s`; `1060.85 order convergence/s` | `30000` identical Match/Order/Wallet `trade_id` values + exact assets + final drain | Upper-bound workload with sell liquidity prepared before the measured BUY phase; not mixed capacity |
 | Schema-v2 full HTTP 100K, 2026-08-04 | `999.90 SELL`, `991.35 BUY accepted orders/s` | `613.33 trades/s` after SELL readiness; `378.86 full-lifecycle trades/s` | `200000/200000` HTTP accepted + `100000` identical three-service `trade_id` values + exact assets + final drain | Reliability proof for that tested revision after its Wallet stable-lock fix; lower than the historical run and not a current-code capacity record |
 | Historical full HTTP 100K validation, TPS168 | `999.95 SELL`, `999.84 BUY accepted orders/s` | `707.43 BUY-triggered trades/s`; `410.16 full-lifecycle trades/s` | `200000/200000` HTTP accepted + `100000` identical three-service `trade_id` values + exact assets + final drain | Strong scale-correctness evidence under the older measurement schema; throughput is conservative and is not the current capacity baseline |
@@ -24,7 +26,7 @@ EAP is a production-style electricity market backend built with Java / Spring Bo
 | Pinned public 10k repeat, 2026-07-13 | median `1,998.94 client-side input attempts/s` | median `582.73 completed trades/s` | count-based durable facts + legacy marker gate + final queue drain | 4/5 valid runs under the older benchmark contract |
 | TPS169 same-contract A/B | `1300 orders/s` per sequential phase | BUY-triggered completion `664.26 -> 922.38 trades/s` | both runs passed exact three-service IDs, assets, and drain gates | Batched reservation cleanup reduced completion SQL from `30000` per-trade updates to about `32` batch statements; max backlog `14110 -> 6261`, Match-to-Wallet p95 `13.624s -> 4.478s` |
 
-See [the Wallet and repeated-capacity report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md), [the balanced mixed staircase report](docs/benchmarks/2026-08-04-balanced-mixed-http-staircase.md), [docs/performance-report.md](docs/performance-report.md), and [the full HTTP 100K report](docs/benchmarks/2026-08-03-full-http-100k.md). The raw engineering log is frozen under [docs/archive/performance/2026-06-global-loadtest-2000-tps.md](docs/archive/performance/2026-06-global-loadtest-2000-tps.md).
+See [the 2026-08-07 canonical mixed diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md), [the Wallet and repeated-capacity report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md), [the balanced mixed staircase report](docs/benchmarks/2026-08-04-balanced-mixed-http-staircase.md), [docs/performance-report.md](docs/performance-report.md), and [the full HTTP 100K report](docs/benchmarks/2026-08-03-full-http-100k.md). The raw engineering log is frozen under [docs/archive/performance/2026-06-global-loadtest-2000-tps.md](docs/archive/performance/2026-06-global-loadtest-2000-tps.md).
 
 ## Workload Semantics
 
@@ -78,7 +80,7 @@ Official benchmark claims should cite the machine-readable snapshot generated by
 
 ## What The System Does
 
-EAP simulates an electricity trading market: orders enter the market, assets are reserved, orders are matched, trade facts are persisted, order state converges, wallet settlement runs, and integration events are published reliably.
+EAP simulates an electricity trading market through two market modes. CDA continuously reserves and matches individual orders; TDA collects stepped bids during a session and clears them together at a scheduled time.
 
 Core flow:
 
@@ -87,13 +89,15 @@ Order API
   -> Order Service append command event + outbox
   -> Wallet Service reserves assets
   -> MatchEngine matches orders with Redis ZSET + Lua
-  -> MatchEngine persists TradeExecuted + outbox
+  -> MatchEngine persists TradeExecuted + outbox + deferred cleanup task atomically
   -> Order Service applies trade result
   -> Wallet Service settles trade
   -> Benchmark verifies the same trade IDs exist in MatchEngine, Order, and Wallet durable tables
 ```
 
 See [docs/architecture.md](docs/architecture.md) for the full architecture overview.
+
+The TDA path is implemented across Order, Wallet, and MatchEngine, but its Order bid submission and MatchEngine auction lifecycle publications currently bypass a transactional outbox. Wallet bid redelivery idempotency, reservation rejection feedback, and whole-auction convergence also remain open. TDA is therefore documented as a functional capability with reliability gaps, not as part of the CDA capacity claims above.
 
 ## Core Engineering Problems
 
@@ -108,20 +112,21 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture overv
 
 | Service | Ownership | Primary Responsibility |
 | --- | --- | --- |
-| `eap-order` | Order command lifecycle | order submission, command-side event store, order trade application, query projection |
-| `eap-wallet` | Wallet balance and settlement | asset reservation, settlement, idempotent wallet ledger, wallet outbox |
-| `eap-matchEngine` | Matching and trade fact | Redis order book, `TradeExecuted` fact, trade outbox |
+| `eap-order` | Order and auction command lifecycle | CDA order event stream/application; TDA bid entry and result view |
+| `eap-wallet` | Wallet balance and settlement | CDA/TDA reservation, CDA trade settlement, TDA auction settlement, wallet outbox |
+| `eap-matchEngine` | Matching and auction clearing | CDA Redis order book and `TradeExecuted`; TDA bid collection, scheduling and clearing |
 | `eap-common` | Shared contracts | DTOs, events, shared integration contracts |
 | `eap-mcp` / `eap-ai-client` | Control-plane extension | backend tools for controlled AI-agent experiments |
-| `eap-trigger` | Future trigger module | Go-based conditional-order trigger service |
+| `eap-trigger` | Legacy side experiment | Go conditional-order module; still consumes retired `order.matched` and is not integrated with the current core flow |
 
 ## Reliability Model
 
 - Message delivery: RabbitMQ at-least-once.
-- Publish reliability: transactional outbox per owning service.
+- Publish reliability: CDA transitions that emit integration events use a transactional outbox; terminal Order/Wallet trade application emits no completion callback. The current TDA direct-publication exceptions are documented architecture gaps.
 - Consumer safety: idempotency tables / unique keys / local DB transactions.
 - Completion definition: a trade is business-complete only after MatchEngine has `TradeExecuted`, Order has applied the trade, Wallet has settled it, all three services contain the same completed `trade_id` set, and measured queues drain.
 - Read models: projections are rebuildable and measured as lag, not used as the command-side source of truth.
+- Completion feedback: Order and Wallet do not publish per-trade completion callbacks; external verification compares service-owned durable facts.
 
 ## AI-Assisted Engineering Workflow
 
@@ -147,15 +152,15 @@ make test
 Focused load-test scripts live under [scripts/load-test/](scripts/load-test/). The 2000 TPS investigation currently uses:
 
 ```bash
-TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=1 \
-TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline MIN_OFFERED_TPS_RATIO=0.95 \
+TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
+TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=none MIN_OFFERED_TPS_RATIO=0.95 \
 REPEATS=5 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
 ```
 
 The direct `matched-trade-completion-chain` entrypoint is:
 
 ```bash
-TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 PUBLISHERS=1 \
+TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
 TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=light \
 bash scripts/load-test/run-matched-trade-completion-10k.sh GLT_MATCHED_TRADE_COMPLETION_10K
 ```
@@ -165,11 +170,11 @@ The full HTTP staircase entrypoint is:
 ```bash
 START_ORDER_TPS=700 END_ORDER_TPS=1100 STEP_ORDER_TPS=100 \
 STAGE_WARMUP_SECONDS=10 STAGE_DURATION_SECONDS=15 \
-ARRIVAL_PATTERN=shuffled WORKLOAD_SEED=20260804 \
+WORKLOAD_SEED=20260804 \
 bash scripts/load-test/run-http-matched-staircase.sh
 ```
 
-Use `BENCHMARK_RUNTIME_PROFILE=production-equivalent` with the same workload seed to compare the optimized capacity profile against normal runtime behavior.
+The full HTTP runners always use shuffled mixed arrivals and the service-owned `loadtest` configuration. Worker counts, runtime profiles, and phase ordering are intentionally not public capacity switches; lower-level component scripts remain available for isolated diagnostics.
 
 RabbitMQ input ceiling is measured separately:
 
@@ -184,10 +189,12 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
 
 ## Current Validation Gaps
 
+- MatchEngine now isolates trade-outbox polling from reservation maintenance. The same-seed A/B materially improved the 800-stage backlog and completion metrics, but later repeats did not make 800 a stable capacity point, so the public mixed-flow lower bound remains 700 orders/s.
+- Reservation recovery now correlates Redis state to an exact durable `tradeId`. A stale cleanup cannot release or delete a newer reservation for the same order; the post-fix 52,500-order staircase passed exact three-service convergence with zero final DLQ or reservation debt.
 - The full HTTP staircase includes HTTP histogram bounds but not end-to-end per-trade p95/p99 latency.
 - The latest `1300 accepted orders/s` result uses sequential SELL and BUY phases on a single machine; it is not a mixed-flow or 30-minute soak claim.
 - The current safe Wallet transaction boundary passed a short mixed `700 total orders/s` regression. Two current-code `900 orders/s` repeats converged correctly but were not repeatably sustainable; the older three-seed 900 result used the subsequently rejected autocommit boundary.
-- The current 700 orders/s point still needs longer runs and additional seeds before becoming a stable capacity claim.
+- A clean current-code 15-minute 700 orders/s same-host soak passed. Additional seeds and an external load generator are still required before treating it as a production SLA.
 - Load generator, services, and containers share one machine; an external load-generator repeat is still required to remove shared-CPU interference.
 - The `922.38 trades/s` 30K result is a sequential upper-bound diagnostic with sell-side liquidity prepared before the measured BUY phase; it is not the mixed-flow capacity value.
 - The 2026-08-04 schema-v2 100K revision passed all correctness gates but was slower than the historical 100K run; later Wallet changes require fresh validation before changing the capacity baseline.
@@ -200,12 +207,13 @@ The public benchmark runbook is tracked in [docs/benchmarks/2026-07-public-bench
 
 ## Reading Order
 
-1. [docs/architecture.md](docs/architecture.md) - system boundaries and event flow.
+1. [docs/architecture.md](docs/architecture.md) - current system boundaries, event flow, and retired completion feedback loop.
 2. [docs/ai-engineering-workflow.md](docs/ai-engineering-workflow.md) - role contracts, evidence gates, and real adopted/rejected experiments.
 3. [docs/talks/hello-world-dev-conference-2026-case-study.md](docs/talks/hello-world-dev-conference-2026-case-study.md) - how EAP uses AI roles for self-review, feature expansion, and evidence-based decisions.
 4. [docs/benchmarks/load-test-taxonomy.md](docs/benchmarks/load-test-taxonomy.md) - benchmark boundary definitions.
 5. [docs/performance-report.md](docs/performance-report.md) - benchmark definitions, latest results, and bottlenecks.
-6. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - pinned public benchmark plan.
-7. Service READMEs: [Order](https://github.com/Yitin-tsai/eap-order), [Wallet](https://github.com/Yitin-tsai/eap-wallet), [MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine), [MCP](https://github.com/Yitin-tsai/eap-mcp), [AI Client](https://github.com/Yitin-tsai/eap-ai-client), [Common](https://github.com/Yitin-tsai/eap-common), [Trigger](eap-trigger/README.md).
+6. [docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md) - current-worktree 700/800 diagnostic and scheduler-contention evidence.
+7. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - pinned public benchmark plan.
+8. Service READMEs: [Order](https://github.com/Yitin-tsai/eap-order), [Wallet](https://github.com/Yitin-tsai/eap-wallet), [MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine), [MCP](https://github.com/Yitin-tsai/eap-mcp), [AI Client](https://github.com/Yitin-tsai/eap-ai-client), [Common](https://github.com/Yitin-tsai/eap-common), [Trigger](eap-trigger/README.md).
 
 The frozen detailed experiment history is available under `docs/archive/performance/` but is not part of the normal reading path.

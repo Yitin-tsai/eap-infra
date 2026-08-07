@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Internal seed/project/run orchestrator. Publisher and phase controls are kept
+# here for isolated diagnostics, not as public capacity-contract switches.
+
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
 LOCK_DIR="${ROOT_DIR}/.loadtest-lock/global-matched-e2e-two-phase-driver.lock"
@@ -27,18 +30,7 @@ RUN_REPORT_LOG="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-run.log"
 RUN_REPORT_JSON="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-result.json"
 RUN_REPORT_META="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-meta.txt"
 RUN_DIAG_DIR="${REPORT_DIR}/matched-e2e-two-phase-${MARKET_ID}-diagnostics"
-DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-}"
-if [[ -z "${DIAGNOSTICS_LEVEL}" ]]; then
-  case "${DIAGNOSTICS_ENABLED:-}" in
-    true) DIAGNOSTICS_LEVEL="deep" ;;
-    false) DIAGNOSTICS_LEVEL="baseline" ;;
-    "") DIAGNOSTICS_LEVEL="baseline" ;;
-    *)
-      echo "[ERROR] DIAGNOSTICS_ENABLED must be true or false when DIAGNOSTICS_LEVEL is not set." >&2
-      exit 2
-      ;;
-  esac
-fi
+DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
 DIAG_SAMPLER_PID=""
 
 case "${RUN_MODE}" in
@@ -50,13 +42,10 @@ case "${RUN_MODE}" in
 esac
 
 case "${DIAGNOSTICS_LEVEL}" in
-  baseline|off|none)
-    DIAGNOSTICS_LEVEL="baseline"
-    ;;
-  light|deep)
+  none|light|deep)
     ;;
   *)
-    echo "[ERROR] DIAGNOSTICS_LEVEL must be one of: baseline, light, deep" >&2
+    echo "[ERROR] DIAGNOSTICS_LEVEL must be one of: none, light, deep" >&2
     exit 2
     ;;
 esac
@@ -139,7 +128,7 @@ reset_pg_stats() {
 collect_diagnostics() {
   local phase="$1"
   case "${DIAGNOSTICS_LEVEL}" in
-    baseline)
+    none)
       return 0
       ;;
     light)
@@ -156,7 +145,7 @@ collect_diagnostics() {
 }
 
 start_diagnostic_sampler() {
-  if [[ "${DIAGNOSTICS_LEVEL}" == "baseline" ]]; then
+  if [[ "${DIAGNOSTICS_LEVEL}" == "none" ]]; then
     return 0
   fi
   rm -f "${RUN_DIAG_DIR}/sampler.stop" 2>/dev/null || true

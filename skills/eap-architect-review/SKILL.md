@@ -23,7 +23,7 @@ Act as the EAP System Architect. Challenge the spec before implementation.
 
 - DDD aggregate and bounded context boundaries.
 - Module/service ownership: order, wallet, match engine, trigger, AI client, MCP.
-- Source of truth for order status, wallet balance/reservation, trade execution, audit, completion view.
+- Source of truth for order status, wallet balance/reservation, trade execution, audit, and cross-service completion evidence without introducing duplicate business state.
 - Event flow through RabbitMQ/Kafka-style topics, outbox, consumers, retries, DLQ, idempotency.
 - Transaction boundaries and eventual consistency contract.
 - Scaling boundary: what can be partitioned horizontally, what is single-writer, what must be sequenced.

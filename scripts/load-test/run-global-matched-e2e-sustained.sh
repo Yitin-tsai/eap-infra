@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Low-level seeded backend driver. Public capacity runs use
+# run-matched-trade-completion-10k.sh, which fixes publisher and phase behavior.
+
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
 TARGET_TPS="${TARGET_TPS:-2000}"
@@ -14,7 +17,7 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-$((DURATION_SECONDS + 360))}"
 MARKET_ID="${MARKET_ID:-GLOBAL_SUSTAINED_${TARGET_TPS}TPS_${EVENTS}_$(date +%Y%m%d_%H%M%S)}"
 RESET_PG_STATS_BEFORE_RUN="${RESET_PG_STATS_BEFORE_RUN:-true}"
 RUN_MODE="${RUN_MODE:-prepare-run}"
-DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-baseline}"
+DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
 MIN_OFFERED_LOAD_RATIO="${MIN_OFFERED_LOAD_RATIO:-0.95}"
 
 if (( TARGET_TPS <= 0 )); then
