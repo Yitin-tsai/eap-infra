@@ -1,128 +1,109 @@
 **[English](README.md)** | **中文**
 
-# EAP - Event-Driven Auction Platform for Electricity Markets
+# EAP - 事件驅動電力市場交易平台
 
-EAP 是一個支援 Continuous Double Auction（連續雙向競價，CDA）與 Timed Double Auction（定時集合競價，TDA）的 production-style 電力交易後端，以 Java / Spring Boot、RabbitMQ、PostgreSQL 與 Redis Lua 實作。專案重點不是 CRUD，而是完整交易鏈路中的吞吐量、交易正確性、冪等事件處理、outbox 可靠性與監測能力。
+EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向競價（Continuous Double Auction，CDA）與定時集合競價（Timed Double Auction，TDA），使用 Java、Spring Boot、RabbitMQ、PostgreSQL 與 Redis Lua 建置。
 
-## 最新 Benchmark 摘要
+專案主要回答三個工程問題：每一項業務事實應由哪個服務負責、交易如何在重試與局部失敗下維持正確，以及工程成果如何用持久化證據驗證。它不是單純的 CRUD 範例，也不是只為了展示壓測數字的專案。
 
-> 目前不宣稱「完整交易已達 2000 TPS」。benchmark 分開量測 HTTP 排程輸入、accepted response、RabbitMQ broker-confirmed input、isolated core operations 與 fully business-gated completed trades，避免把局部 TPS 當成完整交易容量。
->
-> 現有容量與完整流程壓測數據只適用 CDA。TDA 已有功能流程，但事件合約不同，尚未完成同等的公開容量與故障復原驗證。
+> **證據摘要：** 目前同機、隨機混合 HTTP 的 CDA 短時間證據，支持約 `700 accepted orders/s` 等級的安全下界。另一個歷史高資料量測試曾以 `200,000` 筆 HTTP 訂單完成 `100,000` 筆交易，沒有交易紀錄遺失或資產差異。兩者工作負載不同，也都不是正式環境 SLA；完整定義與限制請見[效能報告](docs/performance-report.md)。
 
-| Scenario | Offered Load | Completed / Core Throughput | Correctness Gate | Notes |
-| --- | ---: | ---: | --- | --- |
-| 最新雙邊混合 HTTP 工作樹回歸，2026-08-07 | `699.98 accepted orders/s` | 同窗 `346.12`；完整流程 `320.47 trades/s` | `17500/17500` HTTP accepted；`8750` 筆三服務相同交易；資產、queue、DLQ 歸零 | 15 秒、單一種子、同機下界診斷；不是已固定版本或長時間容量 |
-| Sequential SELL-then-BUY 30K 上限診斷，TPS169 | SELL `1299.71`、BUY `1298.26 accepted orders/s` | BUY-triggered `922.38 trades/s`；完整兩階段 `530.43 trades/s`；等效 order convergence `1060.85 orders/s` | `30000` 筆 Match/Order/Wallet 相同 `trade_id` + 資產正確 + final drain | 測量 BUY 前已準備賣方流動性，不是雙邊混合容量 |
-| Schema-v2 Full HTTP 100K，2026-08-04 | SELL `999.90`、BUY `991.35 accepted orders/s` | 賣單就緒後 `613.33 trades/s`；完整兩階段 `378.86 trades/s` | `200000/200000` HTTP accepted + `100000` 筆三服務相同 `trade_id` + 資產正確 + final drain | 該版 Wallet 固定鎖定順序修正後的可靠性證據；慢於歷史結果，也不是現行程式碼容量紀錄 |
-| 歷史 Full HTTP 100K 驗證，TPS168 | SELL `999.95`、BUY `999.84 accepted orders/s` | BUY-triggered `707.43 trades/s`；完整兩階段 `410.16 trades/s` | `200000/200000` HTTP accepted + `100000` 筆三服務相同 `trade_id` + 資產正確 + final drain | 舊量測 schema 下的高資料量正確性證據；throughput 較保守，不作為目前容量 baseline |
-| 舊 alternating HTTP staircase，TPS167 | `999.98 scheduled orders/s`、`999.83 accepted responses/s` | `511.85 completed trades/s` | `TradeExecuted` + Order applied + Wallet settled + 三服務相同 `trade_id` + final queue drain | 固定 `SELL, BUY` 配對，只保留作 regression 對照 |
-| Redis matching core | N/A | `18,388.25 ops/s` | Redis Lua atomic matching | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` |
-| 歷史本機 seeded 10k E2E，TPS93 repeat | median `1,999.22 order confirmations/s` | median `833.58 completed trades/s` | 持久化資料筆數 + 舊版 completion marker gate + final queue drain | 3/3 valid runs，range `729.71-940.93`，final queues / DLQ `0`；不包含完整 HTTP admission |
-| 歷史固定版本 10k E2E，TPS55 repeat | median `1,998.94 order confirmations/s` | median `582.73 completed trades/s` | 持久化資料筆數 + 舊版 completion marker gate + final queue drain | 4/5 valid runs，range `503.11-662.17`，final queues / DLQ `0`；屬於舊壓測合約 |
-| TPS169 同 contract A/B | 每個 sequential phase `1300 orders/s` | BUY-triggered completion `664.26 -> 922.38 trades/s` | 前後兩輪都通過三服務 ID、資產與 drain gate | reservation cleanup 從 `30000` 次逐筆 UPDATE 降為約 `32` 次 batch；最大 backlog `14110 -> 6261`，Match-to-Wallet p95 `13.624s -> 4.478s` |
+## 系統總覽
 
-最新證據請看 [2026-08-07 現行混合流量診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[Wallet 與重複容量報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)、[雙邊混合階梯報告](docs/benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[效能報告](docs/performance-report.md) 與 [完整 HTTP 100K 報告](docs/benchmarks/2026-08-03-full-http-100k.md)。原始工作紀錄已凍結在 [docs/archive/performance/2026-06-global-loadtest-2000-tps.md](docs/archive/performance/2026-06-global-loadtest-2000-tps.md)。
+CDA 核心由三個各自擁有狀態的服務組成：Order 負責訂單生命週期，Wallet 負責資產與結算，MatchEngine 負責訂單簿與成交決策。RabbitMQ 傳遞整合事件，每個服務只提交自己擁有的資料庫狀態。
 
-## Workload Semantics
-
-- Benchmark 已拆成 order admission、seeded matched completion、full HTTP completion、full HTTP steady-state、full HTTP staircase 與 RabbitMQ publish-only。
-- Seeded matched-completion 從已確認訂單開始；full HTTP 則包含 BUY/SELL API、Wallet reservation、matching、settlement 與最終 drain，兩者不可當成同一 workload 比較。
-- 一筆 expected completed trade 需要買賣雙側處理，以及下游 Order / Wallet consumer 完成。
-- `EVENTS=10000` 代表該 run 預期在 seed sell-side liquidity 後完成 `10000` 筆交易。
-- Offered load 量測的是送往 match path 的 order confirmations，不等於 completed trades/s。
-- 現行完整流程計時只在 MatchEngine、Order、Wallet 的持久化交易資料一致、資產核對正確，而且受測 RabbitMQ `queue`、DLQ 與持久化積壓全部清空後結束。舊合約若量測完成標記，仍只保留為歷史結果。
-
-Business E2E TPS 公式：
-
-```text
-businessCompletedTradeTps =
-  completedTrades /
-  (fullLifecycleCompletedAt - runPhaseStartedAt)
+```mermaid
+flowchart LR
+    Client[使用者] -->|提交訂單| Order[Order Service]
+    Order --> OrderDB[(Order DB)]
+    Order -->|OrderSubmitted| MQ[(RabbitMQ)]
+    MQ --> Wallet[Wallet Service]
+    Wallet --> WalletDB[(Wallet DB)]
+    Wallet -->|OrderConfirmed| MQ
+    MQ --> Match[MatchEngine]
+    MQ --> Order
+    Match <--> Redis[(Redis 訂單簿)]
+    Match --> MatchDB[(Match DB)]
+    Match -->|TradeExecuted| MQ
+    MQ -->|套用成交結果| Order
+    MQ -->|結算資產| Wallet
 ```
 
-其中 `fullLifecycleCompletedAt` 取三服務持久化資料收斂、資產核對與受測積壓清空之後的完成時間。
+服務之間沒有分散式交易。需要發布事件的服務，會在同一筆本地資料庫交易中寫入狀態與 Transactional Outbox，再由 relay 等待 RabbitMQ 確認後發布。Consumer 透過冪等紀錄與本地交易承受 at-least-once delivery。
 
-目前 benchmark 另外拆出三個 TPS：
+## CDA 完整業務流程
 
-- `orderbookAdmissionTps`：resting SELL confirmations 進入 Redis order book 的速度。
-- `businessCompletedTradeTps`：包含 correctness gate 的完整成交 TPS。
-- `blendedMarketFlowTps`：兩階段 benchmark 中 SELL+BUY order confirmations 的整體市場流量。
+1. 使用者透過 Order HTTP API 提交 BUY 或 SELL 訂單。
+2. Order 驗證命令，在同一筆交易中寫入訂單事件與 outbox。
+3. Wallet 接收訂單、保留所需資產，再透過自己的 outbox 發布確認結果。
+4. MatchEngine 將合格訂單放入 Redis sorted-set 訂單簿，並用 Lua 原子執行撮合。
+5. 成交時，MatchEngine 在同一筆資料庫交易中寫入 `TradeExecuted`、trade outbox，以及必要的 reservation cleanup task。
+6. Order 將成交結果套用到命令端訂單狀態；Wallet 完成買賣雙方資產結算。
+7. 營運驗證在交易路徑之外，比對 MatchEngine、Order、Wallet 各自持久化的 trade ID，核對資產，並確認 queue 與 retry debt 已清空。
 
-`DURATION_SECONDS=5` 是 seeded benchmark 的 offered-load publishing window，不是完整 business completion timing window；TPS93 repeat set 的 median completion window 是 `12.00s`，所以 `10000 / 12.00 ~= 833.58 completed trades/s`。
+MatchEngine 不再維護額外的下游 Completion View，也不等待 Order 或 Wallet 回傳完成事件。各服務擁有自己的處理結果；跨服務收斂是交易路徑之外的驗證，不是新的業務依賴。
 
-## Benchmark Environment
+完整交易邊界、事件流、復原方式與獨立的 TDA 流程請見[架構文件](docs/architecture.md)。
 
-| 項目 | 目前本機 benchmark 環境 |
-| --- | --- |
-| Machine | MacBook Pro, Apple M5, 10 cores, 16 GB RAM |
-| OS | macOS 26.5.1 |
-| Docker | Docker 29.5.3 |
-| JDK | Temurin OpenJDK 21.0.10 |
-| PostgreSQL | `postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647`，三個 service-owned DB containers，啟用 `pg_stat_statements` |
-| RabbitMQ | `rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281` |
-| Redis | `redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99`，load-test profile 關閉 append-only |
-| Load generator | 與服務和 containers 跑在同一台本機 |
+## 服務責任
 
-2026-07-13 public 10k repeat 是在 benchmark code/config commit `2252e54738d10683894b965c93d93bff32fd8c08` 上執行，service commits 記錄在 `build/load-test-reports/EAP_PUBLIC_10K_20260713-snapshot.json`。但 result artifact 目前仍是本機檔案，若要讓第三方完整重現，還需要 push 並發布 artifact bundle。
-
-## 系統做什麼
-
-EAP 以兩種市場模式模擬電力交易。CDA 會持續接收、保留資產並逐筆撮合；TDA 則在競價時段收集階梯式出價，再於排定時間一次清算。
-
-核心流程：
-
-```text
-Order API
-  -> Order Service append command event + outbox
-  -> Wallet Service reserves assets
-  -> MatchEngine matches orders with Redis ZSET + Lua
-  -> MatchEngine 原子持久化 TradeExecuted + outbox + 延後清理任務
-  -> Order Service applies trade result
-  -> Wallet Service settles trade
-  -> Verify identical trade IDs, reconciled assets, and drained queues
-```
-
-完整架構請看 [docs/architecture.md](docs/architecture.md)。
-
-TDA 已串接 Order、Wallet 與 MatchEngine，但目前 Order 的競價出價事件及 MatchEngine 的開標／清算事件直接發布到 RabbitMQ，尚未使用 transactional outbox；Wallet 出價重送冪等、驗資拒絕回授與整場競價收斂也仍有缺口。因此它是已實作但尚未完成同級可靠性驗證的功能，不能套用上方 CDA 容量宣稱。
-
-## 核心工程問題
-
-- 明確區分 accepted throughput、core matching throughput、business completed throughput。
-- 在 RabbitMQ at-least-once delivery 下，用 unique constraints、transaction boundaries、manual ACK、DLX/DLQ 保護 idempotent side effects。
-- 用 transactional outbox 避免 DB commit 成功但 integration event 遺失。
-- 用 Redis Lua 保證 order book add / match / partial fill 的原子性。
-- 將 projection lag 與 command-side business completion 分開量測，避免把 read model 延遲誤判成交易失敗。
-- 用 PostgreSQL stats、RabbitMQ queue metrics、application timers 追 DB write amplification 與 outbox relay 成本。
-
-## 服務邊界
-
-| Service | Ownership | Primary Responsibility |
+| 服務 | 擁有的資料 | 主要責任 |
 | --- | --- | --- |
-| `eap-order` | 訂單與競價指令生命週期 | CDA 訂單事件流與成交套用；TDA 出價入口與結果檢視 |
-| `eap-wallet` | 錢包餘額與結算 | CDA/TDA 資產保留、CDA 成交結算、TDA 競價結算與 wallet outbox |
-| `eap-matchEngine` | 撮合與競價清算 | CDA Redis 訂單簿與 `TradeExecuted`；TDA 出價收集、排程與清算 |
-| `eap-common` | Shared contracts | DTOs, events, shared integration contracts |
-| `eap-mcp` / `eap-ai-client` | Control-plane extension | backend tools for controlled AI-agent experiments |
-| `eap-trigger` | 舊版周邊實驗 | Go 條件單模組仍消費已退役的 `order.matched`，尚未接入現行主流程 |
+| [eap-order](https://github.com/Yitin-tsai/eap-order) | 訂單命令事件與成交套用結果 | HTTP 下單、訂單生命週期、命令端狀態與可重建 projection |
+| [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | 餘額、資產保留與結算事實 | 驗資、資產保留、交易結算與 wallet outbox |
+| [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | 訂單簿與 `TradeExecuted` | CDA 撮合、Redis reservation 復原、成交持久化；TDA 排程與清算 |
+| [eap-common](https://github.com/Yitin-tsai/eap-common) | 共用整合契約 | Event 與 DTO 定義，不擁有業務狀態 |
+| [eap-mcp](https://github.com/Yitin-tsai/eap-mcp)／[eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | 受控 AI 工具 | 實驗性 control-plane 操作，不參與核心交易正確性 |
 
-## Reliability Model
+TDA 是另一條已實作的市場模式，會收集通過驗資的階梯式出價，再依排程統一清算。目前尚未完成與 CDA 同等的可靠性與容量驗證，因此不能把 CDA 的證據直接套用到 TDA。
 
-- Message delivery: RabbitMQ at-least-once.
-- Publish reliability: CDA 中需要送出整合事件的狀態轉換使用 transactional outbox；Order/Wallet 的最終成交套用不再送完成回授。TDA 現有直接發布點是已知架構缺口。
-- Consumer safety: idempotency tables / unique keys / local DB transactions.
-- Completion definition: a trade is business-complete only after MatchEngine has `TradeExecuted`, Order has applied the trade, Wallet has settled it, all three services contain the same `trade_id` set, assets reconcile, and measured queues drain.
-- Read models: projections are rebuildable and measured as lag, not as the command-side source of truth.
-- Completion feedback: Order 與 Wallet 不再發布逐筆完成回授；由交易路徑外核對三服務持久化事實。
+## 可靠性設計
+
+| 失敗或一致性風險 | 現行控制方式 |
+| --- | --- |
+| 資料庫提交成功，但事件發布失敗 | Transactional Outbox 與可重試 relay |
+| RabbitMQ 重複投遞事件 | 資料庫冪等紀錄與唯一約束 |
+| Consumer 在 ACK 前停止 | 本地交易提交後才進行 manual ACK |
+| 錯誤事件無法處理 | Retry policy 與 DLX／DLQ |
+| Redis reservation 清理中斷 | 持久化 cleanup task、精確 `tradeId` 對應與 reconciliation |
+| 讀取 projection 延遲 | Projection 可重建，且不阻擋命令端交易套用 |
+| 局部指標正常，但完整流程尚未完成 | 三服務 trade-ID 一致、資產核對及 queue／retry debt 清空 |
+
+CDA 交易只有在 MatchEngine 已寫入成交、Order 已套用成交、Wallet 已完成結算、三服務持久化 trade-ID 集合一致、資產正確，而且量測範圍內的 queue 與 retry debt 都清空後，才算完整業務完成。
 
 ## AI 工程協作流程
 
-EAP 使用有明確邊界的 AI 角色，把工程問題轉成可否證的假設，而不是把架構、風險、部署或公開宣稱交給 AI。每個修改都需要基準、控制變因、實作、測試、監測證據、正確性關卡、審查與人工採用／拒絕決策；被拒絕的實驗也必須保留。
+EAP 將 AI 限制成不同工程角色，而不是讓 AI 自動產生程式後直接採用。Product Scope 先質疑功能是否值得做；Architect 審查服務責任與一致性；Performance Analyst 定義工作負載與假設；Implementation 只能依人工接受的規格實作；QA 與 Reviewer 主動尋找正確性反例及不成立的宣稱。架構、風險、採用、回復、部署與公開說法，最後都由人工負責人決定。
 
-詳見 [證據驅動 AI 工程工作流](docs/ai-engineering-workflow.md) 與 [Hello World Dev Conference 2026 EAP 案例](docs/talks/hello-world-dev-conference-2026-case-study.md)。
+```mermaid
+flowchart TD
+    Problem[問題或新功能] --> Scope[功能必要性與範圍]
+    Scope --> Architecture[架構與一致性審查]
+    Architecture --> Hypothesis[效能或可靠性假設]
+    Hypothesis --> Decision[人工接受實驗]
+    Decision --> Implementation[範圍內實作]
+    Implementation --> QA[測試、壓測與監測]
+    QA --> Review[獨立審查]
+    Review --> Human[人工決策]
+    Human --> Adopt[採用]
+    Human --> Reject[拒絕或回復]
+    Human --> Next[下一個實驗]
+```
 
-## Reproduce Locally
+每次實驗都要記錄 baseline、單一主要變因、執行命令、觀測資料、正確性關卡與最終決策。即使修改提高局部 TPS，只要交易或 concurrency tests 證明結果無法安全 rollback，仍會被拒絕。被拒絕的實驗也保留，避免未來在沒有新證據時重做相同的不安全最佳化。
+
+角色契約與真實採用／拒絕案例請見 [EAP 證據驅動 AI 工程工作流](docs/ai-engineering-workflow.md)。[Hello World Dev Conference 案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)則整理這套流程如何用於自我審查、功能擴充與企業 SDLC。
+
+## 工程證據
+
+效能資料用來驗證架構，不是首頁的主體。EAP 分開記錄 HTTP 接受速率、元件隔離吞吐量、同窗完成交易、完整流程吞吐量、短時間診斷與長時間測試；每個數字都必須附帶工作負載邊界與正確性結果。
+
+- [效能報告](docs/performance-report.md)：目前宣稱、定義、限制與瓶頸歷程。
+- [壓測分類](docs/benchmarks/load-test-taxonomy.md)：各種工作負載能證明及不能證明的內容。
+- [最新 canonical mixed HTTP 診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)：目前 CDA 邊界與採用／拒絕實驗。
+- [Wallet 穩健性報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)：交易安全、混合流量、長時間及故障證據。
+
+## 本機執行
 
 ```bash
 make dev-env
@@ -130,61 +111,22 @@ make dev-up
 make run-all
 ```
 
-Build and test:
+建置與測試：
 
 ```bash
 make build
 make test
 ```
 
-Focused load-test scripts live under [scripts/load-test/](scripts/load-test/). The 2000 TPS investigation currently uses:
+Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測入口位於 [scripts/load-test/](scripts/load-test/)；比較數據前請先閱讀[公開壓測 runbook](docs/benchmarks/2026-07-public-benchmark.md)。
 
-```bash
-TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
-TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=none MIN_OFFERED_TPS_RATIO=0.95 \
-REPEATS=5 bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
-```
+## 建議閱讀順序
 
-完整 HTTP 階梯測試：
+1. [架構文件](docs/architecture.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
+2. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
+3. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
+4. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
+5. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
+6. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
 
-```bash
-START_ORDER_TPS=700 END_ORDER_TPS=1100 STEP_ORDER_TPS=100 \
-STAGE_WARMUP_SECONDS=10 STAGE_DURATION_SECONDS=15 \
-WORKLOAD_SEED=20260804 \
-bash scripts/load-test/run-http-matched-staircase.sh
-```
-
-完整 HTTP runner 固定使用雙邊混合亂序流量與各服務自己的 `loadtest` 設定。worker 數、runtime profile 與買賣 phase 順序不再是公開容量開關；需要定位單一元件時，才使用低階診斷腳本。
-
-See [DEV-GUIDE.md](DEV-GUIDE.md) for local service operations.
-
-## 目前驗證缺口
-
-- MatchEngine 已將交易事件外送與撮合訂單保留維護排程分離。相同隨機種子的受控比較明顯改善 800 階段的積壓與完成量，但後續測試未證明 800 可重複通過，因此公開混合流量下界仍維持 700 orders/s。
-- 撮合訂單保留修復已改用精確 `tradeId` 核對；舊清理工作不能釋放或刪除同一訂單的新保留狀態。修正後 52500 筆訂單全部收斂，三服務交易紀錄一致，最終 DLQ 與撮合訂單保留均為 0。
-- Full HTTP staircase 有 HTTP latency histogram bounds，但尚未提供 per-trade end-to-end p95/p99。
-- 最新 `1300 accepted orders/s` 是同機 sequential SELL/BUY phases，不是 mixed-flow 或 30 分鐘 soak claim。
-- 現行安全 Wallet transaction boundary 已通過短時間 `700 total orders/s` mixed 回歸；兩次現行程式碼 900 orders/s 都能正確收斂，但無法重複通過 sustained gate。舊版三 seed 900 結果使用後來已否決的 autocommit boundary。
-- 現行程式已通過 15 分鐘 700 orders/s 同機測試；仍需額外隨機種子與外部 load generator，才能視為正式環境 SLA。
-- load generator、services 與 containers 同機，仍需外部分離 load generator 才能排除共享 CPU 干擾。
-- `922.38 trades/s` 是預先準備賣方流動性的 sequential 上限診斷，不是雙邊混合流量容量。
-- 2026-08-04 的 schema-v2 100K 已通過所有正確性驗證，但速度低於歷史 100K；後續 Wallet 改動必須重新驗證後才能調整容量 baseline。
-- 原始報告屬於 ignored build artifacts；先以 `bash scripts/load-test/prune-loadtest-reports.sh` 預覽 retention，確認 result JSON 已整理到 `docs/benchmarks/results/` 後才設定 `DRY_RUN=false`。
-- 歷史 seeded steady-state 不能取代 full HTTP steady-state contract。
-- Benchmark result artifact 目前位於本機 `build/load-test-reports/`，仍需發布或附到 release 才能讓第三方直接驗證。
-- Failure injection 應另外整理 duplicate delivery、consumer restart、outbox retry、DLQ、projection replay。
-
-Public benchmark runbook 記錄在 [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md)。
-
-## Reading Order
-
-1. [docs/architecture.md](docs/architecture.md) - 現行服務邊界、事件流程與已退役的完成回授。
-2. [docs/ai-engineering-workflow.md](docs/ai-engineering-workflow.md) - 角色契約、證據關卡，以及真實採用／拒絕案例。
-3. [docs/talks/hello-world-dev-conference-2026-case-study.md](docs/talks/hello-world-dev-conference-2026-case-study.md) - EAP 如何用 AI 角色完成自我審查、功能擴充與證據決策。
-4. [docs/benchmarks/load-test-taxonomy.md](docs/benchmarks/load-test-taxonomy.md) - benchmark boundary definitions。
-5. [docs/performance-report.md](docs/performance-report.md) - benchmark 定義、最新結果與瓶頸。
-6. [docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md) - 現行工作樹 700/800 診斷與排程競爭證據。
-7. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - 固定版本的公開 benchmark 計畫。
-8. Service READMEs: [Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine)、[MCP](https://github.com/Yitin-tsai/eap-mcp)、[AI Client](https://github.com/Yitin-tsai/eap-ai-client)、[Common](https://github.com/Yitin-tsai/eap-common)、[Trigger](eap-trigger/README.md)。
-
-完整實驗歷史保留在 `docs/archive/performance/`，但不列入一般閱讀順序。
+`docs/archive/performance/` 下的凍結實驗歷史會保留供追溯，但不屬於一般讀者的專案介紹路徑。
