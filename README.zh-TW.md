@@ -175,6 +175,6 @@ Public benchmark runbook 記錄在 [docs/benchmarks/2026-07-public-benchmark.md]
 4. [docs/benchmarks/load-test-taxonomy.md](docs/benchmarks/load-test-taxonomy.md) - benchmark boundary definitions。
 5. [docs/performance-report.md](docs/performance-report.md) - benchmark 定義、最新結果與瓶頸。
 6. [docs/benchmarks/2026-07-public-benchmark.md](docs/benchmarks/2026-07-public-benchmark.md) - 固定版本的公開 benchmark 計畫。
-7. Service READMEs: [Order](eap-order/README.md), [Wallet](eap-wallet/README.md), [MatchEngine](eap-matchEngine/README.md), [MCP](eap-mcp/README.md), [AI Client](eap-ai-client/README.md), [Common](eap-common/README.md).
+7. Service READMEs: [Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine)、[MCP](https://github.com/Yitin-tsai/eap-mcp)、[AI Client](https://github.com/Yitin-tsai/eap-ai-client)、[Common](https://github.com/Yitin-tsai/eap-common)、[Trigger](eap-trigger/README.md)。
 
 完整實驗歷史保留在 `docs/archive/performance/`，但不列入一般閱讀順序。

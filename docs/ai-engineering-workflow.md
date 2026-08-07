@@ -298,3 +298,17 @@ Wallet 實驗移除 listener 外層 explicit transaction。isolated 30K、八 wo
 - [效能權威報告](performance-report.md)
 - [Wallet settlement robustness](benchmarks/2026-08-05-wallet-settlement-robustness.md)
 - [Balanced mixed HTTP staircase](benchmarks/2026-08-04-balanced-mixed-http-staircase.md)
+
+## 實際工作流工件
+
+以下技能檔案不是文件中的假想角色，而是專案內可重複使用的 Codex 工作流定義。每份技能都限制角色責任、禁止事項、輸出格式與完成條件：
+
+- [產品範圍審查](../skills/eap-product-scope/SKILL.md)
+- [架構審查](../skills/eap-architect-review/SKILL.md)
+- [效能分析](../skills/eap-performance-review/SKILL.md)
+- [實作負責人](../skills/eap-implementation-lead/SKILL.md)
+- [QA 驗證](../skills/eap-qa-lead/SKILL.md)
+- [最終審查](../skills/eap-reviewer/SKILL.md)
+- [完整功能流程](../skills/eap-feature-pipeline/SKILL.md)
+
+這些工件讓角色契約可以直接被執行與審查；但技能仍不具有人工簽核、正式環境部署或公開宣稱的權限。

@@ -48,6 +48,6 @@ EAP 背景只占 3–8 分，共 5 分鐘，約為整場 `16.7%`；主體是工�
 
 公開證據：[README](../../README.zh-TW.md)、[Architecture](../architecture.md)、[AI workflow](../ai-engineering-workflow.md)、[Performance](../performance-report.md)、[Wallet report](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[Mixed staircase](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)。
 
-EAP 不宣稱 `2000 completed TPS`。現行安全下界是單機短時間約 `700 accepted orders/s`、`350 completed trades/s` 的 mixed HTTP 證據；`922.38/s` 是 sequential upper bound；`20405.04/s` 是已拒絕的 isolated 診斷。Seeded、mixed、short-window、soak、isolated、historical 與 deep diagnostics 必須分開。
+EAP 不宣稱 `2000 completed TPS`。現行安全下界是單機短時間約 `700 accepted orders/s`、`350 same-window trades/s`、`320 full-lifecycle trades/s` 的 shuffled mixed HTTP 證據；`922.38/s` 是 sequential upper bound；`20405.04/s` 是已拒絕的 isolated 診斷。Seeded、mixed、short-window、soak、isolated、historical 與 deep diagnostics 必須分開。
 
 內容與數據來自個人公開 EAP 專案，不涉及現職公司的程式碼、架構、資料或機密。
