@@ -92,7 +92,7 @@ flowchart TD
 
 Every experiment records its baseline, one primary variable, commands, observations, correctness gate, and decision. High-throughput changes are rejected when transaction or concurrency tests show that their results cannot be rolled back safely. Rejected experiments remain documented so the project does not repeat an unsafe optimization without new evidence.
 
-Read [EAP's evidence-driven AI engineering workflow](docs/ai-engineering-workflow.md) for the role contracts and real adopted/rejected cases. The [Hello World Dev Conference case study](docs/talks/hello-world-dev-conference-2026-case-study.md) explains how this workflow supports self-review, feature expansion, and enterprise SDLC practices.
+Read [EAP's evidence-driven AI engineering workflow](docs/ai-engineering-workflow.md) for the role contracts and real adopted/rejected cases. The version-controlled [workflow skills](skills/) show the executable role boundaries behind the document. The [Hello World Dev Conference case study](docs/talks/hello-world-dev-conference-2026-case-study.md) explains how this workflow supports self-review, feature expansion, and enterprise SDLC practices.
 
 ## Engineering Evidence
 

@@ -2,17 +2,23 @@
 
 Hello World Dev Conference 2026 講題：**用 AI 工作流重整事件驅動交易系統的一致性、效能與監測**
 
+本議程的核心不是介紹 EAP 本身，而是以一個可公開檢查的多 repository 專案，示範個人開發者如何使用 AI 建立結構化反對意見、驗證假設並拒絕錯誤修改。EAP 是承載證據的工程案例，不是演講要推廣的產品。
+
 ## 為什麼 EAP 需要 AI 工作流
 
 EAP 是個人開發的事件驅動電力交易後端，支援連續雙向競價（CDA）與定時集合競價（TDA）。本次工程案例聚焦已建立完整證據鏈的 CDA：一次交易跨越三個服務，必須核對 `trade_id`、資產、冪等、DLQ 與 RabbitMQ 佇列是否清空；單一 API 或單一服務 TPS 不代表業務完成。MatchEngine 只擁有成交事實，不保存 Order 或 Wallet 的完成狀態；跨服務結果由交易路徑外的驗證工具核對。TDA 用於說明「功能存在不代表可靠性與容量已被證明」，不沿用 CDA 的壓測數據。
 
-個人開發容易讓同一人提出假設、實作並驗收。EAP 將 AI 拆成產品範圍、架構審查、效能分析、實作、品質驗證與最終審查等角色，最後由人工負責人決定。AI 只是決策參考，不擁有架構、風險、部署或公開宣稱權限。
+個人開發容易讓同一人提出假設、實作並驗收，最後只尋找支持原始想法的證據。AI 能加快分析與寫程式，也可能放大這種確認偏誤。EAP 因此將 AI 拆成產品範圍、架構審查、效能分析、實作、品質驗證與最終審查等角色，要求它們分別提出限制、反例、失敗條件與證據需求，最後仍由人工負責人決定。AI 只是決策參考，不擁有架構、風險、部署或公開宣稱權限。
 
 ## 自我審查與功能擴充
 
-架構、效能、品質驗證與最終審查角色預設只讀；實作角色只執行已接受的規格。變更必須記錄基準、完成定義、一致性限制、單一變因、測試與正確性關卡。角色以不同觀點挑戰個人直覺，被拒絕、無法判定或尚待下一個實驗的方案也會保留。
+架構、效能、品質驗證與最終審查角色預設只讀；實作角色只執行已接受的規格。已接受的規格、重要反對意見、實際修改、測試命令、benchmark artifact、採用／拒絕決策與公開宣稱邊界都要留下可追溯紀錄。角色以不同觀點挑戰個人直覺，被拒絕、無法判定或尚待下一個實驗的方案也會保留。
 
-流程已用於擴充持久化收件匣、冪等、當機復原、安全的資料庫交易邊界，以及混合 HTTP 壓測與三服務核對。最近的自我審查也發現：TDA 雖已能出價與清算，但直接發布事件、出價重送冪等、驗資拒絕回授與整場收斂尚未達 CDA 證據標準，因此保留功能、公開缺口，而且不沿用 CDA TPS。公開基準版本：[Order `376a4e1`](https://github.com/Yitin-tsai/eap-order/commit/376a4e181e278d2ab594e7b694aee0b87132f56e)、[Wallet `a5065d6`](https://github.com/Yitin-tsai/eap-wallet/commit/a5065d6b4eb54daead8357495e8b2bfe5f2dbc84)、[MatchEngine `b4caa39`](https://github.com/Yitin-tsai/eap-matchEngine/commit/b4caa39dc4d109de7f13318a8f0fc9439c85c7e9)、[infra `96f688a`](https://github.com/Yitin-tsai/eap-infra/commit/96f688a64889013f30a70e6e9d0a391a9f75a114)。尚未提交的工作樹診斷會明確標示，不能假裝成上述固定版本結果。
+這些角色不是簡報中的抽象名稱，而是 repository 內版本控制的 [實際 Codex skills](../../skills/)，每份工件都定義輸入、必要產出、修改權限、禁止事項與停止條件。它們是一套結構化的個人自我審查方法，不等同於組織中的獨立人員審查，也不能取代正式 code review 與 change approval。
+
+流程已用於擴充持久化收件匣、冪等、當機復原、安全的資料庫交易邊界，以及混合 HTTP 壓測與三服務核對。最近的自我審查也發現：TDA 雖已能出價與清算，但直接發布事件、出價重送冪等、驗資拒絕回授與整場收斂尚未達 CDA 證據標準，因此保留功能、公開缺口，而且不沿用 CDA TPS。本文案例所依據的系統證據基準為：[Order `51165d3`](https://github.com/Yitin-tsai/eap-order/commit/51165d3)、[Wallet `3811169`](https://github.com/Yitin-tsai/eap-wallet/commit/3811169)、[MatchEngine `853ac9b`](https://github.com/Yitin-tsai/eap-matchEngine/commit/853ac9b) 與 [infra `00ba2a0`](https://github.com/Yitin-tsai/eap-infra/commit/00ba2a0)。後續純文件提交不會改變這組服務與 benchmark 證據的版本邊界。
+
+工作流把講題的三個工程面向連在一起：一致性審查決定服務責任、交易邊界與跨服務正確性關卡；效能分析以 baseline、單一變因及相同工作負載比較修改；監測則綜合 RabbitMQ `ready`／`unacked`、DLQ、PostgreSQL、Hikari 與應用程式計時資料進行歸因，並把低觀測容量測試與可能產生 observer effect 的深度診斷分開。最後只有人工負責人能把這些證據轉成採用、拒絕或下一個實驗。
 
 ## 證據決策案例
 

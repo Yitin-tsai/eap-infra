@@ -92,7 +92,7 @@ flowchart TD
 
 每次實驗都要記錄 baseline、單一主要變因、執行命令、觀測資料、正確性關卡與最終決策。即使修改提高局部 TPS，只要交易或 concurrency tests 證明結果無法安全 rollback，仍會被拒絕。被拒絕的實驗也保留，避免未來在沒有新證據時重做相同的不安全最佳化。
 
-角色契約與真實採用／拒絕案例請見 [EAP 證據驅動 AI 工程工作流](docs/ai-engineering-workflow.md)。[Hello World Dev Conference 案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)則整理這套流程如何用於自我審查、功能擴充與企業 SDLC。
+角色契約與真實採用／拒絕案例請見 [EAP 證據驅動 AI 工程工作流](docs/ai-engineering-workflow.md)；版本控制的[工作流技能](skills/)則提供文件背後可執行的角色邊界。[Hello World Dev Conference 案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)整理這套流程如何用於自我審查、功能擴充與企業 SDLC。
 
 ## 工程證據
 
