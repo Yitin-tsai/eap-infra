@@ -81,15 +81,19 @@ orders/s`, but the current release-pinned revision does not have a repeatable
 
 ## Current Release-Pinned Sustained Lower Bound - 2026-08-13
 
-The downward search established a passing same-host point at `600 orders/s` with
-the same `60s` warmup, `900s` measurement window, and seed `20260811`:
+The downward search established a repeatable same-host point at `600 orders/s`
+with the same `60s` warmup and `900s` measurement window across two workload
+seeds:
 
-- all `576000` HTTP orders accepted with zero `429`, `503`, or other failures;
-- `597.12 accepted orders/s` and `292.74 completed trades/s` in the steady window;
-- `97.58%` completion target ratio;
-- `+3.6169/s` backlog slope and `8918` maximum backlog, both within their gates;
-- `288000` identical MatchEngine, Order, and Wallet trade IDs, exact assets, and zero final queue, DLQ, order-book, or reservation debt;
-- `288.19 full-lifecycle trades/s` across `999.3486s` full convergence.
+| Seed | Accepted orders/s | Completed trades/s | Completion target | Backlog slope | Max backlog | Full-lifecycle trades/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20260811` | `597.12` | `292.74` | `97.58%` | `+3.6169/s` | `8918` | `288.19` |
+| `20260813` | `599.62` | `297.03` | `99.01%` | `+0.4799/s` | `5554` | `292.17` |
+
+Each accepted run submitted and accepted all `576000` HTTP orders with no HTTP
+failures, produced `288000` identical MatchEngine, Order, and Wallet trade IDs,
+reconciled assets exactly, and ended with zero queue, DLQ, order-book, or
+reservation debt.
 
 An earlier R1 attempt is rejected rather than averaged into this result. The host
 stopped scheduling for about `7m29s`, causing HTTP and RabbitMQ management
@@ -98,13 +102,19 @@ capacity measurement and exposed a `Long.MAX_VALUE` queue-backlog sentinel bug i
 the harness. `eap-order` `c95381c` corrected the diagnostic calculation without
 relaxing the metrics-failure invalidation gate.
 
-The current public boundary is therefore: `600 accepted orders/s` class for one
-release-pinned 15-minute sustained run, plus about `700 accepted orders/s` as a
-separate short-window class. A second 600 seed was attempted but is inconclusive:
-RabbitMQ remained under a memory alarm, offered load collapsed, and an Order
-PostgreSQL server process exited before final correctness could run. It does not
-count as either a capacity pass or a capacity failure. Another clean seed is still
-required before stepping to 650. See the
+The first attempt at seed `20260813` remains inconclusive: RabbitMQ stayed under a
+memory alarm, offered load collapsed, and an Order PostgreSQL server process exited
+before final correctness could run. It counts as neither a capacity pass nor a
+capacity failure. The benchmark now rejects broker-alarmed runs, preserves a
+failure artifact, and stops traffic that exceeds its scheduling deadline. After a
+clean restart of only the dedicated load-test infrastructure, the same seed passed.
+The restart is part of independent-run setup, not evidence of an application
+improvement.
+
+The current public boundary is therefore a two-seed, release-pinned 15-minute
+`600 accepted orders/s` sustained class, plus about `700 accepted orders/s` as a
+separate short-window class. The next unproven sustained step is `650 orders/s`.
+See the
 [release-pinned 600 sustained report](benchmarks/2026-08-13-release-pinned-600-sustained.md).
 
 ## Order-Admission Chain Semantics
@@ -680,10 +690,10 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is one passing 600 run; it still requires a second seed before promotion to a repeatable boundary.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 600 class; sustained 650 and 700 remain unproven.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
-- The 2026-08-11 700 recheck and both 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
+- The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
 - Atomic MatchEngine incoming-order redelivery protection now passes a real RabbitMQ duplicate injection, a real MatchEngine SIGKILL/redelivery run, an 864K-order reliability run, and deterministic PostgreSQL/Redis crash-window tests. Outbox crash/retry and projection replay fault injection remain pending.
 - RabbitMQ publisher-confirm stalls, resource alarms, PostgreSQL crash recovery, and shared-host CPU saturation can invalidate capacity comparisons. The harness now samples broker alarms and preserves failure artifacts, but a separate load-generator host remains required for production-style capacity evidence.
 
@@ -743,9 +753,9 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Repeat the passing release-pinned `600 orders/s` point with a second workload seed.
+1. Step to `650 orders/s` with the same `60s` warmup, `900s` measurement window, clean-start protocol, and fail-closed resource-alarm gate.
 2. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt in every accepted run.
-3. Step to `650` and then `700 orders/s` only after 600 repeats.
+3. Repeat 650 with another workload seed before considering a sustained 700 run.
 4. Capture RabbitMQ publisher-confirm stalls and same-host saturation as explicit comparison-invalidating signals, then run the same contract from a separate load-generator host when one is available.
 5. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.
 

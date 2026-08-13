@@ -4,7 +4,7 @@
 
 The 2026-08-11 release-pinned `700 orders/s` repeat passed final correctness but failed the 15-minute sustained completion and backlog gates. This follow-up searched downward for a current, repeatable starting point using the same shuffled mixed-HTTP business contract.
 
-Repository versions for the accepted run:
+Repository versions for the first accepted run:
 
 | Repository | Commit |
 | --- | --- |
@@ -13,6 +13,11 @@ Repository versions for the accepted run:
 | `eap-order` | `c95381c` |
 | `eap-wallet` | `3811169` |
 | `eap-matchEngine` | `ed55214` |
+
+The second accepted seed used `eap-infra` `2e95260` and `eap-order` `d8564b7`.
+Those intervening changes only made the benchmark fail closed on RabbitMQ resource
+alarms and bounded traffic-scheduling overrun. The Order, Wallet, and MatchEngine
+business paths were unchanged.
 
 ## Contract
 
@@ -78,16 +83,55 @@ This failure drove two fail-closed harness changes:
 
 [Second-seed infrastructure-failure metadata](results/2026-08-13-http-matched-releasepin-600-seed-20260813-r1-infrastructure-failure.json)
 
+## Accepted Second-Seed R2
+
+After restarting only the dedicated load-test RabbitMQ, Redis, and PostgreSQL
+containers, R2 repeated the same contract with workload seed `20260813`. This was
+an independent clean-start capacity run, not an application optimization.
+
+| Signal | Result |
+| --- | ---: |
+| scheduled / HTTP accepted orders | `576000 / 576000` |
+| unscheduled orders | `0` |
+| HTTP `429 / 503 / other` | `0 / 0 / 0` |
+| steady accepted orders/s | `599.62` |
+| steady completed trades/s | `297.03` |
+| completion target ratio | `99.01%` |
+| completion-to-accepted ratio | `99.07%` |
+| backlog start / end | `0 / 2664` |
+| backlog slope | `+0.4799/s` |
+| maximum backlog | `5554` |
+| full convergence | `985.7202s` |
+| full-convergence trades/s | `292.17` |
+| Match / Order / Wallet trades | `288000 / 288000 / 288000` |
+| queue-metrics failures | `0` |
+| RabbitMQ memory / disk alarm samples | `0 / 0` |
+| final queue / DLQ / reservation debt | `0` |
+| sustained-capacity gate | pass |
+
+All three services produced the same trade-ID set and fingerprint. Assets matched
+exactly, no orders remained, and no publisher-confirm timeout, Hikari starvation,
+or service connection failure was observed.
+
+[Accepted second-seed R2 result JSON](results/2026-08-13-http-matched-releasepin-600-seed-20260813-r2.json)
+
 ## Diagnostics and Decision
 
-The largest sampled RabbitMQ queue remained `matchEngine.orderConfirmed.queue` at `6934`; `wallet.orderSubmitted.queue` peaked at `2216`. Downstream Order and Wallet trade queues peaked at `272` and `230`. MatchEngine admission remains the first pressure point, but it did not violate this run's backlog gates.
+In the first accepted seed, the largest sampled RabbitMQ queue was
+`matchEngine.orderConfirmed.queue` at `6934`; `wallet.orderSubmitted.queue` peaked
+at `2216`. In the second accepted seed, those peaks fell to `2623` and `1257`.
+The downstream Order and Wallet trade queues remained smaller in both runs.
+MatchEngine admission remains the first pressure point, but neither accepted run
+violated the backlog gates.
 
-System CPU still averaged roughly `85-90%` and reached `100%` because all components shared one host. The result establishes a same-host engineering lower bound, not a production SLA.
+System CPU remained high and reached `100%` because all components shared one
+host. The result establishes a same-host engineering lower bound, not a production
+SLA.
 
 The reservation ownership change also behaved as intended: the reconciler deferred `7125` worker-owned cleanup tasks, completed `0` of them itself, and emitted no redundant cleanup warnings. No publisher-confirm timeout or Hikari starvation warning occurred in R2.
 
 Decision:
 
-- promote `600 accepted orders/s` class as the current release-pinned, 15-minute single-run sustained lower bound for this exact single-host shuffled mixed-HTTP contract;
+- promote the `600 accepted orders/s` class as the current release-pinned, 15-minute sustained lower bound after two workload seeds passed this exact single-host shuffled mixed-HTTP contract;
 - retain about `700 accepted orders/s` only as a short-window lower-bound class;
-- do not call 600 cross-seed repeatable, or promote sustained `650` or `700`, until a second 600 seed passes without host, database, or broker resource interruption.
+- test `650 orders/s` next under the same correctness, scheduling-deadline, and RabbitMQ resource-alarm gates before considering any higher sustained boundary.

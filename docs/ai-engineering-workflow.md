@@ -275,7 +275,7 @@ Wallet 實驗移除事件監聽器外層的明確資料庫交易。在 30K 隔�
 
 追查後確認，撮合訂單保留修復工作以跨程序時間戳推測對應交易，可能把已成交訂單誤判為孤兒並放回訂單簿。修正後，每個 Redis 撮合訂單保留狀態直接記錄預期的 `tradeId`，清理與修復必須核對相同識別碼才能修改。修正後的 52500 筆訂單全部收斂為三服務一致的 26250 筆交易，資產、訂單簿、撮合訂單保留、佇列與 DLQ 均歸零；600 與 700 階段通過，800 階段仍未達效能關卡。
 
-這個案例同時保留「採用」與「否決」：採用有完整證據支持的排程隔離，否決未通過最終一致性檢查的高 TPS 結果。後續向下重測將 `600 accepted orders/s` 建立為 release-pinned 15 分鐘持續下界，約 700 accepted orders/s 則只保留為短時間下界，不混成同一個容量宣稱。證據見 [2026-08-07 現行混合流量診斷](benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[2026-08-11 release-pinned 700 重測](benchmarks/2026-08-11-release-pinned-700-and-recovery-ownership.md)與 [2026-08-13 release-pinned 600 長測](benchmarks/2026-08-13-release-pinned-600-sustained.md)。
+這個案例同時保留「採用」與「否決」：採用有完整證據支持的排程隔離，否決未通過最終一致性檢查的高 TPS 結果。後續向下重測以 2 個 workload seed 將 `600 accepted orders/s` 建立為 release-pinned 15 分鐘持續下界；約 700 accepted orders/s 則只保留為短時間下界，不混成同一個容量宣稱。證據見 [2026-08-07 現行混合流量診斷](benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[2026-08-11 release-pinned 700 重測](benchmarks/2026-08-11-release-pinned-700-and-recovery-ownership.md)與 [2026-08-13 release-pinned 600 長測](benchmarks/2026-08-13-release-pinned-600-sustained.md)。
 
 ## 一致性、效能、監測與決策
 
