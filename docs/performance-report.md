@@ -43,9 +43,41 @@ A deep `700..1300 orders/s` staircase passed 700 and failed the 800 stage's comp
 
 The controlled follow-up isolated trade-outbox polling from reservation maintenance. With the same seed and deep settings, the 800 stage improved from `167.93` to `383.45 trades/s`, maximum backlog fell from `4090` to `246`, and all `18750` trades passed the final correctness gate. A wider repeat later passed 900 but failed correctness at final convergence because one BUY order was matched twice; that entire run, including its 900 stage, is invalid as capacity evidence. MatchEngine reservation recovery had used a cross-process timestamp to infer the durable trade and could release an already consumed order. Reservations now carry their exact `tradeId`, and cleanup/recovery Lua operations reject a different reservation generation.
 
-After the correctness fix, a light `600..800 orders/s` staircase passed 600 and 700, then failed the 800 completion/backlog gate. All `52500` orders still converged into `26250` identical three-service trades with exact assets and zero final queue, DLQ, order-book, or reservation debt. Scheduler isolation is adopted; 800 and 900 are not promoted. The public mixed-flow lower-bound class remains 700 orders/s.
+After the correctness fix, a light `600..800 orders/s` staircase passed 600 and 700, then failed the 800 completion/backlog gate. All `52500` orders still converged into `26250` identical three-service trades with exact assets and zero final queue, DLQ, order-book, or reservation debt. Scheduler isolation is adopted; 800 and 900 are not promoted. At that point the short-window public mixed-flow lower-bound class remained 700 orders/s; the newer sustained recheck below adds a stricter boundary.
 
 Because the repositories contained uncommitted changes and deep monitoring affects a saturated single host, these runs are current-worktree diagnostics rather than a release-pinned capacity record. See [the 2026-08-07 diagnostic report](benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md).
+
+## Release-Pinned 700 Sustained Recheck - 2026-08-11
+
+The next release-pinned shuffled mixed-HTTP repeat used a `60s` warmup, `900s`
+measurement window, target `700 orders/s`, and seed `20260811`. All `672000` HTTP
+orders were accepted and converged into `336000` identical MatchEngine, Order, and
+Wallet trades with exact assets and zero final queue, DLQ, order-book, or
+reservation debt. Reliability passed, but sustained capacity failed:
+
+- `699.69 accepted orders/s` and `330.90 completed trades/s` in the steady window;
+- `94.54%` completion target ratio;
+- `+27.5602/s` backlog slope and `33751` maximum backlog;
+- `311.78 trades/s` across full convergence.
+
+A same-seed follow-up verified a MatchEngine ownership fix that prevents the
+reservation reconciler and cleanup worker from processing the same normal cleanup.
+Reconciler completions of worker-owned work fell from `22521` to `0`, `44397`
+entries were explicitly deferred, redundant cleanup warnings fell from `22521` to
+`0`, and focused, crash-window, and full MatchEngine tests passed. The change is
+adopted for correctness and recovery ownership.
+
+The follow-up run is not a clean throughput comparison. It encountered `477`
+Wallet RabbitMQ publisher-confirm batch timeouts while the shared host was near
+CPU saturation. It still converged exactly, but failed the sustained gate at
+`691.28 accepted orders/s`, `303.22 completed trades/s`, a `+31.5123/s` backlog
+slope, and `28004` maximum backlog. No TPS improvement or regression is attributed
+to the ownership change from this run.
+
+The short-window mixed-HTTP lower-bound class remains about `700 accepted
+orders/s`, but the current release-pinned revision does not have a repeatable
+15-minute sustained 700 result. See the
+[release-pinned 700 and recovery ownership report](benchmarks/2026-08-11-release-pinned-700-and-recovery-ownership.md).
 
 ## Order-Admission Chain Semantics
 
@@ -354,9 +386,12 @@ baselines. It is not a sustained claim because backlog growth exceeded the limit
 A 15-minute 800 orders/s run reached `377.32` trades/s but accumulated durable debt
 and failed the sustained gate. The first 700 orders/s run had eight local HTTP
 timeouts and was rejected even though its backend metrics passed. A clean repeat
-then passed at `699.14` accepted orders/s and `343.05` completed trades/s with a
-98.01% completion ratio, `+1.05/s` backlog slope, and 6,916 maximum backlog. All
-336,000 trades and 672,000 order uses converged without duplication.
+at that historical revision passed at `699.14` accepted orders/s and `343.05`
+completed trades/s with a 98.01% completion ratio, `+1.05/s` backlog slope, and
+6,916 maximum backlog. All 336,000 trades and 672,000 order uses converged without
+duplication. A newer release-pinned 700 repeat converged with the same exact
+correctness but failed the sustained completion and backlog gates; the historical
+pass is therefore not promoted as current repeatable capacity.
 
 The steady-state harness now resolves ambiguous HTTP timeouts from durable Order
 facts. It derives pairable trades from durable BUY/SELL counts and verifies any
@@ -617,12 +652,12 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- The current code has a clean 15-minute `700 orders/s` mixed soak plus short-window regressions. Additional seeds and an external load generator are still required before treating it as a production SLA.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current sustained knee must be re-established below 700.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
-- Result artifacts are still local and should be attached to a release or otherwise published.
+- The two 2026-08-11 release-pinned result JSON files are published with this report. Several older result artifacts remain local and should be attached to a release or otherwise published.
 - Atomic MatchEngine incoming-order redelivery protection now passes a real RabbitMQ duplicate injection, a real MatchEngine SIGKILL/redelivery run, an 864K-order reliability run, and deterministic PostgreSQL/Redis crash-window tests. Outbox crash/retry and projection replay fault injection remain pending.
-- The current 700 orders/s point has a clean 15-minute same-host soak. Additional seeds and an external load generator are required before treating it as a production SLA.
+- RabbitMQ publisher-confirm stalls and shared-host CPU saturation can invalidate capacity comparisons even when retry and final correctness gates pass. A separate load-generator host remains required for production-style capacity evidence.
 
 ## Historical Seeded Steady-State Evidence
 
@@ -680,10 +715,10 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Re-run the corrected 15-minute mixed workload and require zero reused orders, exact three-service trade IDs, and empty inbox/outbox/queue debt.
-2. Search downward from 800 orders/s to establish a passing 30-minute full HTTP knee before retesting 900.
-3. Repeat the current canonical `600-800 orders/s` boundary with multiple seeds.
-4. Run the same contract from a separate load-generator host when one is available.
+1. Run a release-pinned 15-minute mixed workload at `600 orders/s` and require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt.
+2. Repeat the first passing sustained point with a second workload seed.
+3. Step to `650` and then `700 orders/s` only after the lower point repeats.
+4. Capture RabbitMQ publisher-confirm stalls and same-host saturation as explicit comparison-invalidating signals, then run the same contract from a separate load-generator host when one is available.
 5. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.
 
 The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchmark.md](benchmarks/2026-07-public-benchmark.md).
