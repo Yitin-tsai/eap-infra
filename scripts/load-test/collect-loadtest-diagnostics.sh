@@ -268,6 +268,26 @@ rabbitmq_queue_lines() {
   fi
 }
 
+rabbitmq_alarm_lines_http() {
+  local nodes_json
+  nodes_json="$(curl -fsS -u "${RABBIT_MANAGEMENT_USER}:${RABBIT_MANAGEMENT_PASSWORD}" \
+    "${RABBIT_MANAGEMENT_URL}/api/nodes?columns=name,mem_alarm,disk_free_alarm,mem_used,mem_limit,disk_free,disk_free_limit")" || return 1
+
+  jq -r '
+    .[]
+    | [
+        .name,
+        (.mem_alarm // false),
+        (.disk_free_alarm // false),
+        (.mem_used // 0),
+        (.mem_limit // 0),
+        (.disk_free // 0),
+        (.disk_free_limit // 0)
+      ]
+    | @tsv
+  ' <<< "${nodes_json}"
+}
+
 rabbitmq_connections_http() {
   local connections_json
   connections_json="$(curl -fsS -u "${RABBIT_MANAGEMENT_USER}:${RABBIT_MANAGEMENT_PASSWORD}" \
@@ -333,6 +353,14 @@ snapshot_rabbitmq() {
       echo "[WARN] RabbitMQ management HTTP API channels unavailable"
     fi
   } > "${DIAG_DIR}/rabbitmq-channels.txt" 2>&1
+
+  {
+    echo "### rabbitmq resource alarms"
+    echo "capturedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if ! rabbitmq_alarm_lines_http; then
+      echo "[WARN] RabbitMQ management HTTP API node alarms unavailable"
+    fi
+  } > "${DIAG_DIR}/rabbitmq-alarms.txt" 2>&1
 }
 
 snapshot_redis() {
@@ -569,6 +597,8 @@ sample_loop() {
       echo "## sample $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo "# rabbitmq"
       rabbitmq_queue_lines
+      echo "# rabbitmq alarms"
+      rabbitmq_alarm_lines_http || echo "[WARN] RabbitMQ management HTTP API node alarms unavailable"
       echo "# redis"
       docker exec "${REDIS_CONTAINER}" redis-cli INFO memory \
         | grep -E '^(used_memory:|used_memory_peak:|maxmemory:|maxmemory_policy:)' || true

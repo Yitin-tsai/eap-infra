@@ -38,12 +38,53 @@ http_matched_extract_last_json_object() {
   mv "${temp_json}" "${target_json}"
 }
 
+http_matched_rabbitmq_alarm_observed() {
+  local samples_file="${RUN_DIAG_DIR}/runtime-samples.log"
+  [[ -f "${samples_file}" ]] || return 1
+  awk -F '\t' '
+    /^# rabbitmq alarms$/ { section = 1; next }
+    /^#/ { section = 0; next }
+    section && NF >= 3 && ($2 == "true" || $3 == "true") { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "${samples_file}"
+}
+
 http_matched_persist_result() {
+  local run_status="${1:-1}"
+  local benchmark_contract="${2:-unknown}"
   if http_matched_extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
     echo "[INFO] persisted result JSON=${RUN_REPORT_JSON}"
+    if http_matched_rabbitmq_alarm_observed; then
+      local temp_json="${RUN_REPORT_JSON}.alarm.tmp.$$"
+      jq '
+        .rabbitMqResourceAlarmObserved = true
+        | .validForCapacityEvidence = false
+        | if has("validForSustainedCapacity") then .validForSustainedCapacity = false else . end
+        | .capacityInvalidReasons = (((.capacityInvalidReasons // []) + ["rabbitmq_resource_alarm_observed"]) | unique)
+      ' "${RUN_REPORT_JSON}" > "${temp_json}"
+      mv "${temp_json}" "${RUN_REPORT_JSON}"
+      echo "[ERROR] RabbitMQ resource alarm observed; capacity artifact invalidated." >&2
+      return 3
+    fi
   else
     echo "[WARN] could not extract result JSON from ${RUN_REPORT_LOG}" >&2
-    rm -f "${RUN_REPORT_JSON}"
+    jq -n \
+      --arg runId "${RUN_ID}" \
+      --arg contract "${benchmark_contract}" \
+      --arg log "${RUN_REPORT_LOG}" \
+      --arg diagnostics "${RUN_DIAG_DIR}" \
+      --argjson exitStatus "${run_status}" \
+      '{
+        benchmarkArtifactType: "harness-failure",
+        benchmarkContract: $contract,
+        runId: $runId,
+        processExitStatus: $exitStatus,
+        validForCapacityEvidence: false,
+        capacityInvalidReasons: ["benchmark_harness_failed_before_result"],
+        runLog: $log,
+        diagnosticsDirectory: $diagnostics
+      }' > "${RUN_REPORT_JSON}"
+    echo "[INFO] persisted rejected harness-failure JSON=${RUN_REPORT_JSON}"
   fi
 }
 
@@ -69,6 +110,20 @@ http_matched_assert_environment() {
   RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
     REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER}" \
     bash "${ROOT_DIR}/scripts/load-test/assert-loadtest-environment.sh"
+
+  local nodes_json
+  if ! nodes_json="$(curl -fsS -u "${RABBIT_USER}:${RABBIT_PASSWORD}" \
+      "${RABBIT_MANAGEMENT_URL}/api/nodes?columns=name,mem_alarm,disk_free_alarm")"; then
+    echo "[ERROR] RabbitMQ resource alarm state is not readable." >&2
+    return 2
+  fi
+  if jq -e 'any(.[]; (.mem_alarm // false) or (.disk_free_alarm // false))' \
+      <<< "${nodes_json}" >/dev/null; then
+    echo "[ERROR] RabbitMQ resource alarm is active before the benchmark." >&2
+    jq -r '.[] | select((.mem_alarm // false) or (.disk_free_alarm // false)) | [.name, .mem_alarm, .disk_free_alarm] | @tsv' \
+      <<< "${nodes_json}" >&2
+    return 2
+  fi
 }
 
 http_matched_start_diagnostics() {

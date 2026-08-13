@@ -144,5 +144,9 @@ set -e
 http_matched_stop_diagnostics
 http_matched_collect_after_run_diagnostics
 
-http_matched_persist_result
+persist_status=0
+http_matched_persist_result "${run_status}" "http-matched-staircase-chain" || persist_status=$?
+if (( run_status == 0 && persist_status != 0 )); then
+  run_status="${persist_status}"
+fi
 exit "${run_status}"

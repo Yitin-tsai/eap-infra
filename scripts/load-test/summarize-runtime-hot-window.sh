@@ -99,6 +99,32 @@ emit_rabbitmq_summary() {
     '
 }
 
+emit_rabbitmq_alarm_summary() {
+  awk -F '\t' '
+    /^# rabbitmq alarms$/ { section = "rabbitmq_alarms"; next }
+    /^#/ && $0 !~ /^# rabbitmq alarms$/ { section = ""; next }
+    section == "rabbitmq_alarms" && NF >= 7 && $1 != "" {
+      node = $1
+      samples[node]++
+      if ($2 == "true") memory_alarms[node]++
+      if ($3 == "true") disk_alarms[node]++
+      if (($4 + 0) > max_memory[node]) max_memory[node] = $4 + 0
+      if (($5 + 0) > memory_limit[node]) memory_limit[node] = $5 + 0
+      if (min_disk[node] == "" || ($6 + 0) < min_disk[node]) min_disk[node] = $6 + 0
+      if (($7 + 0) > disk_limit[node]) disk_limit[node] = $7 + 0
+    }
+    END {
+      print "| Node | Samples | Memory alarm samples | Disk alarm samples | Max memory bytes | Memory limit bytes | Min disk free bytes | Disk limit bytes |"
+      print "|---|---:|---:|---:|---:|---:|---:|---:|"
+      for (node in samples) {
+        printf "| `%s` | %d | %d | %d | %d | %d | %d | %d |\n",
+          node, samples[node], memory_alarms[node], disk_alarms[node],
+          max_memory[node], memory_limit[node], min_disk[node], disk_limit[node]
+      }
+    }
+  ' "${SAMPLES_FILE}"
+}
+
 emit_redis_summary() {
   awk -F ':' '
     /^used_memory:/ {
@@ -422,6 +448,10 @@ emit_cpu_summary() {
   echo "## RabbitMQ Backlog Peaks"
   echo
   emit_rabbitmq_summary
+  echo
+  echo "## RabbitMQ Resource Alarms"
+  echo
+  emit_rabbitmq_alarm_summary
   echo
   echo "## PostgreSQL Activity Delta"
   echo

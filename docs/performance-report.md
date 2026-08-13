@@ -100,8 +100,12 @@ relaxing the metrics-failure invalidation gate.
 
 The current public boundary is therefore: `600 accepted orders/s` class for one
 release-pinned 15-minute sustained run, plus about `700 accepted orders/s` as a
-separate short-window class. A second 600 seed is still required before stepping
-to 650. See the [release-pinned 600 sustained report](benchmarks/2026-08-13-release-pinned-600-sustained.md).
+separate short-window class. A second 600 seed was attempted but is inconclusive:
+RabbitMQ remained under a memory alarm, offered load collapsed, and an Order
+PostgreSQL server process exited before final correctness could run. It does not
+count as either a capacity pass or a capacity failure. Another clean seed is still
+required before stepping to 650. See the
+[release-pinned 600 sustained report](benchmarks/2026-08-13-release-pinned-600-sustained.md).
 
 ## Order-Admission Chain Semantics
 
@@ -681,7 +685,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and both 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
 - Atomic MatchEngine incoming-order redelivery protection now passes a real RabbitMQ duplicate injection, a real MatchEngine SIGKILL/redelivery run, an 864K-order reliability run, and deterministic PostgreSQL/Redis crash-window tests. Outbox crash/retry and projection replay fault injection remain pending.
-- RabbitMQ publisher-confirm stalls and shared-host CPU saturation can invalidate capacity comparisons even when retry and final correctness gates pass. A separate load-generator host remains required for production-style capacity evidence.
+- RabbitMQ publisher-confirm stalls, resource alarms, PostgreSQL crash recovery, and shared-host CPU saturation can invalidate capacity comparisons. The harness now samples broker alarms and preserves failure artifacts, but a separate load-generator host remains required for production-style capacity evidence.
 
 ## Historical Seeded Steady-State Evidence
 

@@ -1,0 +1,26 @@
+{
+  "benchmarkArtifactType": "harness-failure",
+  "benchmarkContract": "http-matched-steady-state-chain",
+  "runId": "GLT_20260813_RELEASEPIN_600_15M_SEED20260813_R1",
+  "targetTotalOrderTps": 600,
+  "warmupSeconds": 60,
+  "measurementSeconds": 900,
+  "workloadSeed": 20260813,
+  "processExitStatus": 1,
+  "validForCapacityEvidence": false,
+  "validForSustainedCapacity": false,
+  "finalCorrectnessEstablished": false,
+  "resultJsonProducedByHarness": false,
+  "rabbitMqMemoryAlarmObserved": true,
+  "rabbitMqMemoryAlarmSetAtUtc": "2026-08-13T07:04:40Z",
+  "rabbitMqMemoryAlarmClearedAtUtc": "2026-08-13T07:31:48Z",
+  "orderPostgresBackendExitObserved": true,
+  "orderPostgresBackendExitAtUtc": "2026-08-13T07:31:16Z",
+  "orderPostgresCrashRecoveryReadyAtUtc": "2026-08-13T07:33:11Z",
+  "capacityInvalidReasons": [
+    "benchmark_harness_failed_before_result",
+    "rabbitmq_memory_alarm_observed",
+    "order_postgresql_crash_recovery"
+  ],
+  "evidenceBoundary": "Diagnostic metadata reconstructed from the run log, runtime diagnostics, and Docker container logs. No final throughput or correctness result is asserted."
+}

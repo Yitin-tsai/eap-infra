@@ -63,6 +63,21 @@ The three services produced the same trade-ID fingerprint. Final buyer and selle
 
 [Accepted R2 result JSON](results/2026-08-13-http-matched-releasepin-600-seed-20260811-r2.json)
 
+## Inconclusive Second-Seed Repeat
+
+A repeat with seed `20260813` did not produce capacity or final-correctness evidence. RabbitMQ set its `system_memory_high_watermark` alarm at `07:04:40Z`; the alarm remained active during the run and publisher channels later closed with pending confirms. The load generator could no longer maintain its scheduled offered rate.
+
+At `07:31:16Z`, one Order PostgreSQL server process exited with code `2`. PostgreSQL terminated its remaining server processes and entered crash recovery, invalidating the benchmark's long-lived monitoring connection with an EOF. The container itself did not restart and was not marked OOM-killed; PostgreSQL completed recovery and accepted connections again at `07:33:11Z`. The available evidence does not establish the root cause of that backend exit, so this report does not attribute it to application code or memory pressure.
+
+The repeat is inconclusive rather than a 600-capacity failure: offered load was not maintained, RabbitMQ was under a resource alarm, and the harness could not execute its final three-service correctness gate. It does not count as the required second seed.
+
+This failure drove two fail-closed harness changes:
+
+- runtime diagnostics now sample RabbitMQ memory and disk alarms, and an observed alarm invalidates capacity evidence;
+- a harness exception before the normal result now produces a rejected `harness-failure` JSON instead of losing the artifact.
+
+[Second-seed infrastructure-failure metadata](results/2026-08-13-http-matched-releasepin-600-seed-20260813-r1-infrastructure-failure.json)
+
 ## Diagnostics and Decision
 
 The largest sampled RabbitMQ queue remained `matchEngine.orderConfirmed.queue` at `6934`; `wallet.orderSubmitted.queue` peaked at `2216`. Downstream Order and Wallet trade queues peaked at `272` and `230`. MatchEngine admission remains the first pressure point, but it did not violate this run's backlog gates.
@@ -73,6 +88,6 @@ The reservation ownership change also behaved as intended: the reconciler deferr
 
 Decision:
 
-- promote `600 accepted orders/s` class as the current release-pinned, 15-minute sustained lower bound for this exact single-host shuffled mixed-HTTP contract;
+- promote `600 accepted orders/s` class as the current release-pinned, 15-minute single-run sustained lower bound for this exact single-host shuffled mixed-HTTP contract;
 - retain about `700 accepted orders/s` only as a short-window lower-bound class;
-- do not promote sustained `650` or `700` until `600` repeats with another seed and the higher stages pass the same gates.
+- do not call 600 cross-seed repeatable, or promote sustained `650` or `700`, until a second 600 seed passes without host, database, or broker resource interruption.
