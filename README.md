@@ -6,7 +6,7 @@ EAP is an independently built, event-driven electricity market backend. It suppo
 
 The project is designed around three questions: which service owns each business fact, how a trade remains correct under retries and partial failures, and how an engineering claim can be verified with durable evidence. It is not a CRUD demo or a benchmark-only project.
 
-> **Evidence snapshot:** the current same-host, shuffled mixed-HTTP CDA evidence supports a short-window lower-bound class of about `700 accepted orders/s`. A separate historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
+> **Evidence snapshot:** the current same-host, shuffled mixed-HTTP CDA evidence supports a release-pinned 15-minute sustained lower-bound class of `600 accepted orders/s` and a separate short-window lower-bound class of about `700 accepted orders/s`. A historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
 
 ## System Overview
 
