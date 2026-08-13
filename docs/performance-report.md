@@ -117,6 +117,37 @@ separate short-window class. The next unproven sustained step is `650 orders/s`.
 See the
 [release-pinned 600 sustained report](benchmarks/2026-08-13-release-pinned-600-sustained.md).
 
+## Rejected 650 Sustained Boundary Probe - 2026-08-13
+
+The next clean-start run used the same contract at `650 orders/s`, seed
+`20260813`. It is rejected as sustained-capacity evidence:
+
+- `614207/624000` HTTP orders were accepted and `9793` remained unscheduled after
+  the fixed workload window plus `30s` grace;
+- steady accepted throughput was `623.08 orders/s`, or `95.86%` of target;
+- steady completed throughput was `281.80 trades/s`, only `86.71%` of target;
+- backlog slope stayed within its gate at `+2.3459/s`, but maximum backlog reached
+  `27384`, above the `21000` limit;
+- the run failed accepted-count, scheduling-deadline, completion-rate, and maximum
+  backlog gates.
+
+Correctness still passed for the durable workload. The `307050` accepted BUY and
+`307157` accepted SELL orders produced `307050` identical MatchEngine, Order, and
+Wallet trades. The remaining `107` SELL orders and locked seller units reconciled
+exactly, and final queues, DLQ, and reservations were zero.
+
+No RabbitMQ resource alarm or Redis eviction occurred. The largest sampled queue
+was `matchEngine.orderConfirmed.queue` at `26144`. At the same time, system CPU
+averaged about `94.5-97.4%`, Order's command pool reached `35 active / 92 pending`,
+and Wallet reached `40 active / 24 pending`. The result shows shared-host and
+multi-stage saturation; it does not justify attributing the boundary to one
+service or increasing concurrency. The current sustained boundary remains 600.
+The run also exposed a `-9000ns` Wallet timer value caused by wall-clock duration
+measurement; Wallet `e538362` switched Outbox stage timers to the monotonic JVM
+clock. That observability correction was made after this run and is not a TPS
+improvement.
+See the [650 boundary report](benchmarks/2026-08-13-release-pinned-650-boundary.md).
+
 ## Order-Admission Chain Semantics
 
 `order-admission-chain` is the front-half benchmark. It sends one-sided HTTP limit orders to the Order API and counts the workflow as admitted only after Order has persisted the submission request, Wallet has reserved assets and emitted confirmation, Order has persisted `OrderAssetReservationConfirmedV1`, MatchEngine has admitted the order into the Redis orderbook, and measured RabbitMQ queues have drained.
@@ -690,7 +721,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 600 class; sustained 650 and 700 remain unproven.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 600 class; the current 650 probe failed its completion, scheduling, and maximum-backlog gates, and sustained 700 remains unproven.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
@@ -753,11 +784,12 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Step to `650 orders/s` with the same `60s` warmup, `900s` measurement window, clean-start protocol, and fail-closed resource-alarm gate.
-2. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt in every accepted run.
-3. Repeat 650 with another workload seed before considering a sustained 700 run.
-4. Capture RabbitMQ publisher-confirm stalls and same-host saturation as explicit comparison-invalidating signals, then run the same contract from a separate load-generator host when one is available.
-5. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.
+1. Use the corrected Wallet monotonic timers to isolate MatchEngine intake, Order trade-application, and shared-host pressure without changing concurrency broadly.
+2. Track the same wall-clock duration pattern in other services as separate observability debt rather than mixing a cross-service rewrite into the next performance experiment.
+3. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt in every accepted run.
+4. Run an even intermediate step between 600 and 650 only after a single-variable diagnostic identifies a safe experiment.
+5. Capture RabbitMQ publisher-confirm stalls and same-host saturation as explicit comparison-invalidating signals, then run the same contract from a separate load-generator host when one is available.
+6. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.
 
 The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchmark.md](benchmarks/2026-07-public-benchmark.md).
 
