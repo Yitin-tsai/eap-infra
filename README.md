@@ -6,7 +6,7 @@ EAP is an independently built, event-driven electricity market backend. It suppo
 
 The project is designed around three questions: which service owns each business fact, how a trade remains correct under retries and partial failures, and how an engineering claim can be verified with durable evidence. It is not a CRUD demo or a benchmark-only project.
 
-> **Evidence snapshot:** two workload seeds support a release-pinned, same-host, shuffled mixed-HTTP CDA 15-minute sustained lower-bound class of `624 accepted orders/s`. Both runs accepted `599,040` orders and converged to `299,520` exact three-service trades; their full-lifecycle rates were `300.28` and `310.05 trades/s`. Earlier short-window results at `624` varied by seed, `648` has only one exploratory short-window pass, and shared-host CPU and Order connection-pool pressure remain visible. An older revision reached about `700 accepted orders/s` in a separate short window, and a historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
+> **Evidence snapshot:** two workload seeds support a release-pinned, same-host, shuffled mixed-HTTP CDA 15-minute sustained lower-bound class of `648 accepted orders/s`. Both runs accepted `622,080` orders and converged to `311,040` exact three-service trades; their full-lifecycle rates were `309.73` and `301.14 trades/s`. The higher input did not increase full-lifecycle throughput beyond the prior 624 range, while CPU, connection-pool pressure, and tail latency increased, so 648 is treated as a shared-host pressure boundary rather than comfortable capacity. An older revision reached about `700 accepted orders/s` in a separate short window, and a historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
 
 ## System Overview
 
@@ -101,7 +101,8 @@ Performance is evidence for the architecture, not the homepage's main subject. E
 - [Performance report](docs/performance-report.md): current claims, definitions, limitations, and bottleneck history.
 - [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md): what each workload measures and what it cannot claim.
 - [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
-- [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the current same-host lower-bound class.
+- [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.
+- [648 sustained boundary](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md): two valid 15-minute seeds establishing the highest repeatable point and its pressure limits.
 - [Scheduler-isolation diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md): the earlier adopted fix and rejected high-rate evidence.
 - [Wallet robustness report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md): transaction safety, mixed-flow, soak, and failure evidence.
 

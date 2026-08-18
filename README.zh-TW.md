@@ -6,7 +6,7 @@ EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向�
 
 專案主要回答三個工程問題：每一項業務事實應由哪個服務負責、交易如何在重試與局部失敗下維持正確，以及工程成果如何用持久化證據驗證。它不是單純的 CRUD 範例，也不是只為了展示壓測數字的專案。
 
-> **證據摘要：** 兩個 workload seed 的同機、隨機混合 HTTP CDA 證據，支持 `624 accepted orders/s` 等級的 release-pinned 15 分鐘持續下界。兩輪各接受 `599,040` 筆訂單並收斂為三服務完全一致的 `299,520` 筆交易，完整流程速率分別為 `300.28` 與 `310.05 trades/s`。較早的 `624` 短窗結果會隨 seed 變動，`648` 也只有 1 次探索性短窗通過；同機 CPU 與 Order 連線池仍可見壓力。較舊版本曾有約 `700 accepted orders/s` 的另一類短窗結果；歷史高資料量測試另以 `200,000` 筆 HTTP 訂單完成 `100,000` 筆交易，沒有交易紀錄遺失或資產差異。這些工作負載邊界不同，也都不是正式環境 SLA；完整定義與限制請見[效能報告](docs/performance-report.md)。
+> **證據摘要：** 兩個 workload seed 的同機、隨機混合 HTTP CDA 證據，支持 `648 accepted orders/s` 等級的 release-pinned 15 分鐘持續下界。兩輪各接受 `622,080` 筆訂單並收斂為三服務完全一致的 `311,040` 筆交易，完整流程速率分別為 `309.73` 與 `301.14 trades/s`。提高輸入後，完整流程吞吐沒有超出先前 624 的範圍，CPU、連線池與 tail latency 壓力反而上升，因此 648 是同機壓力邊界，不是寬裕容量。較舊版本曾有約 `700 accepted orders/s` 的另一類短窗結果；歷史高資料量測試另以 `200,000` 筆 HTTP 訂單完成 `100,000` 筆交易，沒有交易紀錄遺失或資產差異。這些工作負載邊界不同，也都不是正式環境 SLA；完整定義與限制請見[效能報告](docs/performance-report.md)。
 
 ## 系統總覽
 
@@ -101,7 +101,8 @@ flowchart TD
 - [效能報告](docs/performance-report.md)：目前宣稱、定義、限制與瓶頸歷程。
 - [壓測分類](docs/benchmarks/load-test-taxonomy.md)：各種工作負載能證明及不能證明的內容。
 - [最新 canonical mixed 短窗邊界](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)：目前 CDA 短窗轉折區與限制。
-- [624 持續測試證據](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md)：2 個有效的 15 分鐘 seed，支持目前同機持續下界。
+- [624 持續測試證據](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md)：2 個有效的 15 分鐘 seed，支持前一級持續下界。
+- [648 持續壓力邊界](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)：2 個有效的 15 分鐘 seed，建立最高可重複點及其壓力限制。
 - [排程隔離診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)：較早的採用修正與被拒絕高流量證據。
 - [Wallet 穩健性報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)：交易安全、混合流量、長時間及故障證據。
 

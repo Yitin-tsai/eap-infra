@@ -261,6 +261,34 @@ Match-to-durable-convergence p99 plus one `32.421s` Match-to-Order outlier.
 Earlier short-window 624 results also varied by seed. See the
 [624 sustained evidence report](benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md).
 
+## 648 Sustained Pressure Boundary - 2026-08-18
+
+Two additional release-jar runs changed only the input target from 624 to `648
+orders/s`. Seeds `20260820` and `20260821` each used a `60s` warm-up plus `900s`
+measurement window. Each accepted all `622080` HTTP orders without failures or
+unscheduled work and converged to `311040` identical MatchEngine, Order, and
+Wallet trades with exact assets and zero final queue, DLQ, order-book, or
+reservation debt.
+
+The measured windows completed at `315.96` and `314.84 trades/s`, with completion
+target ratios of `97.52%` and `97.17%`. Maximum backlog was `4001` and `4907`, and
+regression slopes remained within the configured gate at `+0.5116/s` and
+`+1.1820/s`. Full convergence reached `309.73` and `301.14 trades/s`.
+
+Both runs pass the sustained-capacity contract, promoting 648 to the highest
+current repeatable same-host lower-bound class. The promotion is deliberately
+pressure-qualified: HTTP p99 upper bounds reached `500ms` and `1000ms`, Order
+command-pool pending requests reached `90` and `91`, Wallet pending reached `25`,
+and system CPU averaged roughly `85-88%` with `100%` peaks. Match-to-durable p99
+reached `1.848s` and `2.016s`.
+
+The 648 full-lifecycle rates remain in the same range as the 624 results
+(`300.28` and `310.05 trades/s`). The higher accepted rate therefore did not
+establish proportionally higher business-completion capacity; it increased tail
+and pool pressure. Treat 648 as a shared-host knee, not a production SLA or a
+reason to claim 672 without attribution work. See the
+[648 sustained boundary report](benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md).
+
 ## Order-Admission Chain Semantics
 
 `order-admission-chain` is the front-half benchmark. It sends one-sided HTTP limit orders to the Order API and counts the workflow as admitted only after Order has persisted the submission request, Wallet has reserved assets and emitted confirmation, Order has persisted `OrderAssetReservationConfirmedV1`, MatchEngine has admitted the order into the Redis orderbook, and measured RabbitMQ queues have drained.
@@ -802,6 +830,7 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | Match relay to downstream isolated | Two 10K backlog-drain repeats sent every pre-seeded durable Match outbox row through the real relay and reached exact three-service durable convergence at `2125.20-2521.07 trades/s`; Match relay confirmed-SENT rate was `2356.43-2681.94 trades/s`, with exact assets and empty final queues/DLQ | keep as isolated component-boundary evidence; it rejects Match relay plus downstream fanout as a standalone sub-700 ceiling, but excludes front-half work and simultaneous mixed-flow contention |
 | Canonical mixed short-window boundary recheck | `600 orders/s` passed three valid staircase seeds; `624` passed two and failed one; `648` passed one short sample with HTTP p99 upper bound `2000ms` and transient backlog `2161`. Every valid run ended with exact three-service trades/assets and zero final debt | short-window evidence kept `600` as the lower-bound class pending a longer repeat; classify `624` as a variable short-window knee and `648` as unpromoted exploration evidence |
 | 624 sustained evidence | Two 15-minute seeds each accepted `599040` orders and converged `299520` exact trades. Same-window completion was `307.19` and `312.03 trades/s`; full-lifecycle completion was `300.28` and `310.05 trades/s`; maximum backlog was `4257` and `1164`; all final debt was zero | promote the exact same-host shuffled mixed HTTP sustained lower-bound class from 600 to 624, while retaining short-window variability and shared-host pressure as limits |
+| 648 sustained pressure boundary | Two 15-minute seeds each accepted `622080` orders and converged `311040` exact trades. Same-window completion was `315.96` and `314.84 trades/s`; full-lifecycle completion was `309.73` and `301.14 trades/s`; maximum backlog was `4001` and `4907`; all final debt was zero | promote 648 as the highest repeatable same-host lower-bound class, but classify it as the pressure knee because full-lifecycle throughput stayed in the 624 range while tail, pool pending, and CPU pressure increased |
 
 ## Seeded Matched-Completion Bottleneck
 
@@ -839,7 +868,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 624 class; the current 650 probe failed its completion, scheduling, and maximum-backlog gates, and sustained 700 remains unproven.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 648 class; an earlier 650 probe on a prior snapshot failed its completion, scheduling, and maximum-backlog gates, and sustained 700 remains unproven.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
@@ -848,7 +877,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - RabbitMQ management queue statistics refresh more slowly than the 100ms client sampling loop, so the Rabbit-to-Match diagnostic treats sampled ready/unacked peaks as potentially undercounted. Final queue/DLQ drain and durable record equality remain correctness gates; peak samples are diagnostic only.
 - The trade-consumer fanout diagnostic samples queue totals every `500ms`; a reported peak of zero can miss sub-interval backlog. Durable arrival counts, exact trade-ID equality, assets, and final queue/DLQ drain are its correctness evidence. Three zero samples add about one second of verification delay, so durable arrival and queue-drain verification are reported separately.
 - The Match-relay-to-downstream diagnostic starts from pre-seeded durable facts and a synchronized backlog activation. It measures drain capacity for that component boundary, not a natural mixed-arrival workload. Its `500ms` queue sampling can undercount transient peaks, and the final three zero samples are reported separately from durable convergence.
-- The short-window `624 orders/s` staircase stage passed two of three valid seeds and failed one. Two later 15-minute 624 runs passed with exact convergence and bounded backlog, so 624 is the current long-window lower-bound class; pool, CPU, and first-run tail-latency pressure still limit the claim. The single `648` pass remains short exploration evidence.
+- The short-window `624 orders/s` staircase stage passed two of three valid seeds and failed one. Two later 624 long-window runs passed, followed by two passing 648 long-window seeds. The current 648 lower-bound class remains pressure-qualified because full-lifecycle throughput stayed in the 624 range while pool, CPU, backlog, and tail latency increased.
 
 ## Historical Seeded Steady-State Evidence
 
@@ -906,7 +935,7 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Test fixed-rate `648 orders/s` as the next 15-minute candidate with unchanged light diagnostics; require at least two workload seeds before promotion.
+1. Do not move directly to 672. First compare the 648 contract with lower observability overhead or a separated load-generator CPU domain while keeping business logic and service concurrency unchanged.
 2. Keep macOS sleep disabled and reject any run with HTTP count mismatch, broker alarm, cross-JVM starvation warning, or lost diagnostic samples.
 3. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt in every accepted run.
 4. Capture Order command-pool wait, HTTP latency, queue slope, PostgreSQL/WAL, and system/process CPU without changing pool or listener concurrency in the same experiment.
@@ -919,7 +948,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Latest full HTTP lifecycle wording:
 
-> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, and settlement. The current release-pinned same-host evidence establishes a repeatable 15-minute `624 accepted orders/s` class across two seeds with exact Match, Order, and Wallet trade records, balances, and final queue drain. The two full-lifecycle rates were `300.28` and `310.05 trades/s`; shared-host CPU and Order pool pressure mean this is a tested lower bound, not a production SLA or comfortable ceiling. Historical high-volume tests separately validated 100,000 completed trades from 200,000 HTTP orders without record or asset loss.
+> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, and settlement. The current release-pinned same-host evidence establishes a repeatable 15-minute `648 accepted orders/s` class across two seeds with exact Match, Order, and Wallet trade records, balances, and final queue drain. The two full-lifecycle rates were `309.73` and `301.14 trades/s`; higher tail latency, CPU, and connection-pool pressure make this a tested shared-host boundary, not a production SLA or comfortable ceiling. Historical high-volume tests separately validated 100,000 completed trades from 200,000 HTTP orders without record or asset loss.
 
 Sequential diagnostic wording, when the benchmark distinction is relevant:
 

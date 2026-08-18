@@ -95,17 +95,17 @@ generator remain part of the test boundary.
 
 ## Decision
 
-Accept `624 orders/s` as the current release-pinned, same-host, shuffled mixed
-HTTP 15-minute sustained lower-bound class because two new long-window seeds
-passed the same contract with bounded backlog and exact final convergence. This
-promotion supersedes the earlier `600 orders/s` public lower bound for this
-exact test boundary.
+At this point in the experiment history, accept `624 orders/s` as the
+release-pinned, same-host, shuffled mixed HTTP 15-minute sustained lower-bound
+class because two new long-window seeds passed the same contract with bounded
+backlog and exact final convergence. This promotion superseded the earlier `600
+orders/s` public lower bound for this exact test boundary.
 
 It does not erase the earlier short-window `2 pass / 1 fail` result, establish
-production capacity, or show comfortable hardware headroom. The next candidate
-is `648 orders/s` under the same long-window controls; a separate load-generator
-CPU domain or host remains necessary before attributing the shared-host boundary
-solely to application code.
+production capacity, or show comfortable hardware headroom. A subsequent
+two-seed [648 sustained campaign](2026-08-18-release-pinned-648-sustained-boundary.md)
+passed the same gates and superseded 624 as the highest repeatable point, while
+confirming that the shared-host system was entering a pressure knee.
 
 Artifacts:
 
