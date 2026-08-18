@@ -228,6 +228,29 @@ host/load-generator invalidation from an application correctness failure.
 The current release-pinned 15-minute lower bound remains `600 orders/s`. See the
 [canonical mixed short-window boundary report](benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md).
 
+## 624 Sustained Candidate - 2026-08-18
+
+A release-jar, canonical shuffled mixed HTTP run extended `624 orders/s` to a
+`60s` warm-up plus `900s` measurement window with seed `20260818`. It accepted
+all `599040` HTTP orders without failures or scheduling overrun and converged to
+`299520` identical MatchEngine, Order, and Wallet trades with exact assets and
+zero final queue, DLQ, order-book, or reservation debt.
+
+The measured window reached `623.84 accepted orders/s` and `307.19 same-window
+trades/s`, or `98.46%` of the completion target. Backlog started at `55`, ended
+at `1109`, peaked at `4257`, and had a bounded `+0.9367 messages/s` regression
+slope. Full convergence took `997.4536s`, or `300.28 trades/s`. No RabbitMQ
+resource alarm or queue-read failure was observed.
+
+The run passed the configured sustained-capacity gate, but it remains a
+candidate rather than a new public lower bound. Order command-pool pending
+requests peaked at `85`, Wallet pending requests at `21`, system CPU averaged
+roughly `84-88%` and reached about `100%`, and Match-to-durable-convergence p99
+was `1.424s` with one `32.421s` Match-to-Order outlier. Earlier short-window 624
+results also varied by seed. Keep the two-seed `600 orders/s` class as the
+current public lower bound until a second long 624 seed repeats cleanly. See the
+[624 sustained candidate report](benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md).
+
 ## Order-Admission Chain Semantics
 
 `order-admission-chain` is the front-half benchmark. It sends one-sided HTTP limit orders to the Order API and counts the workflow as admitted only after Order has persisted the submission request, Wallet has reserved assets and emitted confirmation, Order has persisted `OrderAssetReservationConfirmedV1`, MatchEngine has admitted the order into the Redis orderbook, and measured RabbitMQ queues have drained.
@@ -768,6 +791,7 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | Trade consumer fanout isolated | Direct persistent TradeExecuted fanout reached `991.54` and `1972.77 durable Order/Wallet trades/s` at paced `1000` and `2000 events/s`; both 10K runs had exact downstream trade IDs, exact assets, no retry/outbox debt, and empty final queues/DLQ | keep as a low-resource boundary diagnostic; it rejects downstream Order application plus Wallet settlement as the sole roughly `350 trades/s` full-chain ceiling, but omits Match relay and concurrent front-half work |
 | Match relay to downstream isolated | Two 10K backlog-drain repeats sent every pre-seeded durable Match outbox row through the real relay and reached exact three-service durable convergence at `2125.20-2521.07 trades/s`; Match relay confirmed-SENT rate was `2356.43-2681.94 trades/s`, with exact assets and empty final queues/DLQ | keep as isolated component-boundary evidence; it rejects Match relay plus downstream fanout as a standalone sub-700 ceiling, but excludes front-half work and simultaneous mixed-flow contention |
 | Canonical mixed short-window boundary recheck | `600 orders/s` passed three valid staircase seeds; `624` passed two and failed one; `648` passed one short sample with HTTP p99 upper bound `2000ms` and transient backlog `2161`. Every valid run ended with exact three-service trades/assets and zero final debt | keep `600` as the sustained public lower-bound class; classify `624` as a variable short-window knee and `648` as unpromoted exploration evidence |
+| 624 sustained candidate | One new-seed 15-minute run accepted `599040` orders at `623.84/s`, completed `307.19 same-window trades/s`, and converged `299520` exact trades at `300.28 full-lifecycle trades/s`; maximum backlog was `4257`, Order command-pool pending peaked at `85`, and all final debt was zero | valid candidate, but require a second long seed before promoting above the two-seed 600 lower bound |
 
 ## Seeded Matched-Completion Bottleneck
 
@@ -814,7 +838,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - RabbitMQ management queue statistics refresh more slowly than the 100ms client sampling loop, so the Rabbit-to-Match diagnostic treats sampled ready/unacked peaks as potentially undercounted. Final queue/DLQ drain and durable record equality remain correctness gates; peak samples are diagnostic only.
 - The trade-consumer fanout diagnostic samples queue totals every `500ms`; a reported peak of zero can miss sub-interval backlog. Durable arrival counts, exact trade-ID equality, assets, and final queue/DLQ drain are its correctness evidence. Three zero samples add about one second of verification delay, so durable arrival and queue-drain verification are reported separately.
 - The Match-relay-to-downstream diagnostic starts from pre-seeded durable facts and a synchronized backlog activation. It measures drain capacity for that component boundary, not a natural mixed-arrival workload. Its `500ms` queue sampling can undercount transient peaks, and the final three zero samples are reported separately from durable convergence.
-- The short-window `624 orders/s` staircase stage passed two of three valid seeds and failed one. The single `648` pass had elevated HTTP tail latency and transient backlog. Neither rate is current sustained-capacity evidence.
+- The short-window `624 orders/s` staircase stage passed two of three valid seeds and failed one. One later 15-minute 624 candidate passed a new seed but showed pool, CPU, tail-latency, and backlog pressure; a second long seed is still required before promotion. The single `648` pass remains short exploration evidence.
 
 ## Historical Seeded Steady-State Evidence
 
@@ -872,7 +896,7 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Run a longer fixed-rate `624 orders/s` candidate with a new workload seed and light diagnostics; test `648` only after `624` remains bounded.
+1. Repeat the fixed-rate `624 orders/s` 15-minute candidate with another workload seed and unchanged light diagnostics; test `648` only after `624` repeats with bounded backlog and comparable tail latency.
 2. Keep macOS sleep disabled and reject any run with HTTP count mismatch, broker alarm, cross-JVM starvation warning, or lost diagnostic samples.
 3. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt in every accepted run.
 4. Capture Order command-pool wait, HTTP latency, queue slope, PostgreSQL/WAL, and system/process CPU without changing pool or listener concurrency in the same experiment.
@@ -885,7 +909,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Latest full HTTP lifecycle wording:
 
-> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, and settlement. The current release-pinned same-host evidence establishes a repeatable 15-minute `600 accepted orders/s` class across two seeds with exact Match, Order, and Wallet trade records, balances, and final queue drain. A separate short-window staircase found `624 orders/s` variable across seeds and therefore did not promote it as sustained capacity. Historical high-volume tests separately validated 100,000 completed trades from 200,000 HTTP orders without record or asset loss.
+> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, and settlement. The current release-pinned same-host evidence establishes a repeatable 15-minute `600 accepted orders/s` class across two seeds with exact Match, Order, and Wallet trade records, balances, and final queue drain. One later 15-minute `624 orders/s` candidate passed, but earlier short-window results varied by seed, so 624 is not yet promoted. Historical high-volume tests separately validated 100,000 completed trades from 200,000 HTTP orders without record or asset loss.
 
 Sequential diagnostic wording, when the benchmark distinction is relevant:
 

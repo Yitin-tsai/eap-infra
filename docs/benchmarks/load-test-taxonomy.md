@@ -129,7 +129,7 @@ An isolated win can reject a weak candidate cheaply, but it cannot adopt a produ
 
 ## Next Benchmark Work
 
-1. The canonical short-window recheck now has three valid staircase seeds: `600 orders/s` passed all three, while `624` passed two and failed one. Run a longer fixed-rate `624` candidate with a new seed before promoting it; the single short `648` pass is exploration evidence only.
+1. The canonical short-window recheck has three valid staircase seeds: `600 orders/s` passed all three, while `624` passed two and failed one. One later 15-minute `624` candidate passed a new seed; repeat the same long-window contract with another seed before promotion. The single short `648` pass remains exploration evidence only.
 2. Keep service concurrency and pool sizes fixed while capturing Order command-pool wait, HTTP latency, RabbitMQ ready/unacked, PostgreSQL/WAL, and system/process CPU. Reject runs with host starvation, broker alarms, HTTP count mismatch, or missing diagnostics.
 3. Establish a passing 30-minute `http-matched-steady-state-chain` rate at or below the current release-pinned `600 orders/s` sustained class before testing a higher soak.
 4. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
