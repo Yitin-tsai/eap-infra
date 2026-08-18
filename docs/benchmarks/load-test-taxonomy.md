@@ -13,6 +13,11 @@ All contracts below exercise the CDA order/trade path. TDA uses separate auction
 | `http-matched-trade-completion-chain` | implemented | `scripts/load-test/run-http-matched-trade-completion-10k.sh` | HTTP SELL admission followed by HTTP BUY matching, Match/Order/Wallet durable trade-ID equality, asset settlement, MatchEngine reservation cleanup, and final queue drain | isolated component ceilings; simultaneous mixed-side arrival patterns |
 | `http-matched-steady-state-chain` | implemented | `scripts/load-test/run-http-matched-steady-state.sh` | sustained balanced, seeded, mixed-side HTTP traffic; steady accepted-order and completed-trade rates; queue backlog level/slope; three-service durable convergence; asset settlement; and final drain | side-imbalanced, cancellation-heavy, or multi-price market behavior; multi-node failover |
 | `http-matched-staircase-chain` | implemented | `scripts/load-test/run-http-matched-staircase.sh` | one uninterrupted balanced, seeded, mixed-side HTTP run with progressively higher total order rates, per-stage throughput/latency/backlog gates, automatic knee detection, and final full-chain convergence | a long-duration guarantee at the provisional knee; side-imbalanced flow; multi-host load generation |
+| `reservation-cleanup-isolated` | implemented diagnostic | `scripts/load-test/run-reservation-cleanup-ab.sh` | MatchEngine cleanup task claim, Redis reservation removal, completion update, and batch-size A/B using only Match PostgreSQL and Redis | HTTP admission, RabbitMQ scheduling, trade persistence, Order application, Wallet settlement, or full-chain capacity |
+| `match-processor-combined-isolated` | implemented diagnostic | `scripts/load-test/run-match-processor-probe.sh` | shuffled mixed OrderConfirmed processing through the idempotency guard, Redis Lua matching, transactionally persisted trade/outbox/cleanup facts, and a separately timed cleanup drain using only Match PostgreSQL and Redis | RabbitMQ listener delivery/acknowledgement, concurrent cleanup contention, Order, Wallet, HTTP, or full-chain capacity |
+| `rabbit-to-match-intake-isolated` | implemented diagnostic | `scripts/load-test/run-rabbit-match-intake-probe.sh` | paced shuffled mixed OrderConfirmed messages through real RabbitMQ publisher confirms, Match listener/acknowledgement, Redis matching, durable trade/outbox/cleanup writes, and concurrent cleanup using only RabbitMQ, Match PostgreSQL, and Redis | Match trade outbox relay, Order, Wallet, HTTP, cross-service completion, or full-chain capacity |
+| `trade-consumer-fanout-isolated` | implemented diagnostic | `scripts/load-test/run-trade-consumer-fanout-probe.sh` | paced persistent TradeExecuted messages through real RabbitMQ fanout, Order batch application, Wallet single-event settlement, exact downstream trade-ID and asset reconciliation, and final queue drain using only Order, Wallet, RabbitMQ, and their PostgreSQL databases | Match trade outbox relay, Match persistence, Redis matching, HTTP admission, initial reservation, or full-chain capacity |
+| `match-relay-downstream-isolated` | implemented diagnostic | `scripts/load-test/run-match-relay-downstream-probe.sh` | pre-seeded durable Match trade/outbox backlog through the real Match relay and RabbitMQ fanout into real Order/Wallet durable application, exact three-service trade IDs, assets, and final drain | HTTP admission, Wallet reservation, Order confirmation, Redis matching, Match trade persistence, simultaneous mixed-flow contention, or full-chain capacity |
 | `rabbitmq-publish-only` | implemented diagnostic | `scripts/load-test/run-rabbitmq-publish-only-10k.sh` | RabbitMQ broker-confirmed input ceiling for persistent `OrderConfirmedEvent` messages | service processing, DB writes, matching, settlement |
 
 Scripts named `run-global-matched-e2e*` are lower-level seed/project/run drivers used by the backend wrapper and isolated diagnostics. Their publisher fan-out and phase controls do not define additional public capacity contracts. Use the entry points in the table for comparable results.
@@ -110,10 +115,22 @@ Queue growth is treated as sustained debt only when both the regression and net-
 
 The load driver uses fixed open-loop deadlines. A late scheduler wake-up does not move later deadlines, so timer oversleep cannot accumulate into artificial offered-load drift. `ORDER_URL`, `WALLET_URL`, the three JDBC URLs, Redis, and RabbitMQ management endpoints are environment-configurable for a separate load-generator host. For a remote run, disable local service lifecycle and local Docker assertions; collect host diagnostics on the service host separately.
 
+## Experiment Promotion Ladder
+
+Do not start every A/B experiment with the full sustained chain. That consumes the same host CPU, memory, database, broker, and monitoring budget as a capacity run, which can hide a small code effect behind host contention.
+
+1. Run focused unit and integration tests for correctness.
+2. Use the narrowest isolated diagnostic that exercises the proposed primary variable. For reservation cleanup batch sizing, run `scripts/load-test/run-reservation-cleanup-ab.sh`; it starts only Match PostgreSQL and Redis and labels its output `isolated-diagnostic` with `capacityClaimAllowed=false`.
+3. If the component result is repeatable and materially different, run a short `2` to `5` minute full-chain A/B with light diagnostics. Reverse or alternate candidate order when cache warming could bias the second run.
+4. Run the `15` or `30` minute full lifecycle, final queue drain, and cross-service correctness gates only for a candidate that survives the first three steps.
+5. Repeat a different workload seed before promoting a result to the current sustained lower-bound evidence.
+
+An isolated win can reject a weak candidate cheaply, but it cannot adopt a production setting or establish complete-trade TPS. A full-chain loss also overrides an isolated win because the component probe intentionally omits scheduler competition and downstream work.
+
 ## Next Benchmark Work
 
-1. Isolate MatchEngine reservation cleanup from trade-outbox scheduling, then repeat the 2026-08-07 700/800 same-seed diagnostic.
-2. Re-establish the staircase knee on the resulting code revision across at least three workload seeds using the canonical runtime configuration.
-3. Establish a passing 30-minute `http-matched-steady-state-chain` rate below the historical failed 900 orders/s soak.
+1. The canonical short-window recheck now has three valid staircase seeds: `600 orders/s` passed all three, while `624` passed two and failed one. Run a longer fixed-rate `624` candidate with a new seed before promoting it; the single short `648` pass is exploration evidence only.
+2. Keep service concurrency and pool sizes fixed while capturing Order command-pool wait, HTTP latency, RabbitMQ ready/unacked, PostgreSQL/WAL, and system/process CPU. Reject runs with host starvation, broker alarms, HTTP count mismatch, or missing diagnostics.
+3. Establish a passing 30-minute `http-matched-steady-state-chain` rate at or below the current release-pinned `600 orders/s` sustained class before testing a higher soak.
 4. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
-5. Repeat the knee run with the load generator on a separate CPU/host before attributing the final same-host boundary to a service.
+5. Repeat the boundary run with the load generator on a separate CPU domain or host before attributing the final same-host knee to a service.
