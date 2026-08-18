@@ -103,6 +103,7 @@ Performance is evidence for the architecture, not the homepage's main subject. E
 - [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
 - [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.
 - [648 sustained boundary](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md): two valid 15-minute seeds establishing the highest repeatable point and its pressure limits.
+- [Low-observability and high-rate probes](docs/benchmarks/2026-08-18-low-observability-and-high-rate-probes.md): rejected 648 repeat plus driver-limited 1200/2000 burst diagnostics; no capacity promotion.
 - [Scheduler-isolation diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md): the earlier adopted fix and rejected high-rate evidence.
 - [Wallet robustness report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md): transaction safety, mixed-flow, soak, and failure evidence.
 

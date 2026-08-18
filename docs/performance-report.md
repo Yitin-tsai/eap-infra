@@ -289,6 +289,36 @@ and pool pressure. Treat 648 as a shared-host knee, not a production SLA or a
 reason to claim 672 without attribution work. See the
 [648 sustained boundary report](benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md).
 
+## Low-Observability and High-Rate Probes - 2026-08-18
+
+A same-seed 648 repeat disabled the external diagnostics sampler but retained the
+generator's one-second database and RabbitMQ sampling. It accepted all `622080`
+orders and converged exactly, but failed the sustained completion gate at
+`287.96 trades/s` (`88.88%` of target) and reached `271.39 full-lifecycle
+trades/s`. The first `60-540s` interval was effectively identical to the accepted
+light run (`321.77` versus `321.57 trades/s`); degradation appeared in the later
+window. With no CPU, pool, WAL, or DB-wait evidence, this run is inconclusive for
+observer-effect attribution and rejected as capacity evidence.
+
+The inspection found that `DIAGNOSTICS_LEVEL=none` does not disable the
+generator's exact per-second `count(*)` queries over the three growing durable
+trade tables. The steady and staircase wrappers now allow
+`SAMPLE_INTERVAL_SECONDS` to be set explicitly. A lower interval frequency is a
+different observation contract and must be recorded in future A/B results.
+
+Separate `1200` and `2000 orders/s` targets used short `10s + 30s` overload
+probes. The shared-host driver sustained only `1013.36` and `1249.33 accepted
+orders/s`; both runs accumulated rapidly growing backlog and failed offered-load,
+completion, and backlog gates. Their completed-to-actually-accepted pair ratios
+were nearly identical at `27.38%` and `27.29%`, showing no special collapse at
+2000. Every accepted order still converged to `24000` and `40000` exact
+three-service trades with correct assets and zero final debt.
+
+The `323.74` and `417.88 full-convergence trades/s` values are finite
+burst-plus-drain averages, not sustained capacity. They must not replace the 648
+lower-bound claim. See the
+[low-observability and high-rate probe report](benchmarks/2026-08-18-low-observability-and-high-rate-probes.md).
+
 ## Order-Admission Chain Semantics
 
 `order-admission-chain` is the front-half benchmark. It sends one-sided HTTP limit orders to the Order API and counts the workflow as admitted only after Order has persisted the submission request, Wallet has reserved assets and emitted confirmation, Order has persisted `OrderAssetReservationConfirmedV1`, MatchEngine has admitted the order into the Redis orderbook, and measured RabbitMQ queues have drained.

@@ -18,8 +18,8 @@ USERS_PER_SIDE="${USERS_PER_SIDE:-500}"
 WORKERS=128
 MAX_IN_FLIGHT=256
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
-SAMPLE_INTERVAL_SECONDS=1
-PROGRESS_INTERVAL_SECONDS=10
+SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-1}"
+PROGRESS_INTERVAL_SECONDS="${PROGRESS_INTERVAL_SECONDS:-10}"
 MIN_OFFERED_LOAD_RATIO="${MIN_OFFERED_LOAD_RATIO:-0.95}"
 MIN_COMPLETION_RATIO="${MIN_COMPLETION_RATIO:-0.95}"
 MAX_BACKLOG_GROWTH_PER_SECOND="${MAX_BACKLOG_GROWTH_PER_SECOND:-}"
@@ -89,6 +89,7 @@ echo "[INFO] HTTP matched staircase chain"
 echo "[INFO] runId=${RUN_ID}, totalOrderTps=${START_ORDER_TPS}..${END_ORDER_TPS} step=${STEP_ORDER_TPS}"
 echo "[INFO] stageWarmupSeconds=${STAGE_WARMUP_SECONDS}, stageMeasurementSeconds=${STAGE_DURATION_SECONDS}"
 echo "[INFO] arrivalPattern=shuffled, workloadSeed=${WORKLOAD_SEED}, runtimeProfile=canonical"
+echo "[INFO] businessSampleIntervalSeconds=${SAMPLE_INTERVAL_SECONDS}, progressIntervalSeconds=${PROGRESS_INTERVAL_SECONDS}"
 echo "[INFO] stages=${stage_count}, nominalTrafficSeconds=${nominal_seconds}, stopOnFailedStage=true"
 echo "[INFO] samples=${RUN_SAMPLES_CSV}, stages=${RUN_STAGES_CSV}, result=${RUN_REPORT_JSON}"
 

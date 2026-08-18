@@ -115,6 +115,8 @@ Queue growth is treated as sustained debt only when both the regression and net-
 
 The load driver uses fixed open-loop deadlines. A late scheduler wake-up does not move later deadlines, so timer oversleep cannot accumulate into artificial offered-load drift. `ORDER_URL`, `WALLET_URL`, the three JDBC URLs, Redis, and RabbitMQ management endpoints are environment-configurable for a separate load-generator host. For a remote run, disable local service lifecycle and local Docker assertions; collect host diagnostics on the service host separately.
 
+`DIAGNOSTICS_LEVEL=none` disables the external runtime sampler; it does not disable the generator's business-progress monitor. That monitor reads RabbitMQ and runs exact durable-count queries against Match, Order, and Wallet at `SAMPLE_INTERVAL_SECONDS` intervals. The default remains `1` second for historical comparability. A resource-sensitive A/B can choose a larger interval, but must use the same interval on both sides and record it because backlog maxima and regression sampling then use a different observation contract.
+
 ## Experiment Promotion Ladder
 
 Do not start every A/B experiment with the full sustained chain. That consumes the same host CPU, memory, database, broker, and monitoring budget as a capacity run, which can hide a small code effect behind host contention.
@@ -129,8 +131,8 @@ An isolated win can reject a weak candidate cheaply, but it cannot adopt a produ
 
 ## Next Benchmark Work
 
-1. The canonical short-window recheck has three valid staircase seeds: `600 orders/s` passed all three, while `624` passed two and failed one. One later 15-minute `624` candidate passed a new seed; repeat the same long-window contract with another seed before promotion. The single short `648` pass remains exploration evidence only.
-2. Keep service concurrency and pool sizes fixed while capturing Order command-pool wait, HTTP latency, RabbitMQ ready/unacked, PostgreSQL/WAL, and system/process CPU. Reject runs with host starvation, broker alarms, HTTP count mismatch, or missing diagnostics.
-3. Establish a passing 30-minute `http-matched-steady-state-chain` rate at or below the current release-pinned `600 orders/s` sustained class before testing a higher soak.
-4. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
-5. Repeat the boundary run with the load generator on a separate CPU domain or host before attributing the final same-host knee to a service.
+1. Keep `648 accepted orders/s` as the two-seed, 15-minute same-host sustained lower-bound class, but treat it as a pressure boundary. A later same-seed `DIAGNOSTICS_LEVEL=none` repeat failed only after the midpoint and is inconclusive because the internal one-second durable-count monitor remained active and no resource diagnostics were captured.
+2. Run a controlled 648 observer-effect comparison with the same explicit `SAMPLE_INTERVAL_SECONDS` on both sides, reverse the run order, and preserve enough low-rate CPU, pool, WAL, and queue evidence to explain any late degradation.
+3. Repeat the boundary with the load generator on a separate CPU domain or host. The short 1200/2000 probes were driver-limited overload tests, not service-capacity measurements.
+4. Establish a passing 30-minute `http-matched-steady-state-chain` rate at or below the 648 pressure boundary before testing a higher soak.
+5. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
