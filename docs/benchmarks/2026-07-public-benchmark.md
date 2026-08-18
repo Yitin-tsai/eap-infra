@@ -1,5 +1,7 @@
 # EAP Public Benchmark Plan - 2026-07
 
+> Historical runbook: this document preserves the July 2026 benchmark contract and pinned results. `public-order-lifecycle` was still planned at that time and has since been implemented as the `http-matched-*` contracts. Use the [current taxonomy](load-test-taxonomy.md) and [performance report](../performance-report.md) for present entry points and capacity wording.
+
 Status: 10k repeat completed on 2026-07-13. First steady-state validation attempt was rejected on 2026-07-13 because the active Redis used an evicting development configuration; the clean Redis rerun completed successfully.
 
 ## Goal

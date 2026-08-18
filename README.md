@@ -6,7 +6,7 @@ EAP is an independently built, event-driven electricity market backend. It suppo
 
 The project is designed around three questions: which service owns each business fact, how a trade remains correct under retries and partial failures, and how an engineering claim can be verified with durable evidence. It is not a CRUD demo or a benchmark-only project.
 
-> **Evidence snapshot:** two workload seeds support a release-pinned, same-host, shuffled mixed-HTTP CDA 15-minute sustained lower-bound class of `600 accepted orders/s`; about `700 accepted orders/s` remains a separate short-window lower-bound class. A historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
+> **Evidence snapshot:** two workload seeds support a release-pinned, same-host, shuffled mixed-HTTP CDA 15-minute sustained lower-bound class of `600 accepted orders/s`. A later short-window recheck passed `600` across three valid seeds, while `624` varied by seed and `648` passed only one exploratory sample; neither higher rate is promoted as sustained capacity. An older revision reached about `700 accepted orders/s` in a separate short window, and a historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
 
 ## System Overview
 
@@ -100,7 +100,8 @@ Performance is evidence for the architecture, not the homepage's main subject. E
 
 - [Performance report](docs/performance-report.md): current claims, definitions, limitations, and bottleneck history.
 - [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md): what each workload measures and what it cannot claim.
-- [Latest canonical mixed-HTTP diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md): the current CDA boundary and accepted/rejected experiments.
+- [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
+- [Scheduler-isolation diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md): the earlier adopted fix and rejected high-rate evidence.
 - [Wallet robustness report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md): transaction safety, mixed-flow, soak, and failure evidence.
 
 ## Run Locally

@@ -16,7 +16,9 @@ EAP 是個人開發的事件驅動電力交易後端，支援連續雙向競價�
 
 這些角色不是簡報中的抽象名稱，而是 repository 內版本控制的 [實際 Codex skills](../../skills/)，每份工件都定義輸入、必要產出、修改權限、禁止事項與停止條件。它們是一套結構化的個人自我審查方法，不等同於組織中的獨立人員審查，也不能取代正式 code review 與 change approval。
 
-流程已用於擴充持久化收件匣、冪等、當機復原、安全的資料庫交易邊界，以及混合 HTTP 壓測與三服務核對。最近的自我審查也發現：TDA 雖已能出價與清算，但直接發布事件、出價重送冪等、驗資拒絕回授與整場收斂尚未達 CDA 證據標準，因此保留功能、公開缺口，而且不沿用 CDA TPS。本文案例所依據的系統證據基準為：[Order `51165d3`](https://github.com/Yitin-tsai/eap-order/commit/51165d3)、[Wallet `3811169`](https://github.com/Yitin-tsai/eap-wallet/commit/3811169)、[MatchEngine `853ac9b`](https://github.com/Yitin-tsai/eap-matchEngine/commit/853ac9b) 與 [infra `00ba2a0`](https://github.com/Yitin-tsai/eap-infra/commit/00ba2a0)。後續純文件提交不會改變這組服務與 benchmark 證據的版本邊界。
+流程已用於擴充持久化收件匣、冪等、當機復原、安全的資料庫交易邊界，以及混合 HTTP 壓測與三服務核對。最近的自我審查也發現：TDA 雖已能出價與清算，但直接發布事件、出價重送冪等、驗資拒絕回授與整場收斂尚未達 CDA 證據標準，因此保留功能、公開缺口，而且不沿用 CDA TPS。
+
+本文不把不同日期的程式與效能證據包成同一版本。排程隔離與錯誤高流量案例的實作基準為 [Order `51165d3`](https://github.com/Yitin-tsai/eap-order/commit/51165d3)、[Wallet `3811169`](https://github.com/Yitin-tsai/eap-wallet/commit/3811169)、[MatchEngine `853ac9b`](https://github.com/Yitin-tsai/eap-matchEngine/commit/853ac9b) 與 [infra `00ba2a0`](https://github.com/Yitin-tsai/eap-infra/commit/00ba2a0)。後續 release-pinned `600 orders/s` 長時間證據使用 [Order `c95381c`](https://github.com/Yitin-tsai/eap-order/commit/c95381c)、Wallet `3811169`、[MatchEngine `ed55214`](https://github.com/Yitin-tsai/eap-matchEngine/commit/ed55214) 與 [infra `976114c`](https://github.com/Yitin-tsai/eap-infra/commit/976114c)；第二個 seed 使用測試工具修正版 [Order `d8564b7`](https://github.com/Yitin-tsai/eap-order/commit/d8564b7) 與 [infra `2e95260`](https://github.com/Yitin-tsai/eap-infra/commit/2e95260)，未改變核心業務路徑。2026-08-14 的短窗與隔離診斷另見各自 artifact，不用來回寫前述案例版本。
 
 工作流把講題的三個工程面向連在一起：一致性審查決定服務責任、交易邊界與跨服務正確性關卡；效能分析以 baseline、單一變因及相同工作負載比較修改；監測則綜合 RabbitMQ `ready`／`unacked`、DLQ、PostgreSQL、Hikari 與應用程式計時資料進行歸因，並把低觀測容量測試與可能產生 observer effect 的深度診斷分開。最後只有人工負責人能把這些證據轉成採用、拒絕或下一個實驗。
 
@@ -26,7 +28,7 @@ EAP 是個人開發的事件驅動電力交易後端，支援連續雙向競價�
 
 **拒絕：Wallet 自動提交。** 隔離結算吞吐量為 `11799.16 -> 20405.04 settlements/s`，全鏈 Wallet 資料庫交易平均時間為 `21.13ms -> 9.26ms`；但後置條件發生在自動提交之後，錯誤無法回復，強制重新執行 PostgreSQL 測試又發現買賣角色對調時的死結。因此恢復明確資料庫交易、固定 UUID 鎖定順序，並補上 Wallet 不存在、餘額不足與併行測試。
 
-**採用後仍被正確性關卡推翻高 TPS 宣稱：MatchEngine 排程與撮合訂單保留修復。** 監測先發現 1 條排程執行緒同時承擔撮合訂單保留清理與交易事件外送。相同條件比較中，排程隔離讓 800 階段從 `167.93` 提升到 `383.45 trades/s`、最大積壓從 `4090` 降到 `246`，並通過完整核對，因此採用。後續較高階梯雖一度通過 900，最終卻發現 1 張買單被重複撮合，整次高 TPS 結果因此作廢。修正方式是讓 Redis 撮合訂單保留狀態直接核對預期 `tradeId`；修正後 52500 筆訂單全部收斂，但 800 仍未穩定通過。目前 2 個 workload seed 的公開證據將 `600 accepted orders/s` 列為 release-pinned 15 分鐘持續下界，約 700 accepted orders/s 則只保留為短時間下界，不混成同一個容量宣稱。這個案例示範 AI 輔助假設如何被觀測資料採用，也如何被正確性證據限制。
+**採用後仍被正確性關卡推翻高 TPS 宣稱：MatchEngine 排程與撮合訂單保留修復。** 監測先發現 1 條排程執行緒同時承擔撮合訂單保留清理與交易事件外送。相同條件比較中，排程隔離讓 800 階段從 `167.93` 提升到 `383.45 trades/s`、最大積壓從 `4090` 降到 `246`，並通過完整核對，因此採用。後續較高階梯雖一度通過 900，最終卻發現 1 張買單被重複撮合，整次高 TPS 結果因此作廢。修正方式是讓 Redis 撮合訂單保留狀態直接核對預期 `tradeId`；修正後 52500 筆訂單全部收斂，但 800 仍未穩定通過。目前 2 個 workload seed 的公開證據將 `600 accepted orders/s` 列為 release-pinned 15 分鐘持續下界。後續短窗重測的 `624` 會隨 seed 變動，`648` 也只有 1 次探索性通過；較舊版本約 `700 accepted orders/s` 的短窗結果保留為歷史診斷，不混成目前容量宣稱。這個案例示範 AI 輔助假設如何被觀測資料採用，也如何被正確性證據限制。
 
 ## 30 分鐘分享安排
 
@@ -54,8 +56,8 @@ EAP 的專案背景與架構介紹安排在 3–8 分，共 5 分鐘，約為整
 
 ## 公開證據與限制
 
-公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[現行工作樹混合流量診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)。
+公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[排程隔離診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)與[最新短窗邊界重測](../benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)。
 
-EAP 不宣稱 `2000 completed TPS`。目前 release-pinned 長時間證據是 2 個 workload seed 都通過的單機 `600 accepted orders/s` 等級 CDA 隨機混合 HTTP 持續下界；另有單機短時間 `699.98 accepted orders/s`、`346.12 same-window trades/s`、`320.47 full-lifecycle trades/s` 的不同邊界證據。`922.38/s` 是 CDA 依序上限診斷；`20405.04/s` 是已拒絕版本的隔離診斷。已確認訂單、混合流量、短時間窗、長時間、元件隔離、歷史版本、深度診斷與 TDA 必須分開。
+EAP 不宣稱 `2000 completed TPS`。目前 release-pinned 長時間證據是 2 個 workload seed 都通過的單機 `600 accepted orders/s` 等級 CDA 隨機混合 HTTP 持續下界；`624` 是隨 seed 變動的短窗轉折區，`648` 只有 1 次探索性通過。較舊版本另有單機短時間 `699.98 accepted orders/s`、`346.12 same-window trades/s`、`320.47 full-lifecycle trades/s` 的歷史診斷。`922.38/s` 是 CDA 依序上限診斷；`20405.04/s` 是已拒絕版本的隔離診斷。已確認訂單、混合流量、短時間窗、長時間、元件隔離、歷史版本、深度診斷與 TDA 必須分開。
 
 內容與數據來自個人公開 EAP 專案，不涉及現職公司的程式碼、架構、資料或機密。

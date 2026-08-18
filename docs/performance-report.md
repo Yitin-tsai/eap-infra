@@ -734,16 +734,14 @@ businessCompletedTradeTps =
 
 `DURATION_SECONDS=5` is the scheduled BUY publishing window. It is not the completed-business timing window. In the latest TPS126 diagnostic run, the business completion window was `8.10s`, so `10000 / 8.10 ~= 1234.47 completed trades/s`. The run is still invalid for 2000-input capacity comparison because the broker-confirmed input rate was `1377.80/s`.
 
-## Best Isolated Matching Result
+## Isolated Redis Matching Results
 
-| Metric | Result |
-| --- | ---: |
-| Redis matching core throughput | `18,388.25 ops/s` |
-| p50 latency | `2.93ms` |
-| p95 latency | `5.39ms` |
-| p99 latency | `28.25ms` |
+| Evidence | Throughput | Latency | Interpretation |
+| --- | ---: | --- | --- |
+| Published 2026-07-06 historical run | `18,388.25 ops/s` | p50 `2.93ms`, p95 `5.39ms`, p99 `28.25ms` | Traceable historical baseline retained in the frozen experiment report |
+| Later 2026-08-07 current-code diagnostic | `32,007.38 ops/s` | not published in the retained result artifact | Newer isolated throughput reported by the canonical mixed diagnostic; not an E2E or capacity result |
 
-Interpretation: the core Redis order book is not the current global E2E bottleneck. The lower completed E2E throughput comes from reliable persistence, outbox publishing, settlement, and completion convergence.
+Interpretation: both revisions place the isolated Redis order book far above the complete mixed HTTP flow. The later number does not overwrite the historical run's latency distribution, and neither can be called completed-business TPS.
 
 ## Recent Optimization Summary
 

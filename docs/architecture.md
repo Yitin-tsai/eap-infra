@@ -181,7 +181,7 @@ flowchart TD
 
 ## Current Scaling Boundary
 
-The current bottleneck is not isolated Redis matching. Redis Lua matching has a much higher isolated throughput than the completed E2E flow. The limiting path includes the database-backed reliability model around:
+The current bottleneck is not one isolated service operation. Redis/Lua matching, combined Match processing, RabbitMQ-to-Match intake, TradeExecuted fanout, and Match relay plus downstream application all run materially faster in their isolated diagnostics than the complete mixed HTTP flow. These probes rule out a standalone ceiling; they do not remove those components from the integrated path.
 
 - `TradeExecuted` persistence and trade outbox relay.
 - Order trade application and event-store writes.
@@ -202,9 +202,11 @@ flowchart TD
 
 The same-seed controlled A/B improved the 800-stage completion rate from `167.93` to `383.45 trades/s` and reduced maximum backlog from `4090` to `246`, with exact final convergence. Scheduler isolation is therefore current architecture. Later repeats did not make 800 a stable capacity point, so this is an adopted scheduling fix rather than a higher public capacity claim.
 
+The 2026-08-14 isolated boundary campaign then measured the real Match listener at up to `918.46 persisted trades/s`, direct downstream Order/Wallet fanout at up to `1972.77 durable trades/s`, and pre-seeded Match relay plus downstream convergence at `2125.20-2521.07 trades/s`. All are short component diagnostics with `capacityClaimAllowed=false`. In the canonical mixed HTTP recheck, `600 orders/s` passed 3 valid seeds, `624` passed 2 and failed 1, and `648` passed only 1 short sample with elevated HTTP tail latency and transient backlog. The release-pinned 15-minute public lower bound therefore remains `600 orders/s`; `624` is a variable same-host knee and `648` is unpromoted exploration evidence.
+
 Redis resting-order reservations also carry the exact durable `tradeId` they are expected to produce. Cleanup, compensation, and orphan reconciliation present that ID to Lua before changing the reservation. This prevents an old cleanup or a timestamp-based false negative from releasing a consumed order or deleting a newer reservation for the same order ID.
 
-This is a useful architecture result: the system currently trades raw throughput for clear ownership, replayability, and duplicate-safe settlement, while still exposing internal schedulers and relays as explicit scaling boundaries.
+The remaining pressure appears only when HTTP admission, reservation, confirmation, matching, relays, settlement, three databases, RabbitMQ, JVMs, monitoring, and the load generator compete on the same host. One `648` repeat showed Order command-pool pressure while system CPU peaked at `100%`, but that is a pressure signal rather than proof that a larger pool is the fix. The next attribution step is a longer fixed-rate candidate followed by the same contract from a separate load-generator CPU domain or host.
 
 ## Why Not Split More Services Now
 
