@@ -450,6 +450,17 @@ boundary until the worktree is reviewed and committed, and 16 restarted
 20-minute runs are not represented as one continuous multi-hour soak. See the
 [unattended validation report](benchmarks/2026-08-20-vegeta-unattended-validation.md).
 
+The reviewed worktree was then committed and tested with an explicit source
+provenance gate at 700 orders/s for 60 seconds of warm-up plus 20 minutes of
+measurement. Vegeta supplied all `882000` requests at `700.001 orders/s` with
+100% HTTP success, and all `441000` trades eventually converged exactly across
+MatchEngine, Order, and Wallet with correct assets and zero final debt. The
+system completed only `240.01 trades/s` in the steady window, reached a 68.57%
+completion target ratio, and required `2104.941s` for full convergence. The run
+was correctly rejected by `steady_completion_rate_below_minimum`; it does not
+promote 700 and the release-pinned lower bound remains 648. See the
+[release-pinned provenance validation](benchmarks/2026-08-21-release-pinned-700-provenance.md).
+
 ## Match Added-Order Completion Fusion - 2026-08-19
 
 MatchEngine now completes the incoming-order bitmap and removes the processing
@@ -1024,6 +1035,7 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | 624 sustained evidence | Two 15-minute seeds each accepted `599040` orders and converged `299520` exact trades. Same-window completion was `307.19` and `312.03 trades/s`; full-lifecycle completion was `300.28` and `310.05 trades/s`; maximum backlog was `4257` and `1164`; all final debt was zero | promote the exact same-host shuffled mixed HTTP sustained lower-bound class from 600 to 624, while retaining short-window variability and shared-host pressure as limits |
 | 648 sustained pressure boundary | Two 15-minute seeds each accepted `622080` orders and converged `311040` exact trades. Same-window completion was `315.96` and `314.84 trades/s`; full-lifecycle completion was `309.73` and `301.14 trades/s`; maximum backlog was `4001` and `4907`; all final debt was zero | promote 648 as the highest repeatable same-host lower-bound class, but classify it as the pressure knee because full-lifecycle throughput stayed in the 624 range while tail, pool pending, and CPU pressure increased |
 | Vegeta unattended current-worktree validation | `25` full-chain runs over about `11h07m`; all correctness gates passed, `24/25` capacity contracts passed, and all `16` independent 20-minute 700 orders/s repeats passed. One 800 confirmation had `14` HTTP timeouts despite exact durable convergence | adopt Vegeta as the preferred high-rate diagnostic driver and retain 700 as a current-worktree lower-bound candidate; do not promote 800 or rewrite the release-pinned 648 boundary before review and commit |
+| Release-pinned source provenance and 700 repeat | Clean committed source and exact container/tool provenance; `882000/882000` HTTP success and exact `441000` three-service trades, but only `240.01` same-window and `209.51` full-lifecycle trades/s with an `844.93s` post-input drain | adopt the provenance gate, reject 700 as current capacity, retain 648, and add per-stage durable-debt slopes before another high-cost repeat |
 
 ## Seeded Matched-Completion Bottleneck
 
@@ -1136,7 +1148,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 648 class; an earlier 650 probe on a prior snapshot failed its completion, scheduling, and maximum-backlog gates. The later 2026-08-20 Vegeta matrix supports 700 only as separate current-worktree evidence until that worktree is reviewed and committed.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 648 class; an earlier 650 probe on a prior snapshot failed its completion, scheduling, and maximum-backlog gates. The later 2026-08-20 Vegeta matrix supports 700 only as separate current-worktree evidence, and the 2026-08-21 provenance-pinned repeat was rejected at `240.01 same-window trades/s` despite exact final convergence.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.

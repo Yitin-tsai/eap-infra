@@ -263,9 +263,20 @@ gates.
 
 ## Next Benchmark Work
 
-1. Keep `648 accepted orders/s` as the two-seed, 15-minute same-host sustained lower-bound class, but treat it as a pressure boundary. A later same-seed `DIAGNOSTICS_LEVEL=none` repeat failed only after the midpoint and is inconclusive because the internal one-second durable-count monitor remained active and no resource diagnostics were captured.
-2. Run a controlled 648 observer-effect comparison with the same explicit `SAMPLE_INTERVAL_SECONDS` on both sides, reverse the run order, and preserve enough low-rate CPU, pool, WAL, and queue evidence to explain any late degradation.
-3. Bracket the same-host knee between 648 and 1200 with the external driver. The 648 sandwich established driver equivalence; the corrected 1200 run supplied every target but failed completion and backlog gates.
-4. Repeat the external-driver boundary on a separate host. A co-located external process reduces driver cost but does not isolate the EAP services from laptop CPU contention.
-5. Establish a passing 30-minute steady-state rate at or below the 648 pressure boundary before testing a higher soak.
-6. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
+1. Keep `648 accepted orders/s` as the two-seed, 15-minute same-host sustained
+   lower-bound class and treat it as a pressure boundary. The release-pinned
+   20-minute 700 repeat supplied every request and converged exactly, but failed at
+   `240.01 same-window trades/s` after a long drain.
+2. Extend the business monitor with separate durable debt and slope for Order
+   submission-to-reservation, reservation-to-confirmation, confirmation-to-Match,
+   Match trade-to-relay, downstream Order/Wallet application, and reservation
+   cleanup. RabbitMQ ready/unacked alone did not expose the 700 run's debt.
+3. After that instrumentation is committed, use a short deep 700 diagnostic to
+   capture Hikari, PostgreSQL wait/WAL, outbox, cleanup, and per-stage evidence.
+   Do not pay for another 15-20 minute repeat until one stage has a testable
+   bottleneck hypothesis.
+4. Repeat a surviving boundary with a separate load-generator host. Co-located
+   Vegeta reduces driver cost but does not isolate EAP from laptop CPU contention.
+5. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book,
+   and partial-fill behavior. Do not weaken the balanced contract's exact
+   completion gates to fit it.

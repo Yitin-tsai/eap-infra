@@ -1,0 +1,264 @@
+{
+  "benchmarkSchemaVersion": 2,
+  "benchmarkContract": "external-http-matched-steady-state-chain",
+  "runId": "PROVENANCE_SMOKE_SEED_20260843_R1",
+  "marketId": "ENERGY-SPOT",
+  "runtimeProfile": "canonical",
+  "arrivalPattern": "shuffled",
+  "workloadSeed": 20260843,
+  "warmupSeconds": 2,
+  "measurementSeconds": 10,
+  "targetTotalOrderTps": 100,
+  "httpDriverMode": "external-vegeta",
+  "loadGeneratorMaxInFlight": null,
+  "workloadPreparationSeconds": 0.0000,
+  "expectedHttpOrders": 1200,
+  "expectedTrades": 600,
+  "durableBuyOrders": 600,
+  "durableSellOrders": 600,
+  "pairableAcceptedTrades": 600,
+  "expectedRemainingBuyOrders": 0,
+  "expectedRemainingSellOrders": 0,
+  "usersPerSide": 100,
+  "httpAccepted": 1200,
+  "sellHttpAccepted": 600,
+  "buyHttpAccepted": 600,
+  "http429": 0,
+  "http503": 0,
+  "httpOtherFailures": 0,
+  "unscheduledOrders": 0,
+  "trafficSendSeconds": 11.9919,
+  "totalHttpAcceptedTps": 100.07,
+  "httpLatencyP50UpperBoundMs": 5,
+  "httpLatencyP95UpperBoundMs": 100,
+  "httpLatencyP99UpperBoundMs": 500,
+  "steadyWindowStartSeconds": 2.8206,
+  "steadyWindowEndSeconds": 11.8076,
+  "steadyWindowObservedSeconds": 8.9870,
+  "steadySampleCount": 10,
+  "steadyAcceptedOrders": 899,
+  "steadyCompletedTrades": 454,
+  "steadyAcceptedOrderTps": 100.03,
+  "steadyCompletedTradeTps": 50.52,
+  "steadyOfferedLoadRatio": 1.0003,
+  "steadyCompletionTargetRatio": 1.0103,
+  "steadyCompletionToAcceptedRatio": 1.0100,
+  "steadyBacklogStart": 0,
+  "steadyBacklogEnd": 0,
+  "steadyMaxBacklog": 33,
+  "steadyBacklogSlopePerSecond": -0.0190,
+  "minOfferedLoadRatio": 0.9500,
+  "minCompletionRatio": 0.9500,
+  "maxBacklogGrowthPerSecond": 1.0000,
+  "maxSteadyBacklog": 3000,
+  "finalOrderSubmissionRows": 1200,
+  "finalWalletReservationRows": 1200,
+  "finalOrderConfirmationRows": 1200,
+  "finalMatchedOrderRows": 1200,
+  "finalMatchTradeRows": 600,
+  "finalOrderTradeRows": 600,
+  "finalWalletTradeRows": 600,
+  "threeServiceTradeIdsEqual": true,
+  "matchTradeIdCount": 600,
+  "orderTradeIdCount": 600,
+  "walletTradeIdCount": 600,
+  "tradeIdFingerprint": "7788fe53b58e33ced53094498c12064b44dfc8b9fcf0d26aa9904eb4d61a1364",
+  "initialBuyerAvailableAmount": 1000600,
+  "initialBuyerLockedAmount": 0,
+  "initialBuyerAvailableCurrency": 100060000,
+  "initialBuyerLockedCurrency": 0,
+  "initialSellerAvailableAmount": 1000600,
+  "initialSellerLockedAmount": 0,
+  "initialSellerAvailableCurrency": 100060000,
+  "initialSellerLockedCurrency": 0,
+  "finalBuyerAvailableAmount": 1001200,
+  "finalBuyerLockedAmount": 0,
+  "finalBuyerAvailableCurrency": 100000000,
+  "finalBuyerLockedCurrency": 0,
+  "finalSellerAvailableAmount": 1000000,
+  "finalSellerLockedAmount": 0,
+  "finalSellerAvailableCurrency": 100120000,
+  "finalSellerLockedCurrency": 0,
+  "remainingBuyOrders": 0,
+  "remainingSellOrders": 0,
+  "activeMatchReservations": 0,
+  "finalQueueBacklog": 0,
+  "queueMetricsReadFailures": 0,
+  "finalQueues": {
+    "wallet.orderSubmitted.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.orderConfirmed.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.orderFailed.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "matchEngine.orderConfirmed.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.tradeExecuted.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "wallet.tradeExecuted.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.dlq": {
+      "ready": 0,
+      "unacked": 0
+    }
+  },
+  "fullConvergenceSeconds": 14.1240,
+  "fullConvergenceTradeTps": 42.48,
+  "sampleOutput": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-PROVENANCE_SMOKE_SEED_20260843_R1-samples.csv",
+  "validForSustainedCapacity": true,
+  "capacityInvalidReasons": [],
+  "benchmarkProvenance": {
+    "schemaVersion": 1,
+    "evidenceMode": "release-pinned",
+    "capturedAtStart": "2026-08-21T01:41:51Z",
+    "capturedAtEnd": "2026-08-21T01:43:24Z",
+    "sourceCleanAtStart": true,
+    "sourceCleanAtEnd": true,
+    "repositoriesStable": true,
+    "fingerprintsStable": true,
+    "fingerprintsComplete": true,
+    "sourceStable": true,
+    "sourceEligible": true,
+    "benchmarkContract": "external-http-matched-steady-state-chain",
+    "invalidReasons": [],
+    "repositories": [
+      {
+        "name": "eap-infra",
+        "path": ".",
+        "available": true,
+        "commit": "085a3266baa7e4d7e6f880e5da3aab531b490948",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "transactionPath": false
+      },
+      {
+        "name": "eap-common",
+        "path": "eap-common",
+        "available": true,
+        "commit": "628893ab3226c3c737aee401f189b47e97c5dd00",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "transactionPath": true
+      },
+      {
+        "name": "eap-order",
+        "path": "eap-order",
+        "available": true,
+        "commit": "c90de1998e0b3fd8a716d97c4377a8f5a51b7244",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "transactionPath": true
+      },
+      {
+        "name": "eap-wallet",
+        "path": "eap-wallet",
+        "available": true,
+        "commit": "e538362030d97c54085a96e8f4f572ef923418c5",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "transactionPath": true
+      },
+      {
+        "name": "eap-matchEngine",
+        "path": "eap-matchEngine",
+        "available": true,
+        "commit": "113d7a49e5e4e7cea9c67fa87241f5e7ea96922b",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "transactionPath": true
+      }
+    ],
+    "host": {
+      "os": "Darwin",
+      "osVersion": "26.5.1",
+      "architecture": "arm64",
+      "logicalCpus": 10,
+      "physicalMemoryBytes": 17179869184
+    },
+    "execution": {
+      "loadGeneratorPlacement": "co-located",
+      "serviceLaunchMode": "jar",
+      "diagnosticsLevel": "none",
+      "postgres": {
+        "synchronousCommit": "off",
+        "trackIoTiming": "off",
+        "trackWalIoTiming": "off"
+      }
+    },
+    "tooling": {
+      "java": "openjdk version \"21.0.10\" 2026-01-20 LTS",
+      "docker": "29.5.2",
+      "vegeta": "Version: 12.13.0"
+    },
+    "fingerprints": {
+      "composeSha256": "6a4b7a5bcac5db4f7593e50fcdcf2619d0fc14dacb1666b073ec84da5cbab034",
+      "runnerSha256": "c6a3bc9c0fb9c18d2e71df038974b5bd6c4f8e906c2ca8b7e71fb8d90954c064",
+      "librarySha256": "45373c0e35542aa437e057fc599f7d2545d541b915be48132f5525a9dc82a5ba"
+    },
+    "containers": [
+      {
+        "name": "eap-order-postgres-loadtest",
+        "configuredImage": "postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647",
+        "imageId": "sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647"
+      },
+      {
+        "name": "eap-wallet-postgres-loadtest",
+        "configuredImage": "postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647",
+        "imageId": "sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647"
+      },
+      {
+        "name": "eap-match-postgres-loadtest",
+        "configuredImage": "postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647",
+        "imageId": "sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647"
+      },
+      {
+        "name": "eap-rabbitmq-loadtest",
+        "configuredImage": "rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281",
+        "imageId": "sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281"
+      },
+      {
+        "name": "eap-redis-loadtest",
+        "configuredImage": "redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
+        "imageId": "sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
+      }
+    ]
+  },
+  "provenanceInvalidReasons": [],
+  "capacityEvidenceInvalidReasons": [
+    "insufficient_measurement_window",
+    "insufficient_warmup_window"
+  ],
+  "capacityClaimAllowed": false,
+  "validForCapacityEvidence": false,
+  "externalOpenLoopDriver": true,
+  "loadGeneratorPlacement": "co-located",
+  "externalDriverCpuLimit": 1,
+  "externalDriverInitialWorkers": 4,
+  "externalDriverMaxWorkers": 128,
+  "externalScheduledRequests": 1200,
+  "externalScheduledRequestRate": 100.090543715816,
+  "externalResponseThroughput": 100.0674232032542,
+  "externalHttpSuccessRatio": 1,
+  "externalDriverReport": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-PROVENANCE_SMOKE_SEED_20260843_R1-vegeta-report.json",
+  "externalDriverTime": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-PROVENANCE_SMOKE_SEED_20260843_R1-vegeta-time.txt",
+  "workloadManifest": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-PROVENANCE_SMOKE_SEED_20260843_R1-manifest.json",
+  "remoteDriverMetadata": null,
+  "remoteDriverPreflight": null
+}

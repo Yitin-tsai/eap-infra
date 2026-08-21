@@ -206,7 +206,7 @@ The 2026-08-14 isolated boundary campaign then measured the real Match listener 
 
 Redis resting-order reservations also carry the exact durable `tradeId` they are expected to produce. Cleanup, compensation, and orphan reconciliation present that ID to Lua before changing the reservation. This prevents an old cleanup or a timestamp-based false negative from releasing a consumed order or deleting a newer reservation for the same order ID.
 
-The remaining pressure appears only when HTTP admission, reservation, confirmation, matching, relays, settlement, three databases, RabbitMQ, JVMs, monitoring, and the load generator compete on the same host. The 648 long repeats reached Order command-pool pending peaks of `90` and `91`, Wallet pending peaks of `25`, and system CPU averages of roughly `85-88%`. Their full-lifecycle rates remained in the same `301-310 trades/s` range as 624 despite the higher accepted input. These are pressure signals rather than proof that a larger pool is the fix. A later low-external-observability repeat matched the accepted run through its first half but degraded late; because the generator's exact one-second durable-count monitor remained active and resource diagnostics were absent, it is inconclusive for attribution. A prepared-sync diagnostic moved deterministic schedule and JSON construction outside the traffic clock and calibrated at `1999.98 requests/s` against a no-op endpoint, but its full-chain 1200/2000 probes still missed offered-load gates. Preparation took only `0.10-0.14s`; synchronous HTTP response waiting and shared-host contention remained. The next decisive steps are a lower-overhead external driver or dedicated load-generator CPU/host, followed by the same full-chain correctness gates before promoting any higher capacity boundary.
+The remaining pressure appears only when HTTP admission, reservation, confirmation, matching, relays, settlement, three databases, RabbitMQ, JVMs, monitoring, and the load generator compete on the same host. The 648 long repeats reached Order command-pool pending peaks of `90` and `91`, Wallet pending peaks of `25`, and system CPU averages of roughly `85-88%`. Their full-lifecycle rates remained in the same `301-310 trades/s` range as 624 despite the higher accepted input. These are pressure signals rather than proof that a larger pool is the fix. A later low-external-observability repeat matched the accepted run through its first half but degraded late; because the generator's exact one-second durable-count monitor remained active and resource diagnostics were absent, it is inconclusive for attribution. A prepared-sync diagnostic moved deterministic schedule and JSON construction outside the traffic clock and calibrated at `1999.98 requests/s` against a no-op endpoint, but its full-chain 1200/2000 probes still missed offered-load gates. The external Vegeta driver subsequently removed the Java driver's scheduling ambiguity and passed a short equivalence sandwich at 648, but it did not create additional service capacity. A release-pinned 20-minute 700 run supplied all `882000` requests and converged exactly, yet completed only `240.01 same-window trades/s` and required about `844.93s` of post-input drain. RabbitMQ backlog alone did not expose this service-owned debt. The next decisive step is per-stage durable-debt measurement before another high-cost capacity repeat; a separate load-generator host remains necessary only when testing beyond the same-host boundary.
 
 ## Why Not Split More Services Now
 
@@ -260,3 +260,21 @@ If input stays above completed capacity, queue lag will grow. The production pol
 - report accepted throughput and completed throughput separately;
 - keep final queue drain as part of benchmark acceptance;
 - expose queue backlog over time, not only final zero backlog.
+
+## Open CDA Integrity Work
+
+The measured matched-trade path has strong completion evidence, but that evidence
+does not currently cover cancellation. The existing cancellation endpoint first
+calls MatchEngine synchronously and then appends an Order cancellation event. The
+MatchEngine boolean result is not used to decide the Order transition, there is no
+durable cancellation command or outcome, and Wallet does not consume a cancellation
+event to release the remaining asset reservation. A cancellation racing with a
+match can therefore leave Order, MatchEngine, and Wallet with different outcomes.
+
+Cancellation should be treated as a separate state-machine redesign rather than a
+small controller fix. The design must define one durable cancellation intent,
+MatchEngine's authoritative outcome (`cancelled`, `already matched`, or `not found`),
+Wallet release semantics for the exact remaining reservation, idempotent retries,
+and a race test against `TradeExecuted`. Until that contract and its full-lifecycle
+correctness gate exist, cancellation is not part of the reliability or capacity
+claims in this repository.

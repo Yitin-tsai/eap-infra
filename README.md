@@ -103,6 +103,7 @@ Performance is evidence for the architecture, not the homepage's main subject. E
 - [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
 - [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.
 - [648 sustained boundary](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md): two valid 15-minute seeds establishing the highest repeatable point and its pressure limits.
+- [Release-pinned 700 provenance validation](docs/benchmarks/2026-08-21-release-pinned-700-provenance.md): exact source and environment evidence for a rejected 700 orders/s repeat; the 648 boundary remains unchanged.
 - [Low-observability and high-rate probes](docs/benchmarks/2026-08-18-low-observability-and-high-rate-probes.md): rejected 648 repeat plus driver-limited 1200/2000 burst diagnostics; no capacity promotion.
 - [Prepared HTTP driver diagnostic](docs/benchmarks/2026-08-18-prepared-http-driver.md): request preparation outside the traffic clock, a 2000 requests/s driver-only calibration, and the short full-chain A/B boundary.
 - [External open-loop driver](docs/benchmarks/2026-08-19-external-open-loop-driver.md): low-cost fixed-rate generation, lifecycle handoff, correctness gates, and the remaining host-isolation boundary.
