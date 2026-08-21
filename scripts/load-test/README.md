@@ -37,7 +37,10 @@ then verifies that the same commits remain checked out through the end of the ru
 The result records full commit hashes for infra, common, Order, Wallet, and
 MatchEngine; host and tool versions; execution placement; runner/config hashes;
 and the actual infrastructure container image IDs. A successful business gate is
-eligible for a public capacity claim only when this provenance gate also passes.
+eligible for a public capacity claim only when this provenance gate also passes and
+the run includes at least 60 seconds of warm-up plus 15 minutes of measurement.
+Short release-pinned smoke tests validate the harness but remain ineligible for a
+capacity claim.
 
 ## Focused Probes
 

@@ -15,7 +15,7 @@ http_matched_write_provenance_snapshot() {
   local output="$1"
   local captured_at repositories_json containers_json os_name os_version architecture
   local logical_cpus physical_memory_bytes java_version docker_version vegeta_version
-  local compose_sha runner_sha library_sha
+  local compose_sha runner_sha library_sha runner_path
   local repositories_file="${output}.repositories.tmp.$$"
 
   mkdir -p "$(dirname "${output}")"
@@ -91,7 +91,12 @@ EOF
   docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   vegeta_version="$(vegeta --version 2>&1 | head -n 1 || true)"
   compose_sha="$(http_matched_sha256 "${ROOT_DIR}/docker-compose.loadtest.yml")"
-  runner_sha="$(http_matched_sha256 "$0")"
+  if [[ "$0" == /* ]]; then
+    runner_path="$0"
+  else
+    runner_path="${ROOT_DIR}/${0#./}"
+  fi
+  runner_sha="$(http_matched_sha256 "${runner_path}")"
   library_sha="$(http_matched_sha256 "${ROOT_DIR}/scripts/load-test/http-matched-loadtest-lib.sh")"
   captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -171,8 +176,12 @@ http_matched_enrich_provenance() {
     --slurpfile start "${RUN_PROVENANCE_START_JSON}" \
     --slurpfile final "${final_json}" \
     --arg evidenceMode "${BENCHMARK_EVIDENCE_MODE}" \
-    '($start[0].repositories == $final[0].repositories) as $stable
+    '($start[0].repositories == $final[0].repositories) as $repositoriesStable
+      | ($start[0].fingerprints == $final[0].fingerprints) as $fingerprintsStable
+      | (all($start[0].fingerprints[]; . != "")
+        and all($final[0].fingerprints[]; . != "")) as $fingerprintsComplete
       | (($start[0].sourceClean == true) and ($final[0].sourceClean == true)) as $clean
+      | ($repositoriesStable and $fingerprintsStable) as $stable
       | {
           schemaVersion:1,
           evidenceMode:$evidenceMode,
@@ -180,13 +189,19 @@ http_matched_enrich_provenance() {
           capturedAtEnd:$final[0].capturedAt,
           sourceCleanAtStart:$start[0].sourceClean,
           sourceCleanAtEnd:$final[0].sourceClean,
+          repositoriesStable:$repositoriesStable,
+          fingerprintsStable:$fingerprintsStable,
+          fingerprintsComplete:$fingerprintsComplete,
           sourceStable:$stable,
-          sourceEligible:($evidenceMode == "release-pinned" and $clean and $stable),
+          sourceEligible:($evidenceMode == "release-pinned" and $clean and $stable
+            and $fingerprintsComplete),
           benchmarkContract:$final[0].benchmarkContract,
           invalidReasons:([
             if $evidenceMode != "release-pinned" then "diagnostic_evidence_mode" else empty end,
             if ($clean | not) then "source_repository_dirty_or_missing" else empty end,
-            if ($stable | not) then "source_revision_changed_during_run" else empty end
+            if ($repositoriesStable | not) then "source_revision_changed_during_run" else empty end,
+            if ($fingerprintsStable | not) then "source_fingerprint_changed_during_run" else empty end,
+            if ($fingerprintsComplete | not) then "source_fingerprint_missing" else empty end
           ]),
           repositories:$final[0].repositories,
           host:$final[0].host,
@@ -200,16 +215,21 @@ http_matched_enrich_provenance() {
     --slurpfile provenance "${provenance_json}" \
     --arg contract "${benchmark_contract}" \
     --argjson processExitStatus "${run_status}" \
-    '.benchmarkProvenance = $provenance[0]
+    '([
+        $provenance[0].invalidReasons[],
+        if $processExitStatus != 0 then "benchmark_process_failed" else empty end,
+        if ($contract != "http-matched-steady-state-chain"
+          and $contract != "external-http-matched-steady-state-chain")
+          then "unsupported_capacity_contract" else empty end,
+        if ((.warmupSeconds // 0) < 60) then "insufficient_warmup_window" else empty end,
+        if ((.measurementSeconds // 0) < 900) then "insufficient_measurement_window" else empty end,
+        if (.validForSustainedCapacity != true) then "business_capacity_gate_failed" else empty end,
+        if (.rabbitMqResourceAlarmObserved // false) then "rabbitmq_resource_alarm_observed" else empty end
+      ] | unique) as $evidenceInvalidReasons
+      | .benchmarkProvenance = $provenance[0]
       | .provenanceInvalidReasons = $provenance[0].invalidReasons
-      | .capacityClaimAllowed = (
-          $provenance[0].sourceEligible
-          and ($processExitStatus == 0)
-          and ($contract == "http-matched-steady-state-chain"
-            or $contract == "external-http-matched-steady-state-chain")
-          and (.validForSustainedCapacity == true)
-          and ((.rabbitMqResourceAlarmObserved // false) | not)
-        )
+      | .capacityEvidenceInvalidReasons = $evidenceInvalidReasons
+      | .capacityClaimAllowed = ($evidenceInvalidReasons | length == 0)
       | .validForCapacityEvidence = .capacityClaimAllowed' \
     "${RUN_REPORT_JSON}" > "${enriched_result}"
   mv "${enriched_result}" "${RUN_REPORT_JSON}"

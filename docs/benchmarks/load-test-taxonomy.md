@@ -44,10 +44,11 @@ SSH, or service credentials.
 
 `validForSustainedCapacity` answers whether the measured business and backlog gates
 passed. `capacityClaimAllowed` additionally requires a supported steady-state
-contract, zero process failure, clean and stable release-pinned provenance, and no
-RabbitMQ resource alarm. One eligible artifact can contribute to a capacity claim;
-the promotion ladder still requires another seed before changing a repeatable
-sustained boundary.
+contract, zero process failure, at least `60` seconds of warm-up and `900` seconds
+of measurement, complete and stable release-pinned source fingerprints, and no
+RabbitMQ resource alarm. `capacityEvidenceInvalidReasons` records which evidence
+gate failed. One eligible artifact can contribute to a capacity claim; the promotion
+ladder still requires another seed before changing a repeatable sustained boundary.
 
 ## Implemented Contracts
 
