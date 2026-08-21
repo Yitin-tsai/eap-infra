@@ -55,7 +55,7 @@ json_value() {
 }
 
 emit_result_summary() {
-  local market completed orderbook_tps business_completed_tps blended_tps blended_orders blended_seconds legacy_business_tps completion_seconds trade_tps order_tps wallet_tps marker_tps queue_drain last_queue last_queue_seconds
+  local market completed orderbook_tps business_completed_tps blended_tps blended_orders blended_seconds legacy_business_tps completion_seconds trade_tps order_tps wallet_tps marker_tps queue_drain last_queue last_queue_seconds external_steady_accepted external_steady_completed external_full_convergence
   market="$(json_value marketId)"
   completed="$(json_value completedTrades)"
   orderbook_tps="$(json_value businessOrderbookAdmissionTps)"
@@ -96,6 +96,15 @@ emit_result_summary() {
   queue_drain="$(json_value queueFullyDrainedSeconds)"
   last_queue="$(json_value lastNonZeroQueue)"
   last_queue_seconds="$(json_value lastNonZeroQueueSeconds)"
+  external_steady_accepted="$(json_value steadyAcceptedOrderTps)"
+  external_steady_completed="$(json_value steadyCompletedTradeTps)"
+  external_full_convergence="$(json_value fullConvergenceTradeTps)"
+  if [[ -z "${completed}" ]]; then
+    completed="$(json_value finalMatchTradeRows)"
+  fi
+  if [[ -z "${completion_seconds}" ]]; then
+    completion_seconds="$(json_value fullConvergenceSeconds)"
+  fi
 
   if [[ -z "${market}${completed}${legacy_business_tps}${business_completed_tps}" ]]; then
     echo "_No result JSON found._"
@@ -118,6 +127,9 @@ emit_result_summary() {
 | orderTradeApplicationReachTps | ${order_tps:-n/a} |
 | walletTradeSettlementReachTps | ${wallet_tps:-n/a} |
 | businessConvergenceReachTps | ${marker_tps:-n/a} |
+| externalSteadyAcceptedOrderTps | ${external_steady_accepted:-n/a} |
+| externalSteadyCompletedTradeTps | ${external_steady_completed:-n/a} |
+| externalFullConvergenceTradeTps | ${external_full_convergence:-n/a} |
 | queueFullyDrainedSeconds | ${queue_drain:-n/a} |
 | lastNonZeroQueue | \`${last_queue:-n/a}\` |
 | lastNonZeroQueueSeconds | ${last_queue_seconds:-n/a} |
@@ -217,7 +229,7 @@ emit_pg_ranking() {
         total = fields[2]
         mean = fields[3]
         rows = fields[4]
-        query = fields[9]
+        query = fields[n]
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", calls)
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", total)
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", mean)
@@ -237,6 +249,45 @@ emit_pg_ranking() {
       NR <= 20 {
         gsub(/\|/, "\\|", $6)
         printf "| %d | %s | %s | %.2f | %.4f | `%s` |\n", NR, $2, $3, $4, $5, $6
+      }
+    '
+}
+
+emit_pg_wal_ranking() {
+  for service in match order wallet; do
+    file="${DIAG_DIR}/${service}-pg-stat-statements-total-time.txt"
+    if [[ ! -f "${file}" ]]; then
+      continue
+    fi
+    awk -v service="${service}" '
+      /^[[:space:]]*[0-9]+[[:space:]]*\|/ {
+        n = split($0, fields, "|")
+        if (n < 12) next
+        calls = fields[1]
+        wal_records = fields[9]
+        wal_fpi = fields[10]
+        wal_bytes = fields[11]
+        query = fields[n]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", calls)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", wal_records)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", wal_fpi)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", wal_bytes)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", query)
+        if (query == "" || wal_bytes + 0 <= 0) next
+        per_call = calls + 0 > 0 ? (wal_bytes + 0) / (calls + 0) : 0
+        printf "%015.0f\t%s\t%s\t%.0f\t%.1f\t%s\t%s\t%s\n", wal_bytes + 0, service, calls, wal_bytes + 0, per_call, wal_records, wal_fpi, substr(query, 1, 120)
+      }
+    ' "${file}"
+  done \
+    | sort -nr \
+    | awk -F '\t' '
+      BEGIN {
+        print "| Rank | Service | Calls | WAL bytes | WAL bytes/call | WAL records | WAL FPI | Query prefix |"
+        print "|---:|---|---:|---:|---:|---:|---:|---|"
+      }
+      NR <= 20 {
+        gsub(/\|/, "\\|", $8)
+        printf "| %d | %s | %s | %.0f | %.1f | %s | %s | `%s` |\n", NR, $2, $3, $4, $5, $6, $7, $8
       }
     '
 }
@@ -373,6 +424,12 @@ emit_integrated_stage_lag() {
   echo "This is PostgreSQL executor time from pg_stat_statements. Gaps versus application timers usually point to JDBC, transaction, commit, broker confirm, scheduling, or client-side waits."
   echo
   emit_pg_ranking
+  echo
+  echo "## PostgreSQL WAL Ranking"
+  echo
+  echo "WAL bytes attribute generated write volume to statements. They do not measure WAL flush latency or storage durability."
+  echo
+  emit_pg_wal_ranking
   echo
   echo "## Match Trade Outbox Relay Breakdown"
   echo

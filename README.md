@@ -104,6 +104,8 @@ Performance is evidence for the architecture, not the homepage's main subject. E
 - [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.
 - [648 sustained boundary](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md): two valid 15-minute seeds establishing the highest repeatable point and its pressure limits.
 - [Low-observability and high-rate probes](docs/benchmarks/2026-08-18-low-observability-and-high-rate-probes.md): rejected 648 repeat plus driver-limited 1200/2000 burst diagnostics; no capacity promotion.
+- [Prepared HTTP driver diagnostic](docs/benchmarks/2026-08-18-prepared-http-driver.md): request preparation outside the traffic clock, a 2000 requests/s driver-only calibration, and the short full-chain A/B boundary.
+- [External open-loop driver](docs/benchmarks/2026-08-19-external-open-loop-driver.md): low-cost fixed-rate generation, lifecycle handoff, correctness gates, and the remaining host-isolation boundary.
 - [Scheduler-isolation diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md): the earlier adopted fix and rejected high-rate evidence.
 - [Wallet robustness report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md): transaction safety, mixed-flow, soak, and failure evidence.
 

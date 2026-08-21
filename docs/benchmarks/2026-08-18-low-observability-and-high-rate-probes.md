@@ -124,6 +124,13 @@ worse.
   order in both directions. For service attribution, move the driver to a
   separate host or CPU domain and collect low-rate pool, WAL, and queue evidence.
 
+Follow-up: the later prepared-sync driver calibration sustained `1999.98
+requests/s` against a no-op endpoint and a short 648 full-chain A/B retained
+correctness, but did not improve full-convergence throughput. It is therefore a
+candidate for cleaner high-rate probes, not evidence that the historical 1200
+and 2000 results reached their target or that shared-host interference has been
+removed. See the [prepared HTTP driver diagnostic](2026-08-18-prepared-http-driver.md).
+
 Artifacts:
 
 - [648 low-observability result](results/2026-08-18-http-matched-648-15m-seed-20260821-none-r3.json)

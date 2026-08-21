@@ -104,6 +104,8 @@ flowchart TD
 - [624 持續測試證據](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md)：2 個有效的 15 分鐘 seed，支持前一級持續下界。
 - [648 持續壓力邊界](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)：2 個有效的 15 分鐘 seed，建立最高可重複點及其壓力限制。
 - [低觀測與高輸入探針](docs/benchmarks/2026-08-18-low-observability-and-high-rate-probes.md)：被拒絕的 648 重跑，以及受 driver 限制的 1200／2000 短時間過載診斷；不提高容量宣稱。
+- [預先準備 HTTP driver 診斷](docs/benchmarks/2026-08-18-prepared-http-driver.md)：將 request 資料準備移出流量計時、2,000 requests/s driver-only 校準，以及短時間 full-chain A/B 的證據邊界。
+- [外部 open-loop driver](docs/benchmarks/2026-08-19-external-open-loop-driver.md)：低成本固定速率送流量、lifecycle 交接、正確性關卡，以及尚未解決的主機隔離邊界。
 - [排程隔離診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)：較早的採用修正與被拒絕高流量證據。
 - [Wallet 穩健性報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)：交易安全、混合流量、長時間及故障證據。
 

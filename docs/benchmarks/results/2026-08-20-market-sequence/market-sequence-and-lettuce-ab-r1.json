@@ -1,0 +1,164 @@
+{
+  "artifactType": "front-half-diagnostic",
+  "date": "2026-08-20",
+  "capacityClaimAllowed": false,
+  "contract": {
+    "mode": "orderAdmissionChain",
+    "offeredTargetOrdersPerSecond": 1300,
+    "ordersPerRun": 10400,
+    "side": "SELL",
+    "diagnosticsLevel": "light",
+    "restartServicesEachRepeat": true
+  },
+  "blockSize1Control": {
+    "configuration": {
+      "allocationBlockSize": 1,
+      "shareNativeConnection": true,
+      "lettucePoolEnabled": false
+    },
+    "runs": [
+      {
+        "runId": "GLT_20260820_MARKET_SEQUENCE_BLOCK1_R1_R1",
+        "httpAccepted": 10400,
+        "otherFailures": 0,
+        "orderbookAdmissionsPerSecond": 867.53,
+        "convergencePerSecond": 866.50,
+        "marketSequenceMeanMs": 21.377,
+        "preEventStoreMeanMs": 22.717,
+        "httpAcceptedP95Ms": 251.60
+      },
+      {
+        "runId": "GLT_20260820_MARKET_SEQUENCE_BLOCK1_R1_R2",
+        "httpAccepted": 10400,
+        "otherFailures": 0,
+        "orderbookAdmissionsPerSecond": 1072.53,
+        "convergencePerSecond": 1069.95,
+        "marketSequenceMeanMs": 10.404,
+        "preEventStoreMeanMs": 10.853,
+        "httpAcceptedP95Ms": 147.39
+      },
+      {
+        "runId": "GLT_20260820_MARKET_SEQUENCE_BLOCK1_R2_R1",
+        "httpAccepted": 10400,
+        "otherFailures": 0,
+        "orderbookAdmissionsPerSecond": 828.38,
+        "convergencePerSecond": 786.19,
+        "marketSequenceMeanMs": 25.357,
+        "preEventStoreMeanMs": 27.305,
+        "httpAcceptedP95Ms": 343.85
+      },
+      {
+        "runId": "GLT_20260820_MARKET_SEQUENCE_BLOCK1_R2_R2",
+        "httpAccepted": 10400,
+        "otherFailures": 0,
+        "orderbookAdmissionsPerSecond": 1101.77,
+        "convergencePerSecond": 1100.93,
+        "marketSequenceMeanMs": 9.561,
+        "preEventStoreMeanMs": 10.775,
+        "httpAcceptedP95Ms": 120.67
+      }
+    ],
+    "aggregate": {
+      "runCount": 4,
+      "orderbookAdmissionsMeanPerSecond": 967.5525,
+      "orderbookAdmissionsMinPerSecond": 828.38,
+      "orderbookAdmissionsMaxPerSecond": 1101.77,
+      "convergenceMeanPerSecond": 955.8925,
+      "marketSequenceMeanMs": 16.67475,
+      "preEventStoreMeanMs": 17.9125,
+      "httpAcceptedP95MeanMs": 215.8775
+    }
+  },
+  "blockSize64Candidate": {
+    "configuration": {
+      "allocationBlockSize": 64,
+      "shareNativeConnection": true,
+      "lettucePoolEnabled": false
+    },
+    "runs": [
+      {
+        "runId": "GLT_20260820_MARKET_SEQUENCE_BLOCK64_R1_R1",
+        "httpAccepted": 10400,
+        "otherFailures": 0,
+        "orderbookAdmissionsPerSecond": 1035.18,
+        "convergencePerSecond": 1033.31,
+        "marketSequenceMeanMs": 3.378,
+        "preEventStoreMeanMs": 3.800,
+        "httpAcceptedP95Ms": 113.60
+      },
+      {
+        "runId": "GLT_20260820_MARKET_SEQUENCE_BLOCK64_R1_R2",
+        "httpAccepted": 10400,
+        "otherFailures": 0,
+        "orderbookAdmissionsPerSecond": 1037.14,
+        "convergencePerSecond": 1035.95,
+        "marketSequenceMeanMs": 3.010,
+        "preEventStoreMeanMs": 3.914,
+        "httpAcceptedP95Ms": 124.63
+      }
+    ],
+    "aggregate": {
+      "runCount": 2,
+      "orderbookAdmissionsMeanPerSecond": 1036.16,
+      "orderbookAdmissionsMinPerSecond": 1035.18,
+      "orderbookAdmissionsMaxPerSecond": 1037.14,
+      "convergenceMeanPerSecond": 1034.63,
+      "marketSequenceMeanMs": 3.194,
+      "preEventStoreMeanMs": 3.857,
+      "httpAcceptedP95MeanMs": 119.115
+    },
+    "decision": "rejected-for-adoption",
+    "reason": "Local allocation blocks reduce Redis round trips but can violate global arrival ordering when multiple Order replicas own independent blocks. The short one-sided diagnostic also does not prove a higher business-lifecycle capacity ceiling."
+  },
+  "lettucePoolCandidate": {
+    "configuration": {
+      "allocationBlockSize": 1,
+      "shareNativeConnection": false,
+      "lettucePoolEnabled": true,
+      "maxActive": 16,
+      "maxIdle": 16,
+      "minIdle": 4,
+      "maxWait": "500ms"
+    },
+    "completedRun": {
+      "runId": "GLT_20260820_MARKET_SEQUENCE_LETTUCE_POOL_R1_R1",
+      "httpAccepted": 10400,
+      "otherFailures": 0,
+      "orderbookAdmissionsPerSecond": 989.70,
+      "convergencePerSecond": 989.04,
+      "marketSequenceMeanMs": 38.109,
+      "preEventStoreMeanMs": 39.005,
+      "httpAcceptedP95Ms": 229.98
+    },
+    "failedRun": {
+      "runId": "GLT_20260820_MARKET_SEQUENCE_LETTUCE_POOL_R1_R2",
+      "status": "interrupted-after-http-500",
+      "resultJsonProduced": false,
+      "loggedPoolBorrowTimeouts": 85,
+      "exception": "java.util.NoSuchElementException: Timeout waiting for idle object, borrowMaxWaitDuration=PT0.5S",
+      "failurePath": "MarketSequenceService Redis INCR"
+    },
+    "decision": "rejected",
+    "reason": "The first run did not improve throughput or sequence latency; the second exhausted the dedicated connection pool and returned HTTP 500 responses."
+  },
+  "historicalCrossCheck": {
+    "experiment": "TPS-152 market-sequence repeat A/B",
+    "blockSize1BusinessConvergenceMeanPerSecond": 1258.96,
+    "blockSize1000BusinessConvergenceMeanPerSecond": 1285.67,
+    "businessConvergenceDeltaPercent": 2.12,
+    "marketSequenceDurationDeltaPercent": -96.94,
+    "candidateBusinessConvergenceSpreadPercent": 14.76,
+    "orderCommandAcquireDeltaPercent": 32.39,
+    "decision": "The sequence phase became cheaper, but the lifecycle gain was below run-to-run spread and connection acquisition worsened."
+  },
+  "finalDecision": {
+    "adoptedChange": "none",
+    "retainedDefaults": {
+      "allocationBlockSize": 1,
+      "shareNativeConnection": true,
+      "lettucePoolEnabled": false
+    },
+    "capacityBoundaryChanged": false,
+    "followUp": "Require architecture review before changing market-sequence ownership or allocation semantics."
+  }
+}

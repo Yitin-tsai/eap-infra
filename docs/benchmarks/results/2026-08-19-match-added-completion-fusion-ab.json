@@ -1,0 +1,85 @@
+{
+  "experiment": "match-added-order-completion-fusion",
+  "evidenceClass": "isolated-diagnostic",
+  "workload": {
+    "arrivalPattern": "shuffled-mixed",
+    "workers": 12,
+    "dbPoolSize": 35,
+    "cleanupBatchSize": 1000
+  },
+  "throughputRuns": [
+    {
+      "seed": 20260819,
+      "pairs": 5000,
+      "baselineProcessedOrdersPerSecond": 5681.98,
+      "candidateProcessedOrdersPerSecond": 6147.18,
+      "baselineCleanupTasksPerSecond": 3896.25,
+      "candidateCleanupTasksPerSecond": 4592.02,
+      "baselineCorrectness": "PASS",
+      "candidateCorrectness": "PASS"
+    },
+    {
+      "seed": 20260820,
+      "pairs": 5000,
+      "baselineProcessedOrdersPerSecond": 3885.10,
+      "candidateProcessedOrdersPerSecond": 2531.72,
+      "baselineCleanupTasksPerSecond": 3466.98,
+      "candidateCleanupTasksPerSecond": 1703.16,
+      "baselineCorrectness": "PASS",
+      "candidateCorrectness": "PASS"
+    }
+  ],
+  "commandCountProbe": {
+    "seed": 20260821,
+    "pairs": 1000,
+    "baselineEvalshaCalls": 5000,
+    "candidateEvalshaCalls": 4000,
+    "removedEvalshaCalls": 1000,
+    "baselineSetbitCalls": 2000,
+    "candidateSetbitCalls": 2000,
+    "baselineHdelCalls": 2000,
+    "candidateHdelCalls": 2000,
+    "baselineCompletedIncomingMarkers": 2000,
+    "candidateCompletedIncomingMarkers": 2000,
+    "baselineCorrectness": "PASS",
+    "candidateCorrectness": "PASS"
+  },
+  "fullChainRecheck": {
+    "contract": "external-http-matched-steady-state-chain",
+    "targetTotalOrderTps": 648,
+    "warmupSeconds": 10,
+    "measurementSeconds": 30,
+    "seed": 20260804,
+    "serviceLaunchMode": "jar",
+    "httpAccepted": 25920,
+    "expectedHttpOrders": 25920,
+    "steadyAcceptedOrderTps": 647.68,
+    "steadyCompletedTradeTps": 360.44,
+    "steadyBacklogStart": 1895,
+    "steadyBacklogEnd": 120,
+    "steadyMaxBacklog": 1895,
+    "httpLatencyP95UpperBoundMs": 200,
+    "fullConvergenceTradeTps": 304.28,
+    "threeServiceTradeIdsEqual": true,
+    "finalMatchTradeRows": 12960,
+    "finalOrderTradeRows": 12960,
+    "finalWalletTradeRows": 12960,
+    "finalQueueBacklog": 0,
+    "validForSustainedCapacity": true,
+    "performanceComparison": "INCONCLUSIVE",
+    "comparisonLimit": "service launch mode differs from the earlier external baseline"
+  },
+  "rejectedFullChainAttempt": {
+    "reason": "host contention and traffic scheduling failure",
+    "httpAccepted": 20427,
+    "expectedHttpOrders": 25920,
+    "unscheduledOrders": 5493,
+    "finalConvergedTrades": 10204,
+    "threeServiceTradeIdsEqual": true,
+    "finalQueueBacklog": 0,
+    "validForSustainedCapacity": false
+  },
+  "codeDecision": "ADOPT",
+  "throughputDecision": "INCONCLUSIVE",
+  "capacityClaimAllowed": false
+}

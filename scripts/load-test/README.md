@@ -1,0 +1,62 @@
+# Load-Test Entry Points
+
+Start from this page instead of selecting a script by filename. Different TPS
+units and workload boundaries are not interchangeable. Read the
+[benchmark taxonomy](../../docs/benchmarks/load-test-taxonomy.md) before comparing
+results.
+
+## Primary Entry Points
+
+| Question | Command | Evidence boundary |
+| --- | --- | --- |
+| What shuffled mixed HTTP load is sustainable? | `run-http-matched-steady-state.sh` | Canonical full-chain capacity contract |
+| Can a lower-cost or remote open-loop driver reproduce it? | `run-http-matched-external-open-loop.sh` | Same business gates; driver-placement diagnostic until promoted |
+| Where is the first unsustainable rate? | `run-http-matched-staircase.sh` | Full-chain knee search, not a soak guarantee |
+| What is the sequential full-HTTP upper bound? | `run-http-matched-trade-completion-10k.sh` | SELL then BUY; not mixed-flow capacity |
+| Is the Order-to-orderbook front half the bottleneck? | `run-order-admission-chain-10k.sh` | No trade execution or settlement |
+| Is the seeded Match-to-settlement back half the bottleneck? | `run-matched-trade-completion-10k.sh` | No Order HTTP or initial Wallet reservation |
+
+The default capacity workflow is:
+
+1. use the staircase to locate a provisional knee;
+2. use the external driver for low-cost, same-seed A/B diagnostics;
+3. verify a candidate with the canonical mixed steady-state contract;
+4. require exact trade IDs, assets, order-book and reservation cleanup, queue/DLQ
+   drain, offered load, completion rate, and bounded backlog;
+5. repeat a different seed before promoting a sustained boundary.
+
+## Focused Probes
+
+Use a focused probe only after a specific bottleneck hypothesis exists.
+
+| Boundary | Command |
+| --- | --- |
+| Match reservation cleanup | `run-reservation-cleanup-ab.sh` |
+| Match processor without RabbitMQ | `run-match-processor-probe.sh` |
+| RabbitMQ into Match | `run-rabbit-match-intake-probe.sh` |
+| Trade fanout into Order and Wallet | `run-trade-consumer-fanout-probe.sh` |
+| Match outbox relay into downstream services | `run-match-relay-downstream-probe.sh` |
+| RabbitMQ publisher confirms only | `run-rabbitmq-publish-only-10k.sh` |
+
+An isolated probe may reject a candidate cheaply. It cannot establish complete
+business TPS or adopt a service setting by itself.
+
+## Experiment Orchestrators
+
+- `run-order-admission-repeat.sh` and
+  `run-matched-trade-completion-repeat.sh` repeat existing contracts and aggregate
+  results. They do not define new workloads.
+- `run-front-half-pool-budget-matrix.sh` is a plan-first Order connection-budget
+  experiment. A surviving candidate still requires a mixed full-chain A/B.
+- `run-prepared-http-driver-calibration.sh` tests the driver against a no-op endpoint;
+  it does not test EAP capacity.
+
+## Internal and Support Scripts
+
+Do not start routine benchmarks from `run-global-matched-e2e.sh` or
+`run-global-matched-e2e-two-phase.sh`. They are internal seed/project/run machinery
+used by the seeded completion and isolated downstream probes.
+
+Files such as `http-matched-loadtest-lib.sh`, `remote-vegeta-driver.sh`, environment
+assertions, service lifecycle scripts, diagnostics collectors, summarizers, queue
+purge, snapshot, and report pruning are support code rather than benchmark methods.

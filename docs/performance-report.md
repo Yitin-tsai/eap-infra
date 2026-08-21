@@ -319,6 +319,168 @@ burst-plus-drain averages, not sustained capacity. They must not replace the 648
 lower-bound claim. See the
 [low-observability and high-rate probe report](benchmarks/2026-08-18-low-observability-and-high-rate-probes.md).
 
+## Prepared HTTP Driver Diagnostic - 2026-08-18
+
+The steady-state generator now supports a candidate mode that prepares the
+seeded schedule, deterministic IDs, user mapping, and serialized JSON before
+starting the traffic clock. It then uses the same bounded synchronous HTTP
+worker model as the historical driver. This can narrow same-host measurement
+interference without bypassing Order HTTP or changing service business logic.
+
+A driver-only no-op calibration dispatched and received `20000/20000` requests
+at `1999.98 requests/s`, with `128` workers, `256` maximum in-flight requests,
+zero failures, and zero unscheduled requests. `capacityClaimAllowed=false` is
+embedded in the artifact: this proves only that prepared-sync can generate the
+requested input rate when the EAP services are absent.
+
+A same-seed `648 orders/s`, `10s + 30s` full-chain A/B then compared legacy-sync
+with prepared-sync. Both accepted all `25920` orders, converged to `12960`
+identical Match/Order/Wallet trades, reconciled assets, and drained all final
+debt. Full-convergence throughput was effectively unchanged at `313.32` versus
+`311.75 trades/s`; maximum sampled backlog was `2424` versus `1239`, while HTTP
+p95 moved from a `200ms` to a `500ms` histogram upper bound. A single short run
+cannot distinguish a stable improvement from same-host variance.
+
+An intermediate prepared-async experiment was rejected: full-convergence
+throughput remained `312.53 trades/s`, maximum backlog rose to `4913`, and HTTP
+p95 rose to `500ms`. The retained candidate therefore changes preparation only
+and keeps synchronous transport. The canonical default remains legacy-sync
+until the prepared mode passes reverse-order repeats and a long-window
+validation. This work does not promote the 648 capacity boundary or reinterpret
+the earlier 1200/2000 overload probes. See the
+[prepared HTTP driver report](benchmarks/2026-08-18-prepared-http-driver.md).
+
+The candidate then failed explicit high-rate validation. At targets of `1200`
+and `2000 orders/s`, it delivered only `964.83` and `1023.60 steady accepted
+orders/s`, with offered-load ratios of `80.40%` and `51.18%` and backlog slopes
+of `+561.4447/s` and `+694.2108/s`. The 2000 run left `3051` requests
+unscheduled. All pairable accepted trades still converged exactly with zero
+final queue/DLQ debt, but neither run is capacity evidence. Payload preparation
+was only `0.1004s` and `0.1423s`; synchronous HTTP I/O and shared-host response
+latency, not request-data construction, remain the generator-side limitation.
+Prepared-sync therefore remains diagnostic-only and is not the canonical
+default.
+
+## External Open-Loop Driver Candidate - 2026-08-19
+
+The full HTTP steady-state lifecycle now has an external Vegeta candidate. It
+prepares a finite shuffled workload and secret-free baseline manifest before
+the traffic clock, uses a fixed-rate open-loop sender without the Java driver's
+bounded response permit, samples business progress in a separate low-frequency
+JVM, and then reuses the full convergence and correctness gates.
+
+A low-rate harness smoke sent exactly `1200/1200` requests at a reported
+`99.98 accepted orders/s` steady rate. Vegeta used `0.12s user + 0.10s sys`
+over `12.03s` wall time; all `600` trades converged across the three services,
+assets reconciled, and final queues, DLQ, order books, and reservations drained.
+This validates the harness only. It is not a capacity result and does not
+promote or reinterpret the current 648 same-host boundary.
+
+The default placement is explicitly `co-located`: moving traffic generation to
+another process reduces generator overhead but does not create CPU or host
+isolation.
+
+A controlled external, legacy-sync, external sandwich then used the same seed
+and `10s + 30s` boundary at 648 orders/s. Steady accepted rates were `648.00`,
+`648.09`, and `647.97 orders/s`; steady completed rates were `323.79`, `323.75`,
+and `323.28 trades/s`. Every run accepted all `25,920` requests, converged to
+the same `12,960` trades in all three services, reconciled assets, and drained
+all final debt. This establishes short-window driver equivalence at 648 and
+allows external-open-loop to be used for higher-rate diagnostics. It does not
+replace the 15-minute capacity evidence or establish host isolation.
+
+The corrected 1200 external diagnostic then scheduled exactly `48,000`
+requests at `1200.012 orders/s`; every request returned HTTP 200. The legacy
+response-window metric was `1145.12 accepted responses/s`, while the steady
+business chain completed only `172.06 trades/s` against a `600 trades/s`
+target. Maximum sampled backlog reached `30,270` with a `+700.9119/s` slope.
+All `24,000` trades eventually converged with exact cross-service IDs, correct
+assets, and zero final debt, but the completion and backlog gates rejected the
+run. Its `390.75 full-convergence trades/s` is a burst-plus-drain average, not
+sustained capacity. This is the first clean evidence that 1200 same-host input
+can be generated without the old permit ceiling while the service chain still
+cannot consume it during the measurement window.
+See the [external open-loop driver report](benchmarks/2026-08-19-external-open-loop-driver.md).
+
+A same-seed deep `legacy -> external -> legacy` control later reconfirmed this
+boundary with jar-launched services. The two legacy runs averaged `328.93`
+same-window completed trades/s and `312.64` full-lifecycle trades/s; corrected
+external measured `323.28` and `305.92`, or `-1.72%` and `-2.15%`. Every run
+passed complete correctness and drain gates. Vegeta itself used `1.79s user +
+1.36s sys` over `40.03s`, about `7.87%` of one core, but service/host metrics
+did not show a capacity gain. An earlier deep external result was discarded
+after finding that diagnostic-sampler shutdown occurred before final
+verification and polluted the convergence clock; the runner now verifies
+before stopping diagnostics. This is evidence of a lower-cost, more accurate
+high-rate driver, not CPU isolation or a higher EAP capacity claim.
+
+## Current-Worktree Vegeta Unattended Validation - 2026-08-20
+
+An approximately 11-hour unattended session then ran 25 canonical shuffled
+mixed-HTTP full-chain workloads with jar-launched services and the co-located
+Vegeta driver. It scheduled `19,941,000` orders and reached `9,970,500` durable
+trades. All 25 runs passed three-service trade-ID, asset, order-book,
+reservation, queue, and DLQ correctness; 24 passed the full capacity gate.
+
+The 700 orders/s repeat matrix passed `16/16` independent 20-minute runs across
+distinct seeds, totaling `14,112,000` orders and `7,056,000` trades. Mean
+same-window completion was `349.9719 trades/s` with a `349.80-350.09` range;
+mean full-lifecycle completion was `345.7056 trades/s` with a
+`338.66-346.65` range. Maximum backlog ranged from `486` to `1967`, and every
+run ended with zero debt. A separate one-hour 500 orders/s run also accepted
+all `1,830,000` orders and converged `915,000` trades.
+
+The longer 800 orders/s confirmation passed two seeds and rejected the third.
+Vegeta scheduled all `768,000` requests, but 14 timed out waiting for response
+headers after 10 seconds. Durable resolution proved all `768,000` orders and
+`384,000` trades completed correctly, so this is an API/capacity failure rather
+than data loss. The short 850 stage is also not promoted.
+
+The final deep 700 run measured `700.00 accepted orders/s`, `350.05`
+same-window trades/s, `347.03 full-lifecycle trades/s`, maximum backlog `767`,
+and a `+0.0123/s` slope. Vegeta averaged about `7.35%` of one CPU core, but
+system CPU still reached `100%`, the Order consumer pool briefly had six
+pending connections, and Order PostgreSQL exposed active and IO waits. Vegeta
+therefore removes the driver scheduling ambiguity without creating CPU or host
+isolation.
+
+This evidence substantially strengthens 700 as a **current-worktree**
+repeatable lower-bound candidate. It does not replace the release-pinned 648
+boundary until the worktree is reviewed and committed, and 16 restarted
+20-minute runs are not represented as one continuous multi-hour soak. See the
+[unattended validation report](benchmarks/2026-08-20-vegeta-unattended-validation.md).
+
+## Match Added-Order Completion Fusion - 2026-08-19
+
+MatchEngine now completes the incoming-order bitmap and removes the processing
+lease inside the existing Redis reserve-or-add Lua call when an unmatched order
+is added to the book. Fully matched orders still complete only after durable
+trade persistence. This does not change the accepted PostgreSQL transaction
+boundary or revive the rejected trade/outbox/cleanup single-CTE experiment.
+
+Focused tests, the full MatchEngine unit suite, and PostgreSQL/Redis
+crash-recovery integration passed. In a 1,000-pair isolated command-count A/B,
+Redis `EVALSHA` calls fell from `5000` to `4000`, while `SETBIT`, `HDEL`, all
+`2000` completion markers, and all `1000` trade/outbox/cleanup rows remained
+exact. This proves one client round trip was removed per added order without
+skipping correctness work.
+
+Two larger isolated throughput comparisons moved in opposite directions while
+unrelated host load also changed, so throughput is classified `INCONCLUSIVE`.
+The code change is adopted for its verified round-trip and crash-window
+improvement, not as a TPS or capacity claim.
+
+A short external full-chain recheck then accepted all `25920` HTTP orders and
+converged exactly to `12960` three-service trades with correct assets and zero
+final debt. Full-convergence throughput was `304.28 trades/s`, effectively the
+same as the earlier external baseline's `304.34-305.57`. The candidate's higher
+`360.44 same-window trades/s` came from draining a `1895`-message warm-up
+backlog, while HTTP p95 and maximum backlog were worse. Jar launch mode was also
+used to avoid service-build interference, so this is not a strict
+single-variable A/B. It clears a material regression but does not establish an
+end-to-end TPS improvement or change the 648 capacity boundary. See the
+[completion-fusion report](benchmarks/2026-08-19-match-added-completion-fusion.md).
+
 ## Order-Admission Chain Semantics
 
 `order-admission-chain` is the front-half benchmark. It sends one-sided HTTP limit orders to the Order API and counts the workflow as admitted only after Order has persisted the submission request, Wallet has reserved assets and emitted confirmation, Order has persisted `OrderAssetReservationConfirmedV1`, MatchEngine has admitted the order into the Redis orderbook, and measured RabbitMQ queues have drained.
@@ -861,6 +1023,7 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | Canonical mixed short-window boundary recheck | `600 orders/s` passed three valid staircase seeds; `624` passed two and failed one; `648` passed one short sample with HTTP p99 upper bound `2000ms` and transient backlog `2161`. Every valid run ended with exact three-service trades/assets and zero final debt | short-window evidence kept `600` as the lower-bound class pending a longer repeat; classify `624` as a variable short-window knee and `648` as unpromoted exploration evidence |
 | 624 sustained evidence | Two 15-minute seeds each accepted `599040` orders and converged `299520` exact trades. Same-window completion was `307.19` and `312.03 trades/s`; full-lifecycle completion was `300.28` and `310.05 trades/s`; maximum backlog was `4257` and `1164`; all final debt was zero | promote the exact same-host shuffled mixed HTTP sustained lower-bound class from 600 to 624, while retaining short-window variability and shared-host pressure as limits |
 | 648 sustained pressure boundary | Two 15-minute seeds each accepted `622080` orders and converged `311040` exact trades. Same-window completion was `315.96` and `314.84 trades/s`; full-lifecycle completion was `309.73` and `301.14 trades/s`; maximum backlog was `4001` and `4907`; all final debt was zero | promote 648 as the highest repeatable same-host lower-bound class, but classify it as the pressure knee because full-lifecycle throughput stayed in the 624 range while tail, pool pending, and CPU pressure increased |
+| Vegeta unattended current-worktree validation | `25` full-chain runs over about `11h07m`; all correctness gates passed, `24/25` capacity contracts passed, and all `16` independent 20-minute 700 orders/s repeats passed. One 800 confirmation had `14` HTTP timeouts despite exact durable convergence | adopt Vegeta as the preferred high-rate diagnostic driver and retain 700 as a current-worktree lower-bound candidate; do not promote 800 or rewrite the release-pinned 648 boundary before review and commit |
 
 ## Seeded Matched-Completion Bottleneck
 
@@ -878,6 +1041,81 @@ The latest integrated stage-lag reports make the bottleneck more concrete: isola
 MatchEngine was not cleared as "no longer relevant"; the newer diagnostics clear narrower hypotheses. The combined processor reached roughly `3.5K persisted trades/s` without RabbitMQ. The real Rabbit listener boundary then reached `918.46 persisted and cleanup-converged trades/s` under a short `2000 orders/s` overload. Direct TradeExecuted fanout reached `1972.77 durable Order/Wallet trades/s` at a paced `2000 events/s`. Finally, two pre-seeded Match-relay-to-downstream repeats reached `2125.20-2521.07 durable converged trades/s`. These results reject Redis matching, Match durable persistence, Rabbit intake, reservation cleanup, Match relay, or downstream application in isolation as the sole explanation for the roughly `350 trades/s` shuffled full-chain result.
 
 The remaining distinction is concurrency across the whole pipeline: HTTP admission, Wallet reservation, Order confirmation, Match intake/persistence, relay, and downstream settlement all compete for the same host, databases, broker, JVM scheduling, and load-generator time. The canonical mixed recheck found `624 orders/s` variable across seeds and one short `648` pass with elevated latency and transient backlog. In that `648` repeat, Order's command pool reached `35 active / 37 pending`, while Wallet and Match had no pending connections; system CPU still peaked at `100%`. This is a first visible pressure point, not proof that a larger Order pool is the solution. See the [trade consumer fanout report](benchmarks/2026-08-14-trade-consumer-fanout-isolated.md), [Match relay downstream report](benchmarks/2026-08-14-match-relay-downstream-isolated.md), and [canonical mixed boundary report](benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md).
+
+The later Order transaction/PostgreSQL correlation diagnostic made this boundary
+more specific. In a same-seed `700 orders/s` deep run, Order submission transaction
+time averaged `83.306ms`, of which `60.782ms` occurred before the transaction callback
+and matched the `60.767ms` Hikari acquire mean. Samples with `149-151` pending command
+requests aligned with `BufferContent` or `WALInsert` waits on the initial append and
+commit path. Reducing the command pool from 35 to 24 lowered some sampled PostgreSQL
+wait peaks but doubled acquire time to `132.727ms`, did not improve completed
+throughput, and moved pressure into downstream queues and Order consumer/outbox
+writes. Pool 24 was rejected. These deep runs are attribution evidence, not new
+capacity claims. See the [Order transaction and PostgreSQL wait correlation
+report](benchmarks/2026-08-20-order-transaction-postgres-wait-correlation.md).
+
+The same window generated about `1.06 GB` of Order WAL with
+`wal_buffers_full=0`. This is only a few MB/s across the run, so the evidence does
+not support an SSD bandwidth ceiling. The stronger hypothesis is concurrent-writer
+contention: the three Order Hikari pools can expose up to 58 application connections
+to one PostgreSQL instance, and sampled peaks reached 30 `BufferContent` plus 22
+`WALInsert` waiters. Historical `16/8/4/2` asset-confirmation collector tests already
+showed that larger batches from lower consumer concurrency did not produce a stable
+full-chain improvement. Future diagnostics therefore attribute waits by pool and
+rank statements by generated WAL before testing any aggregate writer budget or
+write-shape change.
+
+The load-test PostgreSQL default remains `synchronous_commit=off` for historical
+comparability. A short 20K, 35-worker append probe reached `7953.80/s` with that
+setting and `6971.59/s` with session-level `synchronous_commit=on`; both were far
+above full-chain input. The result rules out synchronous commit as the isolated
+ceiling but is not a durability-safe capacity claim. A production durability claim
+still requires a separately labeled full-chain run with synchronous commit enabled.
+
+A later short pool-attributed recheck at `648 orders/s` did not reproduce the
+sustained-700 collapse. Over a 20-second warm-up and 60-second measurement window it
+accepted `647.89 orders/s`; CommandPool active/pending peaked at `13/0`, ConsumerPool
+at `10/0`, and no `BufferContent` or `WALInsert` peak was sampled. All `25,920`
+trades converged correctly. The initial append generated `1,831 WAL bytes/order`,
+and initial append plus asset-confirmation batches represented about 82.6% of
+statement-attributed Order WAL. This is short-window diagnostic evidence, not a new
+capacity claim. It indicates a sustained overload transition between the healthy
+short 648 run and the earlier long 700 run, rather than continuous database
+saturation below that boundary.
+
+A subsequent planned 15-minute `700 orders/s` pool-attributed run was interrupted
+after `684.761s`, before final correctness validation, after `488` HTTP transport
+errors and cross-stage connection pressure appeared. Order CommandPool peaked at
+`35 active / 161 pending`, ConsumerPool at `20 / 5`, and Wallet at `40 / 24`; the
+maximum sampled backlog was `5458`. This is diagnostic evidence that the long-window
+transition is reproducible, not a completed capacity result or proof of a JVM crash.
+
+That signal justified a short front-half saturation matrix at an offered
+`1300 orders/s`. The existing `35/20/3` command/consumer/projection profile averaged
+`1042.99 order-book admissions/s`. Smaller coordinated profiles averaged `999.05/s`
+and `996.15/s`, regressions of about `4.2%` and `4.5%`; the smallest profile also had
+a `17.2%` two-run spread. All underlying runs reached exact front-half state and
+drained queues, but none met the predeclared `1170/s` repeat threshold. Both smaller
+profiles are rejected as diagnostics, no production pool defaults changed, and no
+full-chain promotion run is warranted.
+
+A block-size sandwich then isolated the per-order Redis market-sequence call. Four
+current `block-size=1` controls averaged `967.55 order-book admissions/s` with a
+wide `828.38-1101.77/s` range and `16.675ms` mean sequence-allocation time. Two
+`block-size=64` runs were stable at `1035.18-1037.14/s` and reduced sequence time to
+`3.194ms`, but did not exceed the healthy current-setting runs. More importantly,
+independent blocks across Order replicas can violate the global arrival ordering
+used for price-time priority, so the candidate is rejected for adoption. A separate
+16-connection Lettuce pool candidate also regressed sequence time to `38.109ms` in
+its first repeat; its second repeat exhausted the pool, logged 85 borrow timeouts,
+and returned HTTP 500. The per-order sequence and shared-native-connection defaults
+remain unchanged. These one-sided diagnostics do not alter any mixed full-lifecycle
+capacity boundary. See the [Order transaction and PostgreSQL wait correlation
+report](benchmarks/2026-08-20-order-transaction-postgres-wait-correlation.md).
+The result also agrees with the historical TPS-152 three-run comparison, where
+block size `1000` cut sequence time by `96.94%` but improved business convergence by
+only `2.12%`, less than the observed spread. Further block-size tuning is closed
+unless sequence ownership or the deployment boundary changes.
 
 ## Correctness Gates
 
@@ -898,7 +1136,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 648 class; an earlier 650 probe on a prior snapshot failed its completion, scheduling, and maximum-backlog gates, and sustained 700 remains unproven.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 648 class; an earlier 650 probe on a prior snapshot failed its completion, scheduling, and maximum-backlog gates. The later 2026-08-20 Vegeta matrix supports 700 only as separate current-worktree evidence until that worktree is reviewed and committed.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.

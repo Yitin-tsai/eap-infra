@@ -1,0 +1,23 @@
+{
+  "benchmarkContract": "prepared-http-driver-calibration",
+  "capacityClaimAllowed": false,
+  "runId": "DRIVER_20260818_PREPARED_SYNC_20K_2000_R1",
+  "httpDriverMode": "prepared-sync",
+  "events": 20000,
+  "targetTps": 2000,
+  "workers": 128,
+  "maxInFlight": 256,
+  "workloadPreparationSeconds": 0.0051,
+  "dispatched": 20000,
+  "accepted": 20000,
+  "received": 20000,
+  "failures": 0,
+  "unscheduled": 0,
+  "schedulingSeconds": 10.0001,
+  "responseCompletionSeconds": 9.9997,
+  "responseDrainTailSeconds": 0.0001,
+  "offeredTps": 1999.98,
+  "offeredLoadRatio": 1.0000,
+  "processCpuSeconds": 7.3935,
+  "validDriverCalibration": true
+}

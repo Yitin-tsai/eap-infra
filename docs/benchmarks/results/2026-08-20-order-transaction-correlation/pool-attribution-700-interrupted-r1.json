@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "runId": "ORDER_POOL_ATTRIBUTION_700_20260820_R1",
+  "classification": "interrupted-diagnostic",
+  "capacityClaimAllowed": false,
+  "workload": {
+    "arrivalPattern": "shuffled",
+    "targetOrderTps": 700,
+    "warmupSeconds": 60,
+    "plannedMeasurementSeconds": 900,
+    "workloadSeed": 20260820,
+    "loadGenerator": "co-located-external-vegeta",
+    "diagnosticsLevel": "deep",
+    "diagnosticSampleIntervalSeconds": 5
+  },
+  "termination": {
+    "reason": "operator stopped after HTTP connection failures and pool saturation signals",
+    "finalCorrectnessGateRun": false
+  },
+  "http": {
+    "plannedTargets": 672000,
+    "validResultLines": 467780,
+    "status200": 467292,
+    "transportErrors": 488
+  },
+  "monitor": {
+    "samples": 670,
+    "elapsedSeconds": 684.761,
+    "matchTradesAtStop": 195762,
+    "orderTradesAtStop": 195071,
+    "walletTradesAtStop": 195818,
+    "completedTradesAtStop": 195071,
+    "maxSampledBacklog": 5458,
+    "queueReadFailures": 0
+  },
+  "poolPeaks": {
+    "orderCommandActive": 35,
+    "orderCommandPending": 161,
+    "orderConsumerActive": 20,
+    "orderConsumerPending": 5,
+    "orderProjectionActive": 1,
+    "orderProjectionPending": 0,
+    "walletActive": 40,
+    "walletPending": 24,
+    "matchActive": 23,
+    "matchPending": 0
+  },
+  "diagnosticSignals": {
+    "orderWalBytes": 1812096969,
+    "orderBackendBuffers": 126964,
+    "orderCleanBuffers": 78775,
+    "orderMaxwrittenStops": 659,
+    "orderSystemCpuAverage": 0.926156,
+    "orderSystemCpuMax": 1.0,
+    "orderProcessCpuAverage": 0.074047,
+    "redisEvictedKeys": 0,
+    "rabbitMemoryAlarmSamples": 0,
+    "rabbitDiskAlarmSamples": 0
+  },
+  "interpretation": [
+    "This run is not capacity evidence because the workload and final correctness gate did not complete.",
+    "The sustained window reproduced cross-stage connection pressure that the short 648 diagnostic did not show.",
+    "The evidence is sufficient to justify a bounded front-half pool-budget diagnostic, not to adopt a pool setting."
+  ]
+}

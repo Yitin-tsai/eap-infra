@@ -133,6 +133,11 @@ SELECT calls,
        shared_blks_read,
        shared_blks_dirtied,
        shared_blks_written,
+       wal_records,
+       wal_fpi,
+       wal_bytes,
+       round(blk_read_time::numeric, 3) AS blk_read_ms,
+       round(blk_write_time::numeric, 3) AS blk_write_ms,
        left(regexp_replace(query, '\s+', ' ', 'g'), 240) AS query
 FROM pg_stat_statements
 ORDER BY total_exec_time DESC
@@ -179,12 +184,23 @@ SELECT COALESCE(wait_event_type, 'none') AS wait_event_type,
        COALESCE(wait_event, 'none') AS wait_event,
        state,
        count(*) AS sessions,
-       round(max(EXTRACT(EPOCH FROM now() - COALESCE(query_start, xact_start, backend_start)))::numeric, 3)
+       round(max(GREATEST(
+           0,
+           EXTRACT(EPOCH FROM clock_timestamp() - COALESCE(query_start, xact_start, backend_start))
+       ))::numeric, 3)
            AS max_age_seconds,
-       left(regexp_replace(COALESCE(max(query), ''), '\s+', ' ', 'g'), 120) AS sample_query
+       COALESCE(NULLIF(application_name, ''), 'unknown') AS application_name,
+       left((array_agg(
+           '[' || COALESCE(NULLIF(application_name, ''), 'unknown') || '] '
+           || regexp_replace(COALESCE(query, ''), '\s+', ' ', 'g')
+           ORDER BY COALESCE(query_start, xact_start, backend_start)
+       ))[1], 160) AS sample_query
 FROM pg_stat_activity
 WHERE datname = current_database()
-GROUP BY COALESCE(wait_event_type, 'none'), COALESCE(wait_event, 'none'), state
+  AND pid <> pg_backend_pid()
+  AND backend_type = 'client backend'
+GROUP BY COALESCE(wait_event_type, 'none'), COALESCE(wait_event, 'none'), state,
+         COALESCE(NULLIF(application_name, ''), 'unknown')
 ORDER BY sessions DESC, wait_event_type, wait_event, state;
 "
 
@@ -215,6 +231,20 @@ SELECT wal_records,
        wal_sync_time
 FROM pg_stat_wal;
 "
+
+  safe_psql_tsv_stdout "${label} pg_stat_bgwriter" "${container}" "${db}" "
+SELECT checkpoints_timed,
+       checkpoints_req,
+       checkpoint_write_time,
+       checkpoint_sync_time,
+       buffers_checkpoint,
+       buffers_clean,
+       maxwritten_clean,
+       buffers_backend,
+       buffers_backend_fsync,
+       buffers_alloc
+FROM pg_stat_bgwriter;
+"
 }
 
 sample_all_dbs_hot_window() {
@@ -226,6 +256,10 @@ sample_all_dbs_hot_window() {
 
 sample_actuator_hot_window() {
   echo "# actuator hot-window"
+  local metric_pattern='^(hikaricp_connections_(active|idle|pending|max|min)|hikaricp_connections_(acquire|usage)_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|jvm_gc_pause_seconds_(count|sum|max)).*'
+  if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
+    metric_pattern='^(hikaricp_connections_(active|idle|pending|max|min)|hikaricp_connections_(acquire|usage)_seconds_(count|sum|max)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_outbox_.*).*'
+  fi
   for spec in \
     "wallet http://localhost:8081/eap-wallet/actuator/prometheus" \
     "order http://localhost:8080/eap-order/actuator/prometheus" \
@@ -236,7 +270,8 @@ sample_actuator_hot_window() {
     for url in ${urls}; do
       echo "# url=${url}"
       if curl -fsS "${url}" \
-        | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|process_cpu_usage|system_cpu_usage|jvm_gc_pause_seconds_(count|sum|max)).*'; then
+        | grep -E "${metric_pattern}" \
+        | grep -v '_bucket{'; then
         break
       fi
     done
@@ -604,12 +639,6 @@ sample_loop() {
         | grep -E '^(used_memory:|used_memory_peak:|maxmemory:|maxmemory_policy:)' || true
       docker exec "${REDIS_CONTAINER}" redis-cli INFO stats \
         | grep -E '^(evicted_keys:|keyspace_hits:|keyspace_misses:|instantaneous_ops_per_sec:)' || true
-      if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
-        echo "# rabbitmq connections"
-        rabbitmq_connections_http || echo "[WARN] RabbitMQ management HTTP API connections unavailable"
-        echo "# rabbitmq channels"
-        rabbitmq_channels_http || echo "[WARN] RabbitMQ management HTTP API channels unavailable"
-      fi
       sample_all_dbs_hot_window
       sample_actuator_hot_window
       echo "# processes"
@@ -621,24 +650,6 @@ sample_loop() {
           echo "${repo}: pid missing"
         fi
       done
-      if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
-        echo "# actuator"
-        for spec in \
-          "wallet http://localhost:8081/eap-wallet/actuator/prometheus" \
-          "order http://localhost:8080/eap-order/actuator/prometheus" \
-          "match http://localhost:8082/match-engine/actuator/prometheus http://localhost:8082/actuator/prometheus"; do
-          name="${spec%% *}"
-          urls="${spec#* }"
-          echo "## ${name}"
-          for url in ${urls}; do
-            echo "# url=${url}"
-            if curl -fsS "${url}" \
-              | grep -E '^(hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_outbox_.*).*'; then
-              break
-            fi
-          done
-        done
-      fi
     } >> "${out_file}" 2>&1
     sleep "${SAMPLE_INTERVAL_SECONDS}"
   done

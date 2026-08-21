@@ -288,6 +288,44 @@ emit_postgres_wal_delta() {
   }
 }
 
+emit_postgres_bgwriter_delta() {
+  {
+    echo "| Service | Timed checkpoints | Requested checkpoints | Checkpoint write ms | Checkpoint sync ms | Checkpoint buffers | Clean buffers | Maxwritten stops | Backend buffers | Backend fsyncs | Allocated buffers |"
+    echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+    awk -F '\t' '
+    /^## (order|wallet|match) pg_stat_bgwriter$/ {
+      label = $0
+      sub(/^## /, "", label)
+      split(label, parts, " ")
+      service = parts[1]
+      section = "pgbgwriter"
+      next
+    }
+    /^## / { section = ""; next }
+    /^#/ { section = ""; next }
+    section == "pgbgwriter" && NF >= 10 {
+      for (field = 1; field <= 10; field++) value[field] = $field + 0
+      if (!(service in seen)) {
+        for (field = 1; field <= 10; field++) min_value[service, field] = value[field]
+      }
+      seen[service] = 1
+      for (field = 1; field <= 10; field++) max_value[service, field] = value[field]
+    }
+    END {
+      for (service in seen) {
+        printf "| %s", service
+        for (field = 1; field <= 10; field++) {
+          delta = max_value[service, field] - min_value[service, field]
+          if (field == 3 || field == 4) printf " | %.3f", delta
+          else printf " | %.0f", delta
+        }
+        print " |"
+      }
+    }
+    ' "${SAMPLES_FILE}" | sort
+  }
+}
+
 emit_postgres_wait_summary() {
   local mode="$1"
   awk -F '\t' -v mode="${mode}" '
@@ -313,10 +351,11 @@ emit_postgres_wait_summary() {
       state = $3
       sessions = $4 + 0
       max_age = $5 + 0
+      application_name = NF >= 7 ? $6 : "legacy-aggregate"
       if (mode == "actionable" && state == "idle" && (wait_type == "Client" || wait_type == "none")) {
         next
       }
-      key = service "|" wait_type "|" wait_event "|" state
+      key = service "|" application_name "|" wait_type "|" wait_event "|" state
       seen[key] = 1
       if (sessions > max_sessions[key]) max_sessions[key] = sessions
       if (max_age > max_age_seconds[key]) max_age_seconds[key] = max_age
@@ -324,19 +363,19 @@ emit_postgres_wait_summary() {
     END {
       for (key in seen) {
         split(key, parts, "|")
-        printf "%09d\t%09.3f\t%s\t%s\t%s\t%s\n",
-          max_sessions[key], max_age_seconds[key], parts[1], parts[2], parts[3], parts[4]
+        printf "%09d\t%09.3f\t%s\t%s\t%s\t%s\t%s\n",
+          max_sessions[key], max_age_seconds[key], parts[1], parts[2], parts[3], parts[4], parts[5]
       }
     }
   ' "${SAMPLES_FILE}" \
     | sort -r \
     | awk -F '\t' '
       BEGIN {
-        print "| Service | Wait type | Wait event | State | Max sessions | Max age seconds |"
-        print "|---|---|---|---|---:|---:|"
+        print "| Service | Application / pool | Wait type | Wait event | State | Max sessions | Max age seconds |"
+        print "|---|---|---|---|---|---:|---:|"
       }
       NR <= 20 {
-        printf "| %s | `%s` | `%s` | `%s` | %d | %.3f |\n", $3, $4, $5, $6, $1 + 0, $2 + 0
+        printf "| %s | `%s` | `%s` | `%s` | `%s` | %d | %.3f |\n", $3, $4, $5, $6, $7, $1 + 0, $2 + 0
       }
     '
 }
@@ -464,6 +503,12 @@ emit_cpu_summary() {
   echo "Each service uses a separate PostgreSQL container, so cluster-wide pg_stat_wal deltas are service-specific here."
   echo
   emit_postgres_wal_delta
+  echo
+  echo "## PostgreSQL Background Writer Delta"
+  echo
+  echo "These cluster-level deltas distinguish checkpoint or backend write pressure from in-memory WAL and buffer contention."
+  echo
+  emit_postgres_bgwriter_delta
   echo
   echo "## PostgreSQL Actionable Wait Peaks"
   echo

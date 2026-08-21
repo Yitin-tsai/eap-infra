@@ -13,8 +13,9 @@ TARGET_ORDER_TPS="${TARGET_ORDER_TPS:-300}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-60}"
 DURATION_SECONDS="${DURATION_SECONDS:-1800}"
 USERS_PER_SIDE="${USERS_PER_SIDE:-500}"
-WORKERS=128
-MAX_IN_FLIGHT=256
+WORKERS="${WORKERS:-128}"
+MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-256}"
+HTTP_DRIVER_MODE="${HTTP_DRIVER_MODE:-legacy-sync}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
 SAMPLE_INTERVAL_SECONDS="${SAMPLE_INTERVAL_SECONDS:-1}"
 PROGRESS_INTERVAL_SECONDS="${PROGRESS_INTERVAL_SECONDS:-10}"
@@ -72,6 +73,7 @@ echo "[INFO] HTTP matched steady-state chain"
 echo "[INFO] runId=${RUN_ID}, targetTotalOrderTps=${TARGET_ORDER_TPS}"
 echo "[INFO] warmupSeconds=${WARMUP_SECONDS}, measurementSeconds=${DURATION_SECONDS}, usersPerSide=${USERS_PER_SIDE}"
 echo "[INFO] arrivalPattern=shuffled, workloadSeed=${WORKLOAD_SEED}, runtimeProfile=canonical"
+echo "[INFO] httpDriverMode=${HTTP_DRIVER_MODE}, workers=${WORKERS}, maxInFlight=${MAX_IN_FLIGHT}"
 echo "[INFO] businessSampleIntervalSeconds=${SAMPLE_INTERVAL_SECONDS}, progressIntervalSeconds=${PROGRESS_INTERVAL_SECONDS}"
 echo "[INFO] minOfferedLoadRatio=${MIN_OFFERED_LOAD_RATIO}, minCompletionRatio=${MIN_COMPLETION_RATIO}"
 echo "[INFO] samples=${RUN_SAMPLES_CSV}, result=${RUN_REPORT_JSON}"
@@ -87,6 +89,7 @@ args="--run-id ${RUN_ID} \
 --users-per-side ${USERS_PER_SIDE} \
 --workers ${WORKERS} \
 --max-in-flight ${MAX_IN_FLIGHT} \
+--http-driver-mode ${HTTP_DRIVER_MODE} \
 --wait-timeout-seconds ${WAIT_TIMEOUT_SECONDS} \
 --sample-interval-seconds ${SAMPLE_INTERVAL_SECONDS} \
 --progress-interval-seconds ${PROGRESS_INTERVAL_SECONDS} \

@@ -12,6 +12,7 @@ All contracts below exercise the CDA order/trade path. TDA uses separate auction
 | `matched-trade-completion-chain` | implemented | `scripts/load-test/run-matched-trade-completion-10k.sh` | seeded confirmed orders entering MatchEngine, `TradeExecuted` persistence, Order trade application, Wallet settlement, durable trade-ID set equality, and final measured queue drain | Order HTTP API, initial order submission persistence, Wallet reservation decision cost |
 | `http-matched-trade-completion-chain` | implemented | `scripts/load-test/run-http-matched-trade-completion-10k.sh` | HTTP SELL admission followed by HTTP BUY matching, Match/Order/Wallet durable trade-ID equality, asset settlement, MatchEngine reservation cleanup, and final queue drain | isolated component ceilings; simultaneous mixed-side arrival patterns |
 | `http-matched-steady-state-chain` | implemented | `scripts/load-test/run-http-matched-steady-state.sh` | sustained balanced, seeded, mixed-side HTTP traffic; steady accepted-order and completed-trade rates; queue backlog level/slope; three-service durable convergence; asset settlement; and final drain | side-imbalanced, cancellation-heavy, or multi-price market behavior; multi-node failover |
+| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite Vegeta open-loop schedule with workload preparation outside the traffic window | automatic CPU or host isolation; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
 | `http-matched-staircase-chain` | implemented | `scripts/load-test/run-http-matched-staircase.sh` | one uninterrupted balanced, seeded, mixed-side HTTP run with progressively higher total order rates, per-stage throughput/latency/backlog gates, automatic knee detection, and final full-chain convergence | a long-duration guarantee at the provisional knee; side-imbalanced flow; multi-host load generation |
 | `reservation-cleanup-isolated` | implemented diagnostic | `scripts/load-test/run-reservation-cleanup-ab.sh` | MatchEngine cleanup task claim, Redis reservation removal, completion update, and batch-size A/B using only Match PostgreSQL and Redis | HTTP admission, RabbitMQ scheduling, trade persistence, Order application, Wallet settlement, or full-chain capacity |
 | `match-processor-combined-isolated` | implemented diagnostic | `scripts/load-test/run-match-processor-probe.sh` | shuffled mixed OrderConfirmed processing through the idempotency guard, Redis Lua matching, transactionally persisted trade/outbox/cleanup facts, and a separately timed cleanup drain using only Match PostgreSQL and Redis | RabbitMQ listener delivery/acknowledgement, concurrent cleanup contention, Order, Wallet, HTTP, or full-chain capacity |
@@ -91,9 +92,97 @@ In addition to final correctness and drain gates, a sustained run is valid only 
 
 Registered load-test wallets are funded during setup according to the planned run length. Registration and funding are outside the measurement window; every measured order, reservation, match, trade application, and settlement still uses the real service path.
 
+The steady-state runner supports a `prepared-sync` HTTP driver. Before the
+traffic clock starts, it builds the seeded BUY/SELL schedule, deterministic
+order IDs, user assignments, and serialized request bodies. During the measured
+window it retains the existing bounded worker pool and synchronous HTTP
+transport. This removes workload construction from the timed path without
+changing the request protocol or bypassing any service. The prepared bodies
+consume generator heap, and the generator still shares the host with the
+services; this is lower measurement interference, not CPU or host isolation.
+
+The canonical default remains `legacy-sync` so the accepted 15-minute 648
+evidence stays reproducible. `prepared-sync` must be selected and recorded with
+`HTTP_DRIVER_MODE=prepared-sync` until reverse-order repeats and a long-window
+validation justify changing the contract default. Results from different driver
+modes are not interchangeable. The staircase runner also retains the legacy
+synchronous stage driver because its uninterrupted per-stage preparation
+boundary has not yet been redesigned or validated.
+
+The external open-loop driver separates the lifecycle into four explicit
+steps. Java first resets/setup state and writes a finite, checksummed Vegeta
+target file plus a secret-free manifest. A low-frequency Java monitor then
+samples durable Match/Order/Wallet completion and RabbitMQ backlog while
+Vegeta drives fixed-rate HTTP arrivals without waiting for a bounded response
+permit. Finally, Java reads the Vegeta results and manifest, reconstructs the
+steady window, and applies the existing trade-ID, asset, order-book,
+reservation, queue, and DLQ gates.
+
+The finite attack includes one second of EOF grace. Its JSON stream removes
+only Vegeta's synthetic `no targets to attack` sentinel; the verifier still
+requires one real result for every checksummed target. This avoids
+rate-limiter rounding dropping final targets at higher rates.
+
+The command is:
+
+```bash
+TARGET_ORDER_TPS=648 \
+WARMUP_SECONDS=10 \
+DURATION_SECONDS=30 \
+DIAGNOSTICS_LEVEL=none \
+bash scripts/load-test/run-http-matched-external-open-loop.sh
+```
+
+`VEGETA_CPUS`, `VEGETA_WORKERS`, and `VEGETA_MAX_WORKERS` bound the driver.
+`SAMPLE_INTERVAL_SECONDS` controls the business monitor and must remain equal
+across an A/B. The result records `LOAD_GENERATOR_PLACEMENT`; its default
+`co-located` means the process still competes for the same laptop.
+
+`remote-host` is an implemented placement, not a result label. The local
+orchestrator checksums the prepared targets, copies only the secret-free target
+file and helper over SSH, verifies the remote host can reach Order health, checks
+clock skew, executes Vegeta remotely, and copies back a compressed result stream,
+report, timing, and host preflight metadata. The Java monitor and final verifier
+remain on the orchestrator host. A typical separated-driver run is:
+
+```bash
+LOAD_GENERATOR_PLACEMENT=remote-host \
+REMOTE_DRIVER_SSH_TARGET=loadtest@192.0.2.20 \
+ORDER_URL=http://192.0.2.10:8080/eap-order \
+TARGET_ORDER_TPS=648 \
+WARMUP_SECONDS=10 \
+DURATION_SECONDS=30 \
+DIAGNOSTICS_LEVEL=none \
+bash scripts/load-test/run-http-matched-external-open-loop.sh
+```
+
+The remote host requires `vegeta`, `jq`, `gzip`, `curl`, and SSH access. The
+Order URL must be reachable from both hosts and cannot use `localhost`.
+`START_SERVICES=true` may still start the EAP services on the orchestrator host.
+Use `START_SERVICES=false` and point the HTTP, JDBC, Redis, and RabbitMQ endpoints
+at an already running stack when service lifecycle is managed elsewhere. In that
+case, setup resets benchmark state by default; set `RESET_DATA_ON_PREPARE=false`
+only when the operator has already provided an equivalent clean baseline.
+
+Remote driver placement isolates HTTP generation from the service host; it does
+not by itself prove multi-node service scaling, database scaling, or failover.
+The remote and co-located runs are different evidence classes and require an A/B
+with the same commit, seed, workload, duration, and correctness gates.
+See the [distributed capacity and front-half scaling tooling report](2026-08-20-distributed-capacity-and-front-half-scaling.md).
+
+This driver removes the in-JVM driver's response-permit ceiling and sharply
+reduces generator CPU cost, but it does not reserve CPU for EAP services on
+macOS. A same-seed legacy -> Vegeta -> legacy deep A/B at 648 orders/s found
+the external driver throughput-equivalent within about 2.2%, while Vegeta used
+about 7.9% of one CPU core. The comparison supports Vegeta as a lower-cost
+diagnostic driver; it does not rewrite historical results or prove host
+isolation. See the
+[external open-loop report](2026-08-19-external-open-loop-driver.md) and the
+[unattended validation](2026-08-20-vegeta-unattended-validation.md).
+
 Current full HTTP capacity runners use one canonical runtime configuration: each service owns its settings in `application-loadtest.yml`, and normal recovery behavior remains enabled. The public runners do not switch listener concurrency, pools, outbox batching, projections, reservation recovery, or rate limiting. Historical reports retain `core-capacity` and `production-equivalent` labels only to describe the revisions that produced those artifacts; those profiles are no longer selectable and are not current capacity contracts.
 
-The runner's fixed workers and in-flight limits are implementation details, not workload-selection controls. Changing service concurrency, pool size, outbox mode, cleanup behavior, rate limiting, arrival pattern, or BUY/SELL phase order creates a different experiment and must be done in a lower-level diagnostic with the override recorded explicitly.
+The runner's fixed workers and in-flight limits are implementation details, not workload-selection controls. Changing the HTTP driver, service concurrency, pool size, outbox mode, cleanup behavior, rate limiting, arrival pattern, or BUY/SELL phase order creates a different experiment and must be done in a lower-level diagnostic with the override recorded explicitly.
 
 ### `http-matched-staircase-chain`
 
@@ -129,10 +218,27 @@ Do not start every A/B experiment with the full sustained chain. That consumes t
 
 An isolated win can reject a weak candidate cheaply, but it cannot adopt a production setting or establish complete-trade TPS. A full-chain loss also overrides an isolated win because the component probe intentionally omits scheduler competition and downstream work.
 
+### Front-half pool-budget diagnostic
+
+`scripts/load-test/run-front-half-pool-budget-matrix.sh` prepares a coordinated
+Order JDBC pool-budget experiment around `order-admission-chain`. Its fixed
+profiles compare the current maximum allocation of `35 command + 20 consumer + 3
+projection` connections with aggregate budgets of `48` and `40`. The primary
+variable is the complete budget profile; individual pool changes must not be
+attributed independently.
+
+The script defaults to `--plan`. `--execute` performs two clean-start repeats per
+profile and writes one matrix summary. This is a one-sided front-half contention
+diagnostic: it can reject a poor budget, but it cannot adopt a full-chain setting,
+prove horizontal scaling, or change the mixed HTTP capacity boundary. A surviving
+candidate still requires a same-seed full-chain A/B and all durable correctness
+gates.
+
 ## Next Benchmark Work
 
 1. Keep `648 accepted orders/s` as the two-seed, 15-minute same-host sustained lower-bound class, but treat it as a pressure boundary. A later same-seed `DIAGNOSTICS_LEVEL=none` repeat failed only after the midpoint and is inconclusive because the internal one-second durable-count monitor remained active and no resource diagnostics were captured.
 2. Run a controlled 648 observer-effect comparison with the same explicit `SAMPLE_INTERVAL_SECONDS` on both sides, reverse the run order, and preserve enough low-rate CPU, pool, WAL, and queue evidence to explain any late degradation.
-3. Repeat the boundary with the load generator on a separate CPU domain or host. The short 1200/2000 probes were driver-limited overload tests, not service-capacity measurements.
-4. Establish a passing 30-minute `http-matched-steady-state-chain` rate at or below the 648 pressure boundary before testing a higher soak.
-5. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.
+3. Bracket the same-host knee between 648 and 1200 with the external driver. The 648 sandwich established driver equivalence; the corrected 1200 run supplied every target but failed completion and backlog gates.
+4. Repeat the external-driver boundary on a separate host. A co-located external process reduces driver cost but does not isolate the EAP services from laptop CPU contention.
+5. Establish a passing 30-minute steady-state rate at or below the 648 pressure boundary before testing a higher soak.
+6. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book, and partial-fill behavior. Do not weaken the balanced contract's exact completion gates to fit it.

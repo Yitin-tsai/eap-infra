@@ -84,7 +84,7 @@ EVENTS=10000 \
 TIMEOUT_SECONDS=300 \
 DIAGNOSTICS_LEVEL=none \
 MIN_OFFERED_TPS_RATIO=0.95 \
-bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
+bash scripts/load-test/run-matched-trade-completion-repeat.sh EAP_PUBLIC_10K_YYYYMMDD
 ```
 
 Output:
@@ -146,7 +146,7 @@ Historical command prefix (the former `baseline` diagnostics alias is now named 
 REPEATS=5 TARGET_TPS=2000 DURATION_SECONDS=5 EVENTS=10000 \
 PUBLISHERS=1 TIMEOUT_SECONDS=300 DIAGNOSTICS_LEVEL=baseline \
 MIN_OFFERED_TPS_RATIO=0.95 \
-bash scripts/load-test/run-public-benchmark-10k-repeat.sh EAP_PUBLIC_10K_20260713
+bash scripts/load-test/run-matched-trade-completion-repeat.sh EAP_PUBLIC_10K_20260713
 ```
 
 Artifacts:
@@ -267,7 +267,7 @@ EVENTS=450000 \
 PUBLISHERS=1 \
 TIMEOUT_SECONDS=1800 \
 DIAGNOSTICS_LEVEL=light \
-bash scripts/load-test/run-global-matched-e2e-sustained.sh
+bash scripts/load-test/run-global-matched-e2e-two-phase.sh
 ```
 
 The steady-state result should report:
