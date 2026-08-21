@@ -25,6 +25,20 @@ The default capacity workflow is:
    drain, offered load, completion rate, and bounded backlog;
 5. repeat a different seed before promoting a sustained boundary.
 
+## Evidence Mode and Provenance
+
+Full HTTP lifecycle runners default to `BENCHMARK_EVIDENCE_MODE=diagnostic`.
+Diagnostic runs may use a dirty worktree, but their result JSON always sets
+`capacityClaimAllowed=false`.
+
+Use `BENCHMARK_EVIDENCE_MODE=release-pinned` only for a capacity candidate. The
+runner fails before setup if any recorded source repository is dirty or missing,
+then verifies that the same commits remain checked out through the end of the run.
+The result records full commit hashes for infra, common, Order, Wallet, and
+MatchEngine; host and tool versions; execution placement; runner/config hashes;
+and the actual infrastructure container image IDs. A successful business gate is
+eligible for a public capacity claim only when this provenance gate also passes.
+
 ## Focused Probes
 
 Use a focused probe only after a specific bottleneck hypothesis exists.

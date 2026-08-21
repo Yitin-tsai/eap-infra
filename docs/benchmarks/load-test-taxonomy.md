@@ -23,6 +23,32 @@ All contracts below exercise the CDA order/trade path. TDA uses separate auction
 
 Scripts named `run-global-matched-e2e*` are lower-level seed/project/run drivers used by the backend wrapper and isolated diagnostics. Their publisher fan-out and phase controls do not define additional public capacity contracts. Use the entry points in the table for comparable results.
 
+## Source Provenance Contract
+
+The full HTTP lifecycle runners distinguish experiment results from release-pinned
+capacity evidence with `BENCHMARK_EVIDENCE_MODE`:
+
+- `diagnostic` is the default. It permits an uncommitted experiment, preserves its
+  business correctness and capacity-gate outcome, but always records
+  `capacityClaimAllowed=false`.
+- `release-pinned` fails before setup unless `eap-infra`, `eap-common`, `eap-order`,
+  `eap-wallet`, and `eap-matchEngine` are present and clean. It captures them again
+  after the run and rejects capacity eligibility if a commit or dirty state changed.
+
+Every persisted full HTTP result includes a `benchmarkProvenance` object with full
+repository commits, branch and dirty state, host OS/architecture/CPU/memory,
+Java/Docker/Vegeta versions, load-generator placement, service launch mode,
+diagnostics level, runner/library/Compose SHA-256 fingerprints, and the configured
+plus resolved infrastructure container image IDs. It contains no JDBC, RabbitMQ,
+SSH, or service credentials.
+
+`validForSustainedCapacity` answers whether the measured business and backlog gates
+passed. `capacityClaimAllowed` additionally requires a supported steady-state
+contract, zero process failure, clean and stable release-pinned provenance, and no
+RabbitMQ resource alarm. One eligible artifact can contribute to a capacity claim;
+the promotion ladder still requires another seed before changing a repeatable
+sustained boundary.
+
 ## Implemented Contracts
 
 ### `order-admission-chain`
