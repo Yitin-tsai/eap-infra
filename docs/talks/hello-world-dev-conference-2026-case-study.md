@@ -1,5 +1,7 @@
 # EAP AI 工程工作流實踐
 
+> 明天要和主管快速對焦時，先看[主管 1-on-1 快速說明](hello-world-dev-conference-2026-manager-brief.zh-TW.md)；本文件保留完整案例、證據與 30 分鐘結構。
+
 Hello World Dev Conference 2026 講題：**用 AI 工作流重整事件驅動交易系統的一致性、效能與監測**
 
 本議程的核心不是介紹 EAP 本身，而是以一個可公開檢查的多 repository 專案，示範個人開發者如何使用 AI 建立結構化反對意見、驗證假設並拒絕錯誤修改。EAP 是承載證據的工程案例，不是演講要推廣的產品。
@@ -30,6 +32,8 @@ EAP 是個人開發的事件驅動電力交易後端，支援連續雙向競價�
 
 **採用後仍被正確性關卡推翻高 TPS 宣稱：MatchEngine 排程與撮合訂單保留修復。** 監測先發現 1 條排程執行緒同時承擔撮合訂單保留清理與交易事件外送。相同條件比較中，排程隔離讓 800 階段從 `167.93` 提升到 `383.45 trades/s`、最大積壓從 `4090` 降到 `246`，並通過完整核對，因此採用。後續較高階梯雖一度通過 900，最終卻發現 1 張買單被重複撮合，整次高 TPS 結果因此作廢。修正方式是讓 Redis 撮合訂單保留狀態直接核對預期 `tradeId`；修正後 52500 筆訂單全部收斂，但 800 仍未穩定通過。最新 release-pinned 證據以 2 個 workload seed 各執行 15 分鐘 `648 accepted orders/s`；兩輪皆完整收斂，因此列為目前最高可重複的同機下界。但兩輪完整流程只有 `309.73` 與 `301.14 trades/s`，仍落在先前 624 的範圍，且 CPU、連線池與 tail latency 壓力更高，所以將 648 定義為壓力邊界，不宣稱更高容量或充足餘裕。較舊版本約 `700 accepted orders/s` 的短窗結果保留為歷史診斷，不混成目前容量宣稱。這個案例示範 AI 輔助假設如何被觀測資料採用，也如何被正確性證據限制。
 
+**人工質疑已實作方向：取消訂單的 Wallet 投影。** 設計審查一度讓 Wallet 維護每張訂單的剩餘保留狀態，人工負責人則追問：既然訂單不能改量，而且 MatchEngine 已原子決定取消的精確未成交餘量，Wallet 為何還要複製訂單生命週期？重新審查後，正常下單與成交不再維護這份投影；Wallet 只在取消成功時保存冪等套用紀錄並釋放資產。亂序、重複、多次部分成交與 match/cancel 競態測試通過，正常混合 HTTP 短窗回歸也完整收斂。因缺少相同版本前後 A/B，這項決策只宣稱模型更符合 ownership 且未發現回歸，不宣稱 TPS 提升。這個案例用來說明 AI 工作流不是讓代理自行核准設計，而是讓人工反對意見能重新開啟架構、實作、QA 與證據循環。完整證據見[取消責任與回歸報告](../benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
+
 ## 30 分鐘分享安排
 
 EAP 的專案背景與架構介紹安排在 3–8 分，共 5 分鐘，約為整場 `16.7%`。後續仍以 EAP 的採用與拒絕案例作為證據，但教學主體是可移植的 AI 工作流、驗證方式與人工決策，不是繼續介紹專案功能。
@@ -56,7 +60,7 @@ EAP 的專案背景與架構介紹安排在 3–8 分，共 5 分鐘，約為整
 
 ## 公開證據與限制
 
-公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[排程隔離診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[短窗邊界重測](../benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)與[最新 648 持續壓力邊界](../benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)。
+公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[取消責任與回歸報告](../benchmarks/2026-08-24-cancellation-ownership-and-regression.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[排程隔離診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[短窗邊界重測](../benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)與[最新 648 持續壓力邊界](../benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)。
 
 EAP 不宣稱 `2000 completed TPS`。目前 release-pinned 公開下界是 2 個 workload seed 都通過的單機 `648 accepted orders/s` 等級 CDA 隨機混合 HTTP 15 分鐘證據；兩輪 full-lifecycle 分別為 `309.73` 與 `301.14 trades/s`，而且同機 CPU、連線池與 tail latency 壓力明顯，因此是壓力邊界，不是正式環境容量。較舊版本另有單機短時間 `699.98 accepted orders/s`、`346.12 same-window trades/s`、`320.47 full-lifecycle trades/s` 的歷史診斷。`922.38/s` 是 CDA 依序上限診斷；`20405.04/s` 是已拒絕版本的隔離診斷。已確認訂單、混合流量、短時間窗、長時間、元件隔離、歷史版本、深度診斷與 TDA 必須分開。
 

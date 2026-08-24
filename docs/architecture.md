@@ -216,9 +216,9 @@ The current architecture keeps the service boundaries stable and focuses tuning 
 
 ## Order Book Source of Truth
 
-Redis is the hot matching state, not the long-term audit source of truth. PostgreSQL keeps command-side order facts and `TradeExecuted` facts. If Redis state is lost, the intended recovery path is to rebuild the open order book from durable order/trade facts and reject or pause matching while rebuilding.
+Redis is the hot matching state, not the long-term audit source of truth. PostgreSQL keeps command-side order facts and `TradeExecuted` facts. If the Redis generation is lost or cannot be trusted, the intended recovery path is to stop both order admission and cancellation arbitration, rebuild the open order book and processing fences from durable order, trade, and cancellation facts, verify the rebuilt state, and only then resume consumers.
 
-The current benchmark focuses on hot-path matching and completion throughput. A production release would need an explicit Redis rebuild runbook and recovery test.
+The future extension point is a MatchEngine readiness gate in front of both RabbitMQ listeners. It will own a `READY` or `RECOVERING` generation state and prevent either event type from bypassing reconstruction. The current scope does not implement automatic full-book rebuild or claim that matching may continue after Redis state loss; it deliberately avoids adding a PostgreSQL lookup to every steady-state order as a partial substitute.
 
 ## Price-Time Priority
 
@@ -261,20 +261,76 @@ If input stays above completed capacity, queue lag will grow. The production pol
 - keep final queue drain as part of benchmark acceptance;
 - expose queue backlog over time, not only final zero backlog.
 
-## Open CDA Integrity Work
+## CDA Cancellation Arbitration
 
-The measured matched-trade path has strong completion evidence, but that evidence
-does not currently cover cancellation. The existing cancellation endpoint first
-calls MatchEngine synchronously and then appends an Order cancellation event. The
-MatchEngine boolean result is not used to decide the Order transition, there is no
-durable cancellation command or outcome, and Wallet does not consume a cancellation
-event to release the remaining asset reservation. A cancellation racing with a
-match can therefore leave Order, MatchEngine, and Wallet with different outcomes.
+Cancellation is an asynchronous business decision rather than a synchronous delete.
+Order accepts a cancellation request with HTTP `202`, appends
+`OrderCancellationRequestedV1` and an outbox record atomically, and leaves the order's
+tradable state unchanged until MatchEngine returns a durable result. The request carries
+the immutable original order amount derived from Order's command state. This is distinct
+from the mutable unmatched remainder that MatchEngine may later remove from Redis after
+one or more partial fills.
 
-Cancellation should be treated as a separate state-machine redesign rather than a
-small controller fix. The design must define one durable cancellation intent,
-MatchEngine's authoritative outcome (`cancelled`, `already matched`, or `not found`),
-Wallet release semantics for the exact remaining reservation, idempotent retries,
-and a race test against `TradeExecuted`. Until that contract and its full-lifecycle
-correctness gate exist, cancellation is not part of the reliability or capacity
-claims in this repository.
+MatchEngine is the sole cancellation arbiter:
+
+1. It first persists a `PENDING` recovery record in
+   `match_engine.order_cancellations`, then records a Redis cancellation intent. The
+   database row makes an interrupted request discoverable; it is not itself an
+   admission fence.
+2. Redis owns the cancellation linearization points. For an order not yet admitted,
+   the intent is checked by the same Lua boundary that performs admission. For a
+   visible resting order, cancellation Lua and matching Lua compete to remove the same
+   ZSET member. Whichever Redis operation wins determines whether cancellation blocks
+   admission, removes the remainder, or loses to matching. Normal `OrderConfirmed`
+   processing does not query the cancellation table.
+3. For an open resting order, cancellation succeeds only when the cancellation Lua
+   script actually removes one ZSET member. The script returns the exact removed
+   order snapshot. An order already removed into a match reservation cannot also be
+   reported as cancelled.
+4. A request interrupted before the Redis intent, or one that loses to an in-flight
+   admission or reservation, remains pending. Reconciliation restores the intent and
+   waits while admission is still processing. Workers claim rows with `SKIP LOCKED`, a
+   bounded lease, and exponential retry delay so multiple instances do not repeatedly
+   process the same unresolved cancellation. It then follows a visible remainder or a
+   durable trade and emits `CANCELLED`, `ALREADY_MATCHED`, or `NOT_OPEN` through the
+   transactional outbox. The durable decision stores both the immutable original amount
+   and the exact cancelled remainder; replay identity uses the former, while Order and
+   Wallet apply the latter.
+
+Wallet treats MatchEngine's atomic cancellation result as the authoritative fact for
+the exact unmatched quantity. It derives the asset delta, applies it once, and stores
+only a cancellation application keyed by both cancellation ID and order ID. Normal
+order reservation and trade settlement do not maintain a second order-state projection
+inside Wallet. Because trade settlement consumes the matched quantity and cancellation
+releases the disjoint remainder, either delivery order converges to the same balances.
+Order stores cancellation results in a durable inbox. If a cancellation result
+arrives before an earlier trade has updated Order's command state, it remains
+`PENDING_PREREQUISITE` and is retried instead of blocking or contradicting trade
+application. `ALREADY_MATCHED` converges through the normal trade event, while
+`NOT_OPEN` without a durable trade remains visible as consistency debt rather than
+being silently treated as a completed cancellation.
+
+Focused PostgreSQL and Redis integration tests cover atomic cancellation versus
+reservation, duplicate results, conflicting identities, and both cancellation/trade
+delivery orders. The cross-service HTTP lifecycle also exercises open-order,
+partial-fill, and bounded concurrent match/cancel scenarios. These are correctness
+tests, not a cancellation-heavy capacity benchmark. The published CDA throughput
+boundary still excludes cancellation-heavy
+traffic until a separately defined workload and full-lifecycle gate are recorded.
+The ownership decision, rejected Wallet projection, and post-change regression
+evidence are recorded in the
+[2026-08-24 cancellation report](benchmarks/2026-08-24-cancellation-ownership-and-regression.md).
+
+Cancellation is also a useful capacity and system-design scenario: repeated requests still
+consume HTTP, Redis, and database work even when the business command is idempotent, while
+many unique open orders create real arbitration and release work. The current Order endpoint
+uses `userId` for a local rate-limit example and leaves a replaceable policy boundary for
+account quotas, open-order limits, cancellation-ratio controls, or queue-aware admission.
+Those controls are discussion and extension points rather than the current learning project's
+deployment backlog. They also do not replace atomic arbitration or idempotency guarantees.
+
+This boundary deliberately trusts MatchEngine's immutable cancellation fact in the same
+way Wallet trusts `TradeExecuted`. Wallet still owns balance calculation, non-negative
+guards, transaction rollback, and idempotent application; MatchEngine does not command
+an absolute Wallet balance. This keeps cancellation-only persistence off the normal
+order and trade write paths while preserving replay and out-of-order convergence.

@@ -7,22 +7,24 @@ eap-mcp/
 eap-ai-client/
 eap-career-notes/
 
-# Blackboard (gs workspace)
+# Local workflow-tool state; never project documentation or source of truth
+# Blackboard / Ghostwriter workspace
 .blackboard/
 
 # Worktree (gs workspace)
 worktree/
 
-# Claude Code config
+# Local Claude Code config
 .claude/
 
-# Project artifacts
+# Reproducible generated output. Load-test runners write raw reports under
+# build/load-test-reports/; reviewed evidence is promoted into docs/benchmarks/results/.
 user_guide.md
 project-ghostwriter-*.tgz
 .cache/
 build/
 
-# Private career / resume / interview artifacts
+# Legacy BMAD state and private career / resume / interview artifacts
 PROJECT_STATE.md
 _bmad-output/
 _bmad/

@@ -41,6 +41,8 @@ There is no distributed transaction across the services. A service that must pub
 6. Order applies the trade to its command-side order state; Wallet settles the buyer and seller assets.
 7. Operational verification compares the durable trade IDs owned by MatchEngine, Order, and Wallet, reconciles assets, and checks that queues and retry debt have drained.
 
+Cancellation follows a separate asynchronous decision path: Order durably accepts the request, MatchEngine atomically arbitrates it against matching, and Wallet releases only the confirmed unmatched reservation. A cancellation result that arrives before an earlier trade projection is retained and retried rather than overriding the trade.
+
 MatchEngine does not maintain a separate downstream completion view and does not wait for completion callbacks from Order or Wallet. Those services own their results. Cross-service convergence is verification outside the transaction path, not another business dependency.
 
 See [the architecture guide](docs/architecture.md) for transaction boundaries, event flows, recovery behavior, and the separate TDA flow.
@@ -50,8 +52,8 @@ See [the architecture guide](docs/architecture.md) for transaction boundaries, e
 | Service | Owns | Main responsibility |
 | --- | --- | --- |
 | [eap-order](https://github.com/Yitin-tsai/eap-order) | Order command events and trade application | HTTP order entry, order lifecycle, command-side state, rebuildable projections |
-| [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | Balances, reservations, and settlement facts | Asset validation, reservation, trade settlement, wallet outbox |
-| [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | Order book and `TradeExecuted` facts | CDA matching, Redis reservation recovery, trade persistence; TDA scheduling and clearing |
+| [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | Available/locked balances, settlement facts, and applied cancellation facts | Asset validation, idempotent trade settlement, and cancellation release |
+| [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | Order book and `TradeExecuted` facts | CDA matching, atomic cancellation arbitration, Redis reservation recovery, trade persistence; TDA scheduling and clearing |
 | [eap-common](https://github.com/Yitin-tsai/eap-common) | Shared integration contracts | Event and DTO definitions; no business-state ownership |
 | [eap-mcp](https://github.com/Yitin-tsai/eap-mcp) / [eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | Controlled AI tooling | Experimental control-plane operations, never core transaction correctness |
 
@@ -67,6 +69,7 @@ TDA is implemented as a separate market mode that collects confirmed stepped bid
 | Poison event cannot be processed | Retry policy plus DLX / DLQ |
 | Redis reservation cleanup is interrupted | Durable cleanup task, exact `tradeId` correlation, and reconciliation |
 | Read projection is delayed | Projection remains rebuildable and does not block command-side trade application |
+| Cancellation races with matching or trade delivery | MatchEngine atomic arbitration, durable result, Wallet cancellation idempotency, commutative asset deltas, and Order prerequisite retry |
 | A local metric looks healthy while the workflow is incomplete | Three-service trade-ID equality, asset reconciliation, and final queue/debt drain |
 
 A CDA trade is called business-complete only when MatchEngine has persisted the trade, Order has applied it, Wallet has settled it, all three durable trade-ID sets agree, assets reconcile, and the measured queues and retry debt are empty.
@@ -98,6 +101,9 @@ Read [EAP's evidence-driven AI engineering workflow](docs/ai-engineering-workflo
 
 Performance is evidence for the architecture, not the homepage's main subject. EAP separates accepted HTTP orders, component throughput, same-window completed trades, full-lifecycle throughput, short diagnostics, and soak tests. A result is published only with its workload boundary and correctness outcome.
 
+Start with the [documentation map](docs/README.md) for the current source-of-truth,
+benchmark-evidence, generated-artifact, and archive boundaries.
+
 - [Performance report](docs/performance-report.md): current claims, definitions, limitations, and bottleneck history.
 - [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md): what each workload measures and what it cannot claim.
 - [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
@@ -109,6 +115,7 @@ Performance is evidence for the architecture, not the homepage's main subject. E
 - [External open-loop driver](docs/benchmarks/2026-08-19-external-open-loop-driver.md): low-cost fixed-rate generation, lifecycle handoff, correctness gates, and the remaining host-isolation boundary.
 - [Scheduler-isolation diagnostic](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md): the earlier adopted fix and rejected high-rate evidence.
 - [Wallet robustness report](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md): transaction safety, mixed-flow, soak, and failure evidence.
+- [Cancellation ownership and regression](docs/benchmarks/2026-08-24-cancellation-ownership-and-regression.md): why Wallet does not project every order, plus race, ordering, and normal-flow regression evidence.
 
 ## Run Locally
 

@@ -112,11 +112,21 @@
                     "required": true
                 },
                 "responses": {
-                    "200": {
-                        "description": "\u53d6\u6d88\u6210\u529f"
+                    "202": {
+                        "description": "\u53d6\u6d88\u8acb\u6c42\u5df2\u53d7\u7406",
+                        "content": {
+                            "*/*": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CancelOrderResponse"
+                                }
+                            }
+                        }
                     },
                     "400": {
                         "description": "\u8acb\u6c42\u932f\u8aa4"
+                    },
+                    "429": {
+                        "description": "\u53d6\u6d88\u8acb\u6c42\u901f\u7387\u8d85\u904e\u9650\u5236"
                     }
                 }
             }
@@ -590,11 +600,20 @@
                         "schema": {
                             "type": "string"
                         }
+                    },
+                    {
+                        "name": "userId",
+                        "in": "query",
+                        "description": "\u7528\u6236ID",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "\u53d6\u6d88\u6210\u529f",
+                    "202": {
+                        "description": "\u53d6\u6d88\u8acb\u6c42\u5df2\u53d7\u7406",
                         "content": {
                             "*/*": {
                                 "schema": {
@@ -656,6 +675,9 @@
                 "type": "object",
                 "properties": {
                     "orderId": {
+                        "type": "string"
+                    },
+                    "cancellationId": {
                         "type": "string"
                     },
                     "status": {

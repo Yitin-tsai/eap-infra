@@ -41,6 +41,8 @@ flowchart LR
 6. Order 將成交結果套用到命令端訂單狀態；Wallet 完成買賣雙方資產結算。
 7. 營運驗證在交易路徑之外，比對 MatchEngine、Order、Wallet 各自持久化的 trade ID，核對資產，並確認 queue 與 retry debt 已清空。
 
+取消訂單採用獨立的非同步決策流程：Order 先持久化受理請求，MatchEngine 再確保訂單剩餘數量只會由撮合或取消其中一方取得，Wallet 只釋放 MatchEngine 確認的未成交資產。若取消結果早於先前成交事件抵達 Order，系統會保留並重試，而不是覆蓋成交事實。
+
 MatchEngine 不再維護額外的下游 Completion View，也不等待 Order 或 Wallet 回傳完成事件。各服務擁有自己的處理結果；跨服務收斂是交易路徑之外的驗證，不是新的業務依賴。
 
 完整交易邊界、事件流、復原方式與獨立的 TDA 流程請見[架構文件](docs/architecture.md)。
@@ -50,8 +52,8 @@ MatchEngine 不再維護額外的下游 Completion View，也不等待 Order 或
 | 服務 | 擁有的資料 | 主要責任 |
 | --- | --- | --- |
 | [eap-order](https://github.com/Yitin-tsai/eap-order) | 訂單命令事件與成交套用結果 | HTTP 下單、訂單生命週期、命令端狀態與可重建 projection |
-| [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | 餘額、資產保留與結算事實 | 驗資、資產保留、交易結算與 wallet outbox |
-| [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | 訂單簿與 `TradeExecuted` | CDA 撮合、Redis reservation 復原、成交持久化；TDA 排程與清算 |
+| [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | 可用／鎖定餘額、結算事實與已套用的訂單取消結果 | 驗資、冪等交易結算與訂單取消後的資產釋放 |
+| [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | 訂單簿、`TradeExecuted` 與訂單取消結果 | CDA 撮合、確保訂單剩餘數量不會同時被撮合與取消、Redis reservation 復原、成交持久化；TDA 排程與清算 |
 | [eap-common](https://github.com/Yitin-tsai/eap-common) | 共用整合契約 | Event 與 DTO 定義，不擁有業務狀態 |
 | [eap-mcp](https://github.com/Yitin-tsai/eap-mcp)／[eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | 受控 AI 工具 | 實驗性 control-plane 操作，不參與核心交易正確性 |
 
@@ -67,6 +69,7 @@ TDA 是另一條已實作的市場模式，會收集通過驗資的階梯式出�
 | 錯誤事件無法處理 | Retry policy 與 DLX／DLQ |
 | Redis reservation 清理中斷 | 持久化 cleanup task、精確 `tradeId` 對應與 reconciliation |
 | 讀取 projection 延遲 | Projection 可重建，且不阻擋命令端交易套用 |
+| 取消訂單與撮合競爭，或取消結果先於成交事件抵達 | MatchEngine 確保訂單剩餘數量不會同時被撮合與取消，並持久化處理結果；Wallet 冪等套用資產異動；Order 在前置狀態完成後重試 |
 | 局部指標正常，但完整流程尚未完成 | 三服務 trade-ID 一致、資產核對及 queue／retry debt 清空 |
 
 CDA 交易只有在 MatchEngine 已寫入成交、Order 已套用成交、Wallet 已完成結算、三服務持久化 trade-ID 集合一致、資產正確，而且量測範圍內的 queue 與 retry debt 都清空後，才算完整業務完成。
@@ -98,6 +101,9 @@ flowchart TD
 
 效能資料用來驗證架構，不是首頁的主體。EAP 分開記錄 HTTP 接受速率、元件隔離吞吐量、同窗完成交易、完整流程吞吐量、短時間診斷與長時間測試；每個數字都必須附帶工作負載邊界與正確性結果。
 
+目前權威文件、壓測證據、生成產物與歷史封存的邊界，請先看
+[文件地圖](docs/README.md)。
+
 - [效能報告](docs/performance-report.md)：目前宣稱、定義、限制與瓶頸歷程。
 - [壓測分類](docs/benchmarks/load-test-taxonomy.md)：各種工作負載能證明及不能證明的內容。
 - [最新 canonical mixed 短窗邊界](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)：目前 CDA 短窗轉折區與限制。
@@ -109,6 +115,7 @@ flowchart TD
 - [外部 open-loop driver](docs/benchmarks/2026-08-19-external-open-loop-driver.md)：低成本固定速率送流量、lifecycle 交接、正確性關卡，以及尚未解決的主機隔離邊界。
 - [排程隔離診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)：較早的採用修正與被拒絕高流量證據。
 - [Wallet 穩健性報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)：交易安全、混合流量、長時間及故障證據。
+- [取消責任與回歸報告](docs/benchmarks/2026-08-24-cancellation-ownership-and-regression.md)：說明 Wallet 為何不投影每張訂單，以及競態、亂序與正常流程回歸證據。
 
 ## 本機執行
 
@@ -129,11 +136,13 @@ Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測�
 
 ## 建議閱讀順序
 
-1. [架構文件](docs/architecture.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
-2. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
-3. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
-4. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
-5. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
-6. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
+1. [面試快速入口](docs/interview-guide.zh-TW.md)：五分鐘掌握功能、架構、一致性、效能、優缺點與可展開故事。
+2. [架構文件](docs/architecture.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
+3. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
+4. [研討會主管 1-on-1 快速說明](docs/talks/hello-world-dev-conference-2026-manager-brief.zh-TW.md)：一分鐘開場、中文故事與回饋問題。
+5. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
+6. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
+7. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
+8. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
 
 `docs/archive/performance/` 下的凍結實驗歷史會保留供追溯，但不屬於一般讀者的專案介紹路徑。

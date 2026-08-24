@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 2,
+  "evidenceClass": "current-worktree-sustained-regression",
+  "capacityClaimAllowed": false,
+  "capacityInvalidReasons": [
+    "diagnostic_evidence_mode",
+    "source_repository_dirty_or_missing"
+  ],
+  "testSuites": {
+    "common": {"tests": 5, "environmentGatedSkipped": 0, "failures": 0},
+    "order": {"tests": 133, "environmentGatedSkipped": 33, "failures": 0},
+    "wallet": {"tests": 65, "environmentGatedSkipped": 12, "failures": 0},
+    "matchEngine": {"tests": 126, "environmentGatedSkipped": 12, "failures": 0}
+  },
+  "cancellationLifecycle": {
+    "runId": "CANCELLATION_LIFECYCLE_20260824_FINAL_R9",
+    "capacityEvidence": false,
+    "scenarios": [
+      "OPEN_ORDER_CANCEL",
+      "PARTIAL_REMAINDER_CANCEL",
+      "MATCH_CANCEL_RACE"
+    ],
+    "raceIterations": 10,
+    "raceCancellationWins": 10,
+    "raceMatchingWins": 0,
+    "raceCleanupCancellations": 10,
+    "raceMutualExclusionValid": true,
+    "orderCancellationInboxApplied": 22,
+    "walletCancellationApplications": 22,
+    "threeServiceTradeIdsEqual": true,
+    "orderOutboxDebt": 0,
+    "walletOutboxDebt": 0,
+    "matchOutboxDebt": 0,
+    "finalQueueBacklog": 0,
+    "queueMetricsReadFailures": 0,
+    "valid": true
+  },
+  "sustainedNormalMixedHttpRegression": {
+    "runId": "CANCELLATION_EVENT_ONLY_648_15M_20260824_R2",
+    "benchmarkContract": "http-matched-steady-state-chain",
+    "arrivalPattern": "shuffled",
+    "workloadSeed": 20260899,
+    "warmupSeconds": 60,
+    "measurementSeconds": 900,
+    "targetTotalOrderTps": 648,
+    "httpDriverMode": "legacy-sync",
+    "httpAccepted": 622080,
+    "httpFailures": 0,
+    "http429": 0,
+    "http503": 0,
+    "unscheduledOrders": 0,
+    "totalHttpAcceptedTps": 647.99,
+    "steadyAcceptedOrderTps": 648.00,
+    "steadyCompletedTradeTps": 323.87,
+    "fullConvergenceTradeTps": 322.44,
+    "steadyCompletionToAcceptedRatio": 0.9996,
+    "httpLatencyUpperBoundMs": {"p50": 1, "p95": 20, "p99": 50},
+    "expectedTrades": 311040,
+    "matchTrades": 311040,
+    "orderTrades": 311040,
+    "walletTrades": 311040,
+    "threeServiceTradeIdsEqual": true,
+    "tradeIdFingerprint": "35bab0ef2614fc4bbfc135b031cd2d30d0a6e4f801928e933421e591ca6c449e",
+    "steadyBacklogStart": 42,
+    "steadyBacklogEnd": 73,
+    "steadyMaxBacklog": 338,
+    "steadyBacklogSlopePerSecond": 0.0067,
+    "remainingBuyOrders": 0,
+    "remainingSellOrders": 0,
+    "activeMatchReservations": 0,
+    "finalLockedAssets": 0,
+    "finalQueueBacklog": 0,
+    "queueMetricsReadFailures": 0,
+    "fullConvergenceSeconds": 964.6491,
+    "businessContractValidForSustainedCapacity": true,
+    "validForCapacityEvidence": false
+  },
+  "diagnostics": {
+    "sampleIntervalSeconds": 5,
+    "sampleCount": 133,
+    "rabbitMqBacklogPeaks": {
+      "order.orderConfirmed.queue": 118,
+      "wallet.orderSubmitted.queue": 87,
+      "matchEngine.orderConfirmed.queue": 78,
+      "order.tradeExecuted.queue": 57,
+      "wallet.tradeExecuted.queue": 45
+    },
+    "rabbitMqMemoryAlarmSamples": 0,
+    "rabbitMqDiskAlarmSamples": 0,
+    "redisEvictedKeys": 0,
+    "hikariPendingPeak": {"order": 0, "wallet": 9, "matchEngine": 0},
+    "hikariPendingFinal": {"order": 0, "wallet": 0, "matchEngine": 0},
+    "systemCpuAverage": {
+      "order": 0.702427,
+      "wallet": 0.705943,
+      "matchEngine": 0.660210
+    },
+    "stageLagMs": {
+      "matchToOrder": {"p50": 90.502, "p95": 162.977, "p99": 222.152, "max": 1257.300},
+      "matchToWallet": {"p50": 61.954, "p95": 132.398, "p99": 190.093, "max": 1214.360},
+      "matchToDurableConvergence": {"p50": 90.530, "p95": 163.327, "p99": 224.437, "max": 1257.300}
+    }
+  },
+  "source": {
+    "stableDuringRun": true,
+    "fingerprintsStable": true,
+    "clean": false,
+    "infraCommit": "885ebab77ce63bc5fab74b5cbdf3f4ff074a34a6",
+    "commonCommit": "628893ab3226c3c737aee401f189b47e97c5dd00",
+    "orderCommit": "c90de1998e0b3fd8a716d97c4377a8f5a51b7244",
+    "walletCommit": "e538362030d97c54085a96e8f4f572ef923418c5",
+    "matchEngineCommit": "113d7a49e5e4e7cea9c67fa87241f5e7ea96922b"
+  },
+  "host": {
+    "os": "Darwin 26.5.1",
+    "architecture": "arm64",
+    "logicalCpus": 10,
+    "physicalMemoryBytes": 17179869184,
+    "serviceLaunchMode": "jar",
+    "java": "openjdk 21.0.10"
+  }
+}

@@ -2,6 +2,22 @@
 
 This report is the canonical current EAP capacity summary. The append-only experiment history is frozen in [archive/performance/2026-06-global-loadtest-2000-tps.md](archive/performance/2026-06-global-loadtest-2000-tps.md).
 
+The CDA cancellation redesign keeps per-order state in MatchEngine and adds only a
+cancellation-application idempotency row when Wallet actually releases assets. Normal
+Wallet order reservation and trade settlement do not maintain a cancellation projection.
+Cancellation adds one intent check to the existing Redis admission Lua, but normal
+`OrderConfirmed` processing does not query the PostgreSQL cancellation table. Focused PostgreSQL/Redis tests and the three-service HTTP
+cancellation lifecycle cover deterministic open/partial-fill cases plus a bounded
+match/cancel race, but these are correctness evidence rather than capacity
+evidence. A final `60s + 900s` shuffled mixed-HTTP diagnostic passed at
+`648.00 steady accepted orders/s`, `323.87 steady completed trades/s`, and `322.44`
+full-lifecycle trades/s, with exact final convergence across `311040` trades.
+Because the source was dirty and the run intentionally used diagnostic evidence
+mode, no comparable release-pinned capacity run has been executed for this worktree.
+The release-pinned `648 orders/s` boundary remains evidence for the exact commits
+recorded in its artifacts; it must not be presented as a measured capacity result for
+the post-redesign revision until a new commit-pinned benchmark passes the same gates.
+
 ## Throughput Definitions
 
 EAP reports multiple throughput numbers because they answer different questions.
@@ -813,6 +829,38 @@ capacity-invalid reason and still producing the final JSON artifact.
 
 The complete evidence record is
 [docs/benchmarks/2026-08-05-wallet-settlement-robustness.md](benchmarks/2026-08-05-wallet-settlement-robustness.md).
+
+### Cancellation Ownership Regression - 2026-08-24
+
+The cancellation path was simplified after an ownership review. Wallet no longer
+maintains a mutable per-order reservation projection across normal submission and
+trade events. MatchEngine publishes the exact unmatched quantity that won atomic
+cancellation arbitration; Wallet records only the successful cancellation application
+needed for idempotency and releases that asset delta in an explicit transaction.
+
+Focused Wallet PostgreSQL tests passed cancellation before and after settlement,
+duplicate and conflicting identities, concurrent delivery, insufficient assets, and
+multiple partial settlements. The final three-service HTTP cancellation lifecycle
+`CANCELLATION_LIFECYCLE_20260824_FINAL_R9` passed open-order, partial-remainder, and
+10 match/cancel race scenarios, with 22 Order inbox applications, 22 Wallet
+cancellation applications, equal trade IDs, and zero final outbox, queue, DLQ, or
+Match-reservation debt.
+
+A separate sustained normal shuffled mixed-HTTP regression
+`CANCELLATION_EVENT_ONLY_648_15M_20260824_R2` used seed `20260899`, a `60s` warm-up,
+a `900s` measurement, and target `648 orders/s`. It accepted all `622080` orders at
+`648.00 steady orders/s`, completed `323.87 trades/s` in the steady window, and fully
+converged `311040` identical three-service trades at `322.44 trades/s`. HTTP
+p50/p95/p99 upper bounds were `1/20/50 ms`. Maximum steady backlog was `338`, backlog
+slope was `+0.0067/s`, and final debt, locked assets, and Hikari pending connections
+were zero. RabbitMQ had no resource alarms and Redis evicted no keys. Wallet Hikari
+pending briefly peaked at `9`, but did not create growing backlog or failed requests.
+
+This is a dirty-worktree, full-duration diagnostic. It proves a focused correctness
+and sustained normal-flow regression gate for the new ownership boundary; it does
+not quantify a TPS gain from removing the projection, establish cancellation-heavy
+capacity, or replace the two-seed release-pinned 15-minute 648 boundary. See the
+[cancellation ownership report](benchmarks/2026-08-24-cancellation-ownership-and-regression.md).
 
 Fresh 30-second deep diagnostics on the corrected Wallet transaction boundary
 passed at both 800 and 900 total orders/s. Two 900 seeds accepted `899.50-899.85`

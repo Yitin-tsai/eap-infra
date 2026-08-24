@@ -128,7 +128,14 @@ bash scripts/load-test/run-matched-trade-completion-10k.sh
 
 Deep 會在同機產生 observer effect。deep 結果可以定位瓶頸，但不能直接取代低觀測容量結果。
 
-壓測輸出位於 `build/load-test-reports/`。正式宣稱必須同時記錄 run ID、參數、各 repository 版本、正確性關卡與工作負載邊界。詳見 [壓測分類](docs/benchmarks/load-test-taxonomy.md) 與 [效能報告](docs/performance-report.md)。
+壓測 runner 的原始輸出位於 `build/load-test-reports/`。`build/` 是可重建、
+Git ignored 的本機工作區，不是 BMAD 文件目錄，也不能成為正式宣稱的唯一
+證據來源。需要保留的最小結果、samples、診斷與 provenance 應審查後提升到
+`docs/benchmarks/results/YYYY-MM-DD-topic/`，再由 dated campaign report 說明
+決策與限制；只有符合資格的結果才更新 canonical
+[效能報告](docs/performance-report.md)。完整規則見[文件地圖](docs/README.md)、
+[benchmark evidence guide](docs/benchmarks/README.md) 與
+[壓測分類](docs/benchmarks/load-test-taxonomy.md)。
 
 ## 清理與故障排除
 
@@ -141,4 +148,7 @@ lsof -nP -iTCP:8081 -sTCP:LISTEN
 lsof -nP -iTCP:8082 -sTCP:LISTEN
 ```
 
-`make dev-clean` 會要求確認並刪除日常開發 volume。壓測資料清理由 runner 負責；不要手動刪除歷史報告或 frozen archive。
+`make dev-clean` 會要求確認並刪除日常開發 volume。Runner 產生的
+`build/load-test-reports/` 可以依空間需求清理；已提升到
+`docs/benchmarks/results/` 的證據與 `docs/archive/` 的 frozen history 不得當成
+暫存輸出刪除。

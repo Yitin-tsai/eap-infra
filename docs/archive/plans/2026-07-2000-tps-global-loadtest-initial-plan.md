@@ -1,4 +1,10 @@
-# Feature: Challenge 2000 TPS Global Load Test
+# Archived Initial Plan: Challenge 2000 TPS Global Load Test
+
+> Status: superseded. This July 2026 planning artifact predates the implemented
+> benchmark contracts and current evidence gates. Use the
+> [load-test taxonomy](../../benchmarks/load-test-taxonomy.md),
+> [performance report](../../performance-report.md), and dated reports under
+> `docs/benchmarks/` for current behavior and claims.
 
 ## Goal
 

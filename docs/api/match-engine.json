@@ -96,36 +96,6 @@
                     }
                 }
             }
-        },
-        "/v1/order/cancel": {
-            "delete": {
-                "tags": [
-                    "order-controller"
-                ],
-                "operationId": "cancelOrder",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/OrderCancelEvent"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "content": {
-                            "*/*": {
-                                "schema": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     },
     "components": {
@@ -206,15 +176,6 @@
                     "spread": {
                         "type": "integer",
                         "format": "int32"
-                    }
-                }
-            },
-            "OrderCancelEvent": {
-                "type": "object",
-                "properties": {
-                    "orderId": {
-                        "type": "string",
-                        "format": "uuid"
                     }
                 }
             }

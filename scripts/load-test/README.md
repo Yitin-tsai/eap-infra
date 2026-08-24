@@ -13,6 +13,7 @@ results.
 | Can a lower-cost or remote open-loop driver reproduce it? | `run-http-matched-external-open-loop.sh` | Same business gates; driver-placement diagnostic until promoted |
 | Where is the first unsustainable rate? | `run-http-matched-staircase.sh` | Full-chain knee search, not a soak guarantee |
 | What is the sequential full-HTTP upper bound? | `run-http-matched-trade-completion-10k.sh` | SELL then BUY; not mixed-flow capacity |
+| Does cancellation converge across all three services? | `run-http-cancellation-lifecycle.sh` | Open, partial-fill, and bounded match/cancel race correctness; not capacity evidence |
 | Is the Order-to-orderbook front half the bottleneck? | `run-order-admission-chain-10k.sh` | No trade execution or settlement |
 | Is the seeded Match-to-settlement back half the bottleneck? | `run-matched-trade-completion-10k.sh` | No Order HTTP or initial Wallet reservation |
 
@@ -41,6 +42,19 @@ eligible for a public capacity claim only when this provenance gate also passes 
 the run includes at least 60 seconds of warm-up plus 15 minutes of measurement.
 Short release-pinned smoke tests validate the harness but remain ineligible for a
 capacity claim.
+
+## Artifact Lifecycle
+
+Runners write raw logs, result JSON, samples, and diagnostics to
+`build/load-test-reports/`. This is disposable local output and is ignored by Git.
+It is useful for investigation and reruns, but a committed report must not depend on
+that directory remaining on one machine.
+
+After review, promote only the evidence needed for the decision into
+`docs/benchmarks/results/YYYY-MM-DD-topic/`, write or update the dated campaign report
+under `docs/benchmarks/`, and update `docs/performance-report.md` only when the
+evidence class permits the claim. See the
+[benchmark evidence guide](../../docs/benchmarks/README.md).
 
 ## Focused Probes
 

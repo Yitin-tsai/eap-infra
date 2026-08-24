@@ -165,6 +165,13 @@ EAP 不先看 TPS 數字，而先說明測量的是哪一條邊界。
 - 有效資產保留、訂單簿與應歸零的鎖定資產已收斂。
 - 壓測產物保存版本、參數、時間窗、錯誤與限制。
 
+Runner 先把完整原始產物寫入 Git ignored 的 `build/load-test-reports/`。人工
+審查後，只把支持決策所需的最小、可攜式證據提升到
+`docs/benchmarks/results/YYYY-MM-DD-topic/`；dated campaign report 記錄採用、
+拒絕或無法判定，只有符合 evidence-mode 與 provenance 關卡的結果才更新
+`docs/performance-report.md`。目錄與提升規則見[文件地圖](README.md)與
+[benchmark evidence guide](benchmarks/README.md)。
+
 投影是可重建的讀取模型，因此投影延遲可以是監測指標，但不能阻擋命令端的業務完成；反之，也不能因投影最後追上，就忽略命令路徑在測量期間累積的持久化積壓。
 
 ## 容量關卡與停止條件
@@ -276,6 +283,16 @@ Wallet 實驗移除事件監聽器外層的明確資料庫交易。在 30K 隔�
 追查後確認，撮合訂單保留修復工作以跨程序時間戳推測對應交易，可能把已成交訂單誤判為孤兒並放回訂單簿。修正後，每個 Redis 撮合訂單保留狀態直接記錄預期的 `tradeId`，清理與修復必須核對相同識別碼才能修改。修正後的 52500 筆訂單全部收斂為三服務一致的 26250 筆交易，資產、訂單簿、撮合訂單保留、佇列與 DLQ 均歸零；600 與 700 階段通過，800 階段仍未達效能關卡。
 
 這個案例同時保留「採用」與「否決」：採用有完整證據支持的排程隔離，否決未通過最終一致性檢查的高 TPS 結果。後續向下重測以 2 個 workload seed 將 `600 accepted orders/s` 建立為 release-pinned 15 分鐘持續下界；約 700 accepted orders/s 則只保留為短時間下界，不混成同一個容量宣稱。證據見 [2026-08-07 現行混合流量診斷](benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[2026-08-11 release-pinned 700 重測](benchmarks/2026-08-11-release-pinned-700-and-recovery-ownership.md)與 [2026-08-13 release-pinned 600 長測](benchmarks/2026-08-13-release-pinned-600-sustained.md)。
+
+## 近期案例四：人工質疑後移除 Wallet 訂單投影
+
+取消訂單功能的設計審查一度在 Wallet 維護每張訂單的資產保留狀態，目的是讓 Wallet 自行計算取消時應釋放的數量。人工負責人重新質疑這個前提：訂單接受後不能修改數量，MatchEngine 已在 Redis 原子邊界決定撮合或取消，並能在取消事實中提供精確的未成交餘量；Wallet 擁有的是資產，不是訂單生命週期。
+
+工作流因此回到服務責任與不變條件重新審查，而不是把已寫出的保守方案直接視為較安全。最後移除正常下單與成交路徑上的 Wallet 訂單投影，只在真正取消成功時保存一次性的取消套用紀錄。成交消耗已成交數量，取消釋放剩餘數量，兩者是互斥數量上的可交換資產異動，所以亂序抵達仍可收斂。
+
+採用前，品質驗證補上取消先於成交、成交先於取消、重複與衝突事件、多次部分成交及 match/cancel 競態。跨三服務 HTTP 生命週期的 open、partial 與 10 次 race 情境全部通過，接著以 `648 orders/s` 執行 `60s + 900s` 隨機混合 HTTP 長窗回歸；`622080` 筆訂單收斂為三服務一致的 `311040` 筆交易，steady completion 為 `323.87 trades/s`、完整流程為 `322.44 trades/s`，所有最終債務歸零。
+
+這輪來源仍有未提交修改且使用 diagnostic evidence mode，因此只證明目前工作樹通過完整長窗回歸，不能宣稱移除投影帶來 TPS 提升，也不取代既有 release-pinned 容量邊界。這個案例呈現 AI 輔助審查的另一個價值：人工可以推翻看似保守的設計，AI 再協助重建反例、測試與證據，而不是讓既有實作替自己辯護。完整紀錄見[取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
 
 ## 一致性、效能、監測與決策
 
