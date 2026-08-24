@@ -139,7 +139,7 @@ Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測�
 1. [面試快速入口](docs/interview-guide.zh-TW.md)：五分鐘掌握功能、架構、一致性、效能、優缺點與可展開故事。
 2. [架構文件](docs/architecture.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
 3. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
-4. [研討會主管 1-on-1 快速說明](docs/talks/hello-world-dev-conference-2026-manager-brief.zh-TW.md)：一分鐘開場、中文故事與回饋問題。
+4. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
 5. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
 6. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
 7. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。

@@ -1,6 +1,6 @@
 # EAP AI 工程工作流實踐
 
-> 明天要和主管快速對焦時，先看[主管 1-on-1 快速說明](hello-world-dev-conference-2026-manager-brief.zh-TW.md)；本文件保留完整案例、證據與 30 分鐘結構。
+> 要快速掌握口頭版本時，先看[研討會快速說明](hello-world-dev-conference-2026-brief.zh-TW.md)；本文件保留完整案例、證據與 30 分鐘結構。
 
 Hello World Dev Conference 2026 講題：**用 AI 工作流重整事件驅動交易系統的一致性、效能與監測**
 

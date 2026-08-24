@@ -49,4 +49,4 @@ See the [benchmark evidence guide](benchmarks/README.md) for the promotion check
 
 For an upcoming conversation rather than a deep document review, start with the
 [Traditional Chinese interview guide](interview-guide.zh-TW.md) or the
-[Hello World Dev manager brief](talks/hello-world-dev-conference-2026-manager-brief.zh-TW.md).
+[Hello World Dev brief](talks/hello-world-dev-conference-2026-brief.zh-TW.md).
