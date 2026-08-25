@@ -279,3 +279,5 @@ jq -s \
 echo
 echo "[INFO] repeat summary json=${SUMMARY_JSON}"
 jq '{validity, metrics}' "${SUMMARY_JSON}"
+bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" "${SUMMARY_JSON}" >/dev/null
+echo "[INFO] readable report=${SUMMARY_JSON%.json}-report.md"

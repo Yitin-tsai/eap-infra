@@ -341,6 +341,8 @@ fi
 
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
+  bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" "${RUN_REPORT_JSON}" >/dev/null
+  echo "[INFO] readable report=${RUN_REPORT_JSON%.json}-report.md"
   if [[ -d "${RUN_DIAG_DIR}" ]]; then
     if summary_file="$(bash "${ROOT_DIR}/scripts/load-test/summarize-write-costs.sh" "${RUN_DIAG_DIR}" "${RUN_REPORT_JSON}")"; then
       echo "[INFO] persisted write-cost summary=${summary_file}"

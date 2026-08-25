@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "runId": "K6_MODULAR_SMOKE_100_20260825_R5",
+  "benchmarkContract": "external-http-matched-steady-state-chain",
+  "httpDriverMode": "external-k6",
+  "evidenceMode": "diagnostic",
+  "workloadSeed": 20260804,
+  "warmupSeconds": 2,
+  "measurementSeconds": 10,
+  "targetTotalOrderTps": 100,
+  "k6Version": "2.2.0",
+  "preAllocatedVUs": 100,
+  "expectedHttpOrders": 1200,
+  "scheduledHttpOrders": 1200,
+  "acceptedHttpOrders": 1200,
+  "unscheduledOrders": 0,
+  "droppedIterations": 0,
+  "outOfRangeIterations": 0,
+  "httpSuccessRatio": 1.0,
+  "k6LatencyMs": {
+    "median": 2.2935,
+    "p90": 4.915,
+    "p95": 6.8903,
+    "p99": 22.69901,
+    "max": 103.325
+  },
+  "steadyAcceptedOrderTps": 99.96,
+  "steadyCompletedTradeTps": 49.81,
+  "steadyCompletionTargetRatio": 0.9962,
+  "steadyMaximumBacklog": 16,
+  "steadyBacklogSlopePerSecond": 1.0193,
+  "fullConvergenceSeconds": 14.328,
+  "fullConvergenceTradeTps": 41.88,
+  "tradeCounts": {
+    "matchEngine": 600,
+    "order": 600,
+    "wallet": 600
+  },
+  "tradeIdsEqual": true,
+  "tradeIdFingerprint": "7788fe53b58e33ced53094498c12064b44dfc8b9fcf0d26aa9904eb4d61a1364",
+  "assetReconciliationPassed": true,
+  "remainingBuyOrders": 0,
+  "remainingSellOrders": 0,
+  "activeMatchReservations": 0,
+  "finalQueueBacklog": 0,
+  "finalDlqBacklog": 0,
+  "driverExitStatus": 0,
+  "driverProcessSeconds": {
+    "real": 12.37,
+    "user": 0.50,
+    "sys": 0.23
+  },
+  "validForSustainedCapacity": true,
+  "capacityClaimAllowed": false,
+  "capacityEvidenceInvalidReasons": [
+    "diagnostic_evidence_mode",
+    "insufficient_measurement_window",
+    "insufficient_warmup_window",
+    "source_repository_dirty_or_missing"
+  ],
+  "decision": "accepted_harness_smoke_not_capacity_evidence"
+}

@@ -17,7 +17,7 @@ All contracts below exercise the CDA order/trade path. TDA uses separate auction
 | `http-matched-trade-completion-chain` | implemented | `scripts/load-test/run-http-matched-trade-completion-10k.sh` | HTTP SELL admission followed by HTTP BUY matching, Match/Order/Wallet durable trade-ID equality, asset settlement, MatchEngine reservation cleanup, and final queue drain | isolated component ceilings; simultaneous mixed-side arrival patterns |
 | `http-matched-steady-state-chain` | implemented | `scripts/load-test/run-http-matched-steady-state.sh` | sustained balanced, seeded, mixed-side HTTP traffic; steady accepted-order and completed-trade rates; queue backlog level/slope; three-service durable convergence; asset settlement; and final drain | side-imbalanced, cancellation-heavy, or multi-price market behavior; multi-node failover |
 | `http-cancellation-lifecycle` | implemented | `scripts/load-test/run-http-cancellation-lifecycle.sh` | deterministic HTTP cancellation through real RabbitMQ; open-order cancellation; partial-fill remainder cancellation; Match decision, Redis visibility, Order state, Wallet cancellation application/assets, trade-ID equality, outbox debt, queue/DLQ drain | cancellation throughput, broad randomized races, multi-node failover |
-| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite Vegeta open-loop schedule with workload preparation outside the traffic window | automatic CPU or host isolation; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
+| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite checksummed open-loop schedule; k6 is the default local driver and Vegeta remains available for historical controls | automatic CPU or host isolation; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
 | `http-matched-staircase-chain` | implemented | `scripts/load-test/run-http-matched-staircase.sh` | one uninterrupted balanced, seeded, mixed-side HTTP run with progressively higher total order rates, per-stage throughput/latency/backlog gates, automatic knee detection, and final full-chain convergence | a long-duration guarantee at the provisional knee; side-imbalanced flow; multi-host load generation |
 | `reservation-cleanup-isolated` | implemented diagnostic | `scripts/load-test/run-reservation-cleanup-ab.sh` | MatchEngine cleanup task claim, Redis reservation removal, completion update, and batch-size A/B using only Match PostgreSQL and Redis | HTTP admission, RabbitMQ scheduling, trade persistence, Order application, Wallet settlement, or full-chain capacity |
 | `match-processor-combined-isolated` | implemented diagnostic | `scripts/load-test/run-match-processor-probe.sh` | shuffled mixed OrderConfirmed processing through the idempotency guard, Redis Lua matching, transactionally persisted trade/outbox/cleanup facts, and a separately timed cleanup drain using only Match PostgreSQL and Redis | RabbitMQ listener delivery/acknowledgement, concurrent cleanup contention, Order, Wallet, HTTP, or full-chain capacity |
@@ -42,8 +42,8 @@ capacity evidence with `BENCHMARK_EVIDENCE_MODE`:
 
 Every persisted full HTTP result includes a `benchmarkProvenance` object with full
 repository commits, branch and dirty state, host OS/architecture/CPU/memory,
-Java/Docker/Vegeta versions, load-generator placement, service launch mode,
-diagnostics level, runner/library/Compose SHA-256 fingerprints, and the configured
+Java/Docker/k6/Vegeta versions, load-generator placement, service launch mode,
+diagnostics level, runner/library/complete-k6-bundle/Compose SHA-256 fingerprints, and the configured
 plus resolved infrastructure container image IDs. It contains no JDBC, RabbitMQ,
 SSH, or service credentials.
 
@@ -142,18 +142,28 @@ synchronous stage driver because its uninterrupted per-stage preparation
 boundary has not yet been redesigned or validated.
 
 The external open-loop driver separates the lifecycle into four explicit
-steps. Java first resets/setup state and writes a finite, checksummed Vegeta
-target file plus a secret-free manifest. A low-frequency Java monitor then
-samples durable Match/Order/Wallet completion and RabbitMQ backlog while
-Vegeta drives fixed-rate HTTP arrivals without waiting for a bounded response
-permit. Finally, Java reads the Vegeta results and manifest, reconstructs the
-steady window, and applies the existing trade-ID, asset, order-book,
-reservation, queue, and DLQ gates.
+steps. Java first resets/setup state and writes a finite, checksummed target
+file plus a secret-free manifest. A low-frequency Java monitor then samples
+durable Match/Order/Wallet completion and RabbitMQ backlog while the selected
+driver sends fixed-rate HTTP arrivals without waiting for a bounded response
+permit. Finally, Java reads the request-level results and manifest,
+reconstructs the steady window, and applies the existing trade-ID, asset,
+order-book, reservation, queue, and DLQ gates.
 
-The finite attack includes one second of EOF grace. Its JSON stream removes
-only Vegeta's synthetic `no targets to attack` sentinel; the verifier still
-requires one real result for every checksummed target. This avoids
-rate-limiter rounding dropping final targets at higher rates.
+k6 is the default local driver and uses `constant-arrival-rate` with a fixed
+`K6_PRE_ALLOCATED_VUS` budget. Its schedule is one millisecond shorter than the
+nominal whole-second boundary so a finite target set maps to exactly
+`TARGET_ORDER_TPS * total seconds` iterations. Any dropped iteration, missing
+request result, or HTTP failure invalidates the run. Vegeta remains selectable
+with `HTTP_LOAD_DRIVER=vegeta`; its finite attack retains one second of EOF
+grace and filters only its synthetic `no targets to attack` sentinel.
+
+The k6 implementation separates environment/scenario configuration, prepared-target
+materialization, and summary rendering into reusable modules. Driver checks and
+thresholds require an exact request count, no out-of-range or dropped iterations, no HTTP failures,
+and 100% accepted-status checks. An optional p95 gate is enabled only when
+`K6_MAX_P95_MS` is explicitly set. The runner writes both a driver-only Markdown
+summary and the final EAP report; only the latter contains the durable business gates.
 
 The command is:
 
@@ -165,12 +175,15 @@ DIAGNOSTICS_LEVEL=none \
 bash scripts/load-test/run-http-matched-external-open-loop.sh
 ```
 
-`VEGETA_CPUS`, `VEGETA_WORKERS`, and `VEGETA_MAX_WORKERS` bound the driver.
+`K6_PRE_ALLOCATED_VUS` bounds the default k6 driver. It must be calibrated
+against response latency without hiding load-generator CPU or memory pressure.
+For Vegeta controls, `VEGETA_CPUS`, `VEGETA_WORKERS`, and
+`VEGETA_MAX_WORKERS` retain their historical meanings.
 `SAMPLE_INTERVAL_SECONDS` controls the business monitor and must remain equal
 across an A/B. The result records `LOAD_GENERATOR_PLACEMENT`; its default
 `co-located` means the process still competes for the same laptop.
 
-`remote-host` is an implemented placement, not a result label. The local
+`remote-host` is currently a Vegeta-only implemented placement, not a result label. The local
 orchestrator checksums the prepared targets, copies only the secret-free target
 file and helper over SSH, verifies the remote host can reach Order health, checks
 clock skew, executes Vegeta remotely, and copies back a compressed result stream,
@@ -178,6 +191,7 @@ report, timing, and host preflight metadata. The Java monitor and final verifier
 remain on the orchestrator host. A typical separated-driver run is:
 
 ```bash
+HTTP_LOAD_DRIVER=vegeta \
 LOAD_GENERATOR_PLACEMENT=remote-host \
 REMOTE_DRIVER_SSH_TARGET=loadtest@192.0.2.20 \
 ORDER_URL=http://192.0.2.10:8080/eap-order \
@@ -211,6 +225,22 @@ diagnostic driver; it does not rewrite historical results or prove host
 isolation. See the
 [external open-loop report](2026-08-19-external-open-loop-driver.md) and the
 [unattended validation](2026-08-20-vegeta-unattended-validation.md).
+
+The first accepted k6 harness smoke sent exactly `1200` requests at `100
+orders/s` with zero dropped iterations and 100% HTTP success. All `600` trades
+converged across MatchEngine, Order, and Wallet, and final business debt was
+zero. This validates driver integration only; no k6/Vegeta equivalence or
+capacity claim exists yet. See the
+[k6 driver smoke report](2026-08-25-k6-open-loop-driver.md).
+
+The first full `60s + 900s` k6 attempt at 648 used 648 VUs and executed
+`610517/622080` requests with `11563` dropped iterations. All delivered traffic
+converged correctly, but the exact offered-load gate rejected the run. Same-host
+2048／4096 VU calibrations also dropped iterations; 4096 VUs introduced request
+timeouts and monitor stalls. Do not interpret `K6_PRE_ALLOCATED_VUS` as a free
+capacity knob. The next long k6 capacity experiment requires a remote driver or
+equivalent resource isolation. See the
+[full k6 lifecycle report](2026-08-25-k6-full-lifecycle-648.md).
 
 Current full HTTP capacity runners use one canonical runtime configuration: each service owns its settings in `application-loadtest.yml`, and normal recovery behavior remains enabled. The public runners do not switch listener concurrency, pools, outbox batching, projections, reservation recovery, or rate limiting. Historical reports retain `core-capacity` and `production-equivalent` labels only to describe the revisions that produced those artifacts; those profiles are no longer selectable and are not current capacity contracts.
 

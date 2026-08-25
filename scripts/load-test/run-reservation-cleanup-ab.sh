@@ -87,3 +87,10 @@ jq -s '[.[] | {
 }]' \
   "${REPORT_DIR}/reservation-cleanup-${RUN_ID}-baseline.json" \
   "${REPORT_DIR}/reservation-cleanup-${RUN_ID}-candidate.json"
+
+for result in \
+  "${REPORT_DIR}/reservation-cleanup-${RUN_ID}-baseline.json" \
+  "${REPORT_DIR}/reservation-cleanup-${RUN_ID}-candidate.json"; do
+  bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" "${result}" >/dev/null
+  echo "[INFO] readable report=${result%.json}-report.md"
+done

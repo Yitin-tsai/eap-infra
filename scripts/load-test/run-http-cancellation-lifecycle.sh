@@ -80,4 +80,5 @@ if ! http_matched_extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSO
   exit 2
 fi
 echo "[INFO] cancellation lifecycle result=${RUN_REPORT_JSON}"
+http_matched_render_report "${RUN_REPORT_JSON}" || true
 exit "${run_status}"

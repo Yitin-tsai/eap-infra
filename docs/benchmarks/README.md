@@ -21,6 +21,16 @@ the report; it does not replace the explanation of workload boundaries, failures
 the adoption decision. `performance-report.md` is the only canonical summary of
 current capacity claims.
 
+Local workload runners also generate `*-report.md` next to their source JSON. This
+report is a disposable reading aid with a normalized decision, workload boundary,
+throughput, latency/backlog, correctness gates, and evidence-invalid reasons. It does
+not replace the JSON and is not promoted automatically.
+
+k6-backed HTTP runs additionally generate a driver-only `*-k6-report.md` and raw
+`*-k6-summary.json`. These prove offered-load execution, checks, thresholds, drops,
+and HTTP latency only. Use the final EAP report for durable cross-service correctness
+and capacity eligibility.
+
 ## Promotion Checklist
 
 Promote a local run from `build/load-test-reports/` only when all applicable items are

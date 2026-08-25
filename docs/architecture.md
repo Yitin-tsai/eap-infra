@@ -1,3 +1,5 @@
+**English** | **[繁體中文](architecture.zh-TW.md)**
+
 # EAP Architecture
 
 EAP is an event-driven electricity market backend with Continuous Double Auction (CDA) and Timed Double Auction (TDA) paths. Its architecture is intentionally organized around transaction ownership, event reliability, and measurable completion semantics rather than service count.
@@ -44,17 +46,14 @@ Operational verification
 ```
 
 ```mermaid
-flowchart LR
-    Client[Client / Load Generator] --> Order[Order Service]
-    Order -->|OrderSubmittedEvent| Wallet[Wallet Service]
-    Wallet -->|OrderConfirmedEvent| Order
-    Wallet -->|OrderConfirmedEvent| Match[MatchEngine]
-    Match -->|TradeExecuted| Order
-    Match -->|TradeExecuted| Wallet
-    Match --> Redis[(Redis Order Book)]
-    Order --> OrderDb[(Order DB)]
-    Wallet --> WalletDb[(Wallet DB)]
-    Match --> MatchDb[(Match DB)]
+graph TD
+    client["Client / Load Generator"] -->|HTTP order| orderAccept["Order: append command fact and outbox"]
+    orderAccept -->|OrderSubmittedEvent| walletReserve["Wallet: reserve assets and write outbox"]
+    walletReserve -->|OrderConfirmedEvent| orderConfirm["Order: confirm asset reservation"]
+    walletReserve -->|OrderConfirmedEvent| match["MatchEngine: match and persist TradeExecuted"]
+    match -->|TradeExecuted| orderApply["Order: apply trade"]
+    match -->|TradeExecuted| walletSettle["Wallet: settle assets"]
+    match --> redis[("Redis Order Book")]
 ```
 
 This is the current business-completion and capacity-test path. All public completed-trade TPS values in this repository refer to this CDA flow unless a report explicitly defines another workload.
@@ -64,17 +63,25 @@ This is the current business-completion and capacity-test path. All public compl
 TDA accepts stepped bids during an auction session and clears them as a batch on a MatchEngine schedule:
 
 ```mermaid
-flowchart TD
-    MatchSchedule[MatchEngine auction scheduler] -->|AuctionCreatedEvent| Order[Order Service]
-    Client[Client] -->|auction bid HTTP| Order
-    Order -->|AuctionBidSubmittedEvent| Wallet[Wallet Service]
-    Wallet -->|AuctionBidConfirmedEvent via Wallet outbox| Match[MatchEngine]
-    Match --> AuctionBook[(Redis auction bid store)]
-    MatchSchedule -->|clear collected bids| Match
-    Match -->|AuctionClearedEvent| Order
-    Match -->|AuctionClearedEvent| Wallet
-    Order --> Result[auction status / result view]
-    Wallet --> Settlement[auction asset settlement]
+sequenceDiagram
+    participant schedule as MatchEngine scheduler
+    participant client as Client
+    participant order as Order Service
+    participant wallet as Wallet Service
+    participant match as MatchEngine
+    participant redis as Redis auction store
+
+    schedule->>order: AuctionCreatedEvent
+    client->>order: Submit auction bid over HTTP
+    order->>wallet: AuctionBidSubmittedEvent
+    wallet->>match: AuctionBidConfirmedEvent via outbox
+    match->>redis: Store confirmed bid
+    schedule->>match: Clear collected bids
+    match->>redis: Read collected bids
+    match->>order: AuctionClearedEvent
+    match->>wallet: AuctionClearedEvent
+    order->>order: Update auction result view
+    wallet->>wallet: Settle auction assets
 ```
 
 The implemented TDA path does not yet have the same evidence boundary as CDA. It is a functional market-mode implementation with the following current gaps:
@@ -132,7 +139,7 @@ sequenceDiagram
     R->>DB: mark row SENT
     MQ->>C: deliver event at least once
     C->>DB: idempotent local transaction
-    C-->>MQ: manual ACK after commit
+    C-->>MQ: acknowledge after successful commit
 ```
 
 If the relay crashes after publisher confirm but before marking `SENT`, the event can be published again. This is an expected failure mode. Downstream consumers must absorb duplicates through idempotency keys and unique constraints.
@@ -154,16 +161,16 @@ Order projection lag is reported separately. It is not part of the command-side 
 MatchEngine does not receive Order or Wallet completion callbacks. Each downstream service owns its durable result, retry state, idempotency, and failure handling. Full-flow verification compares the three service-owned durable tables outside the transaction path; it does not create another business state inside MatchEngine.
 
 ```mermaid
-flowchart TD
-    A[TradeExecuted persisted] --> B[Order applied trade]
-    A --> C[Wallet settled trade]
-    A --> D[Compare three durable trade-ID sets]
-    B --> D
-    C --> D
-    C --> E[Reconcile assets and reservations]
-    D --> F[Measured durable debt and queues drained]
-    E --> F
-    F --> G[Count as business-complete trade]
+graph TD
+    trade["TradeExecuted persisted"] --> orderApplied["Order applied trade"]
+    trade --> walletSettled["Wallet settled trade"]
+    trade --> compare["Compare three durable trade-ID sets"]
+    orderApplied --> compare
+    walletSettled --> compare
+    walletSettled --> assets["Reconcile assets and reservations"]
+    compare --> drained["Measured durable debt and queues drained"]
+    assets --> drained
+    drained --> complete["Count as business-complete trade"]
 ```
 
 ## Reliability Controls
@@ -172,7 +179,7 @@ flowchart TD
 | --- | --- |
 | DB commit succeeds but event publish fails | transactional outbox |
 | duplicate RabbitMQ delivery | unique constraints and idempotent consumers |
-| consumer crashes before ACK | manual ACK after local transaction |
+| consumer fails before acknowledgement | local transaction rollback or idempotent replay; explicit manual ACK is used only by listeners configured for it |
 | poison message blocks queue | DLX / DLQ and retry state |
 | projection falls behind | checkpointed projector and lag metrics |
 | downstream application is delayed | service-owned retry/inbox state, DLQ alerts, and external durable-fact reconciliation |
@@ -185,19 +192,19 @@ The current bottleneck is not one isolated service operation. Redis/Lua matching
 
 - `TradeExecuted` persistence and trade outbox relay.
 - Order trade application and event-store writes.
-- Wallet settlement and wallet outbox relay.
+- Wallet reservation/confirmation outbox and trade settlement.
 - Service-owned idempotency, retry, and reliability writes.
 
 The 2026-08-07 deep mixed HTTP diagnostic exposed an additional MatchEngine scheduling boundary. Spring reported one `taskScheduler` worker while reservation cleanup, trade outbox polling, reservation reconciliation, and auction jobs shared that scheduler. A cleanup invocation reached `9.380s`; Match-to-Order and Match-to-Wallet p95 lag rose together to about `7.38s`. MatchEngine now separates the trade-outbox scheduler from reservation maintenance and retains a default scheduler for other periodic work.
 
 ```mermaid
-flowchart TD
-    O[Trade outbox scheduler] --> P[Trade outbox polling]
-    R[Reservation maintenance scheduler] --> C[Reservation cleanup]
-    R --> RC[Reservation reconciliation]
-    D[Default scheduler] --> A[Other periodic schedules]
-    P --> E[Bounded publisher executor]
-    E --> MQ[RabbitMQ TradeExecuted]
+graph TD
+    outboxScheduler["Trade outbox scheduler"] --> outboxPolling["Trade outbox polling"]
+    reservationScheduler["Reservation maintenance scheduler"] --> cleanup["Reservation cleanup"]
+    reservationScheduler --> reconciliation["Reservation reconciliation"]
+    defaultScheduler["Default scheduler"] --> periodic["Other periodic schedules"]
+    outboxPolling --> publisher["Bounded publisher executor"]
+    publisher --> mq["RabbitMQ TradeExecuted"]
 ```
 
 The same-seed controlled A/B improved the 800-stage completion rate from `167.93` to `383.45 trades/s` and reduced maximum backlog from `4090` to `246`, with exact final convergence. Scheduler isolation is therefore current architecture. Later repeats did not make 800 a stable capacity point, so this is an adopted scheduling fix rather than a higher public capacity claim.

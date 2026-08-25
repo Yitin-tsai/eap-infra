@@ -47,10 +47,16 @@ LOADTEST_REDIS_CONTAINER="${LOADTEST_REDIS_CONTAINER:-eap-redis-loadtest}"
 LOADTEST_SERVICE_LAUNCH_MODE="${LOADTEST_SERVICE_LAUNCH_MODE:-boot-run}"
 LOADTEST_SERVICE_JAVA_BIN="${LOADTEST_SERVICE_JAVA_BIN:-java}"
 LOADTEST_DRIVER_JAVA_BIN="${LOADTEST_DRIVER_JAVA_BIN:-java}"
+HTTP_LOAD_DRIVER="${HTTP_LOAD_DRIVER:-k6}"
 VEGETA_CPUS="${VEGETA_CPUS:-2}"
 VEGETA_WORKERS="${VEGETA_WORKERS:-16}"
 VEGETA_MAX_WORKERS="${VEGETA_MAX_WORKERS:-4096}"
 VEGETA_TIMEOUT="${VEGETA_TIMEOUT:-10s}"
+K6_PRE_ALLOCATED_VUS="${K6_PRE_ALLOCATED_VUS:-$((TARGET_ORDER_TPS > 64 ? TARGET_ORDER_TPS : 64))}"
+K6_HTTP_TIMEOUT="${K6_HTTP_TIMEOUT:-10s}"
+K6_GRACEFUL_STOP="${K6_GRACEFUL_STOP:-15s}"
+K6_MAX_P95_MS="${K6_MAX_P95_MS:-}"
+K6_SCRIPT="${ROOT_DIR}/scripts/load-test/k6/http-matched-open-loop.js"
 LOAD_GENERATOR_PLACEMENT="${LOAD_GENERATOR_PLACEMENT:-co-located}"
 REMOTE_DRIVER_SSH_TARGET="${REMOTE_DRIVER_SSH_TARGET:-}"
 REMOTE_DRIVER_SSH_PORT="${REMOTE_DRIVER_SSH_PORT:-}"
@@ -75,6 +81,11 @@ RUN_VEGETA_JSONL="${RUN_PREFIX}-vegeta.jsonl"
 RUN_VEGETA_REPORT="${RUN_PREFIX}-vegeta-report.json"
 RUN_VEGETA_TIME="${RUN_PREFIX}-vegeta-time.txt"
 RUN_VEGETA_GZIP="${RUN_PREFIX}-vegeta.jsonl.gz"
+RUN_K6_JSONL="${RUN_PREFIX}-k6.jsonl"
+RUN_K6_SUMMARY="${RUN_PREFIX}-k6-summary.json"
+RUN_K6_REPORT="${RUN_PREFIX}-k6-report.md"
+RUN_K6_TIME="${RUN_PREFIX}-k6-time.txt"
+RUN_K6_CONSOLE="${RUN_PREFIX}-k6-console.log"
 RUN_REMOTE_METADATA="${RUN_PREFIX}-remote-driver-metadata.json"
 RUN_REMOTE_PREFLIGHT="${RUN_PREFIX}-remote-driver-preflight.txt"
 RUN_CLASSPATH="${RUN_PREFIX}-classpath.txt"
@@ -191,6 +202,11 @@ if (( WARMUP_SECONDS < 0 || DURATION_SECONDS < 2 )); then
   echo "[ERROR] WARMUP_SECONDS must be non-negative and DURATION_SECONDS at least 2." >&2
   exit 2
 fi
+if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]] \
+    && { [[ ! "${K6_PRE_ALLOCATED_VUS}" =~ ^[0-9]+$ ]] || (( K6_PRE_ALLOCATED_VUS <= 0 )); }; then
+  echo "[ERROR] K6_PRE_ALLOCATED_VUS must be a positive integer." >&2
+  exit 2
+fi
 if [[ -z "${RESET_DATA_ON_PREPARE+x}" ]]; then
   if [[ "${START_SERVICES}" == "true" ]]; then
     RESET_DATA_ON_PREPARE=false
@@ -198,14 +214,36 @@ if [[ -z "${RESET_DATA_ON_PREPARE+x}" ]]; then
     RESET_DATA_ON_PREPARE=true
   fi
 fi
+case "${HTTP_LOAD_DRIVER}" in
+  k6)
+    EXTERNAL_DRIVER_MODE="external-k6"
+    RUN_EXTERNAL_RESULTS="${RUN_K6_JSONL}"
+    RUN_DRIVER_REPORT="${RUN_K6_SUMMARY}"
+    RUN_DRIVER_TIME="${RUN_K6_TIME}"
+    ;;
+  vegeta)
+    EXTERNAL_DRIVER_MODE="external-vegeta"
+    RUN_EXTERNAL_RESULTS="${RUN_VEGETA_JSONL}"
+    RUN_DRIVER_REPORT="${RUN_VEGETA_REPORT}"
+    RUN_DRIVER_TIME="${RUN_VEGETA_TIME}"
+    ;;
+  *)
+    echo "[ERROR] HTTP_LOAD_DRIVER must be k6 or vegeta." >&2
+    exit 2
+    ;;
+esac
 case "${LOAD_GENERATOR_PLACEMENT}" in
   co-located)
-    if ! command -v vegeta >/dev/null 2>&1; then
-      echo "[ERROR] vegeta is required. Install it with: brew install vegeta" >&2
+    if ! command -v "${HTTP_LOAD_DRIVER}" >/dev/null 2>&1; then
+      echo "[ERROR] ${HTTP_LOAD_DRIVER} is required. Install it with: brew install ${HTTP_LOAD_DRIVER}" >&2
       exit 2
     fi
     ;;
   remote-host)
+    if [[ "${HTTP_LOAD_DRIVER}" != "vegeta" ]]; then
+      echo "[ERROR] remote-host placement currently supports HTTP_LOAD_DRIVER=vegeta only." >&2
+      exit 2
+    fi
     for command_name in ssh scp gzip; do
       if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "[ERROR] ${command_name} is required for a remote driver" >&2
@@ -255,7 +293,7 @@ COMMON_ARGS="--run-id ${RUN_ID} \
 --arrival-pattern shuffled \
 --workload-seed ${WORKLOAD_SEED} \
 --runtime-profile canonical \
---http-driver-mode external-vegeta \
+--http-driver-mode ${EXTERNAL_DRIVER_MODE} \
 --reset-data ${RESET_DATA_ON_PREPARE} \
 --sample-output ${RUN_SAMPLES_CSV} \
 --manifest ${RUN_MANIFEST} \
@@ -263,7 +301,7 @@ COMMON_ARGS="--run-id ${RUN_ID} \
 --monitor-output ${RUN_MONITOR_CSV} \
 --monitor-ready ${RUN_MONITOR_READY} \
 --monitor-stop ${RUN_MONITOR_STOP} \
---vegeta-results ${RUN_VEGETA_JSONL} \
+--external-results ${RUN_EXTERNAL_RESULTS} \
 --order-url ${ORDER_URL} \
 --wallet-url ${WALLET_URL} \
 --order-jdbc-url ${ORDER_JDBC_URL} \
@@ -286,7 +324,12 @@ fi
 echo "[INFO] external open-loop HTTP matched lifecycle"
 echo "[INFO] runId=${RUN_ID}, targetTotalOrderTps=${TARGET_ORDER_TPS}"
 echo "[INFO] warmupSeconds=${WARMUP_SECONDS}, measurementSeconds=${DURATION_SECONDS}"
-echo "[INFO] vegetaCpus=${VEGETA_CPUS}, workers=${VEGETA_WORKERS}, maxWorkers=${VEGETA_MAX_WORKERS}"
+echo "[INFO] httpLoadDriver=${HTTP_LOAD_DRIVER}"
+if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
+  echo "[INFO] k6PreAllocatedVUs=${K6_PRE_ALLOCATED_VUS}, httpTimeout=${K6_HTTP_TIMEOUT}"
+else
+  echo "[INFO] vegetaCpus=${VEGETA_CPUS}, workers=${VEGETA_WORKERS}, maxWorkers=${VEGETA_MAX_WORKERS}"
+fi
 echo "[INFO] loadGeneratorPlacement=${LOAD_GENERATOR_PLACEMENT}"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}, businessSampleInterval=${SAMPLE_INTERVAL_SECONDS}s"
 echo "[INFO] manifest=${RUN_MANIFEST}, result=${RUN_REPORT_JSON}"
@@ -334,7 +377,7 @@ if [[ "${LOAD_GENERATOR_PLACEMENT}" == "remote-host" ]]; then
   run_remote_vegeta_attack
   attack_status=$?
   set -e
-else
+elif [[ "${HTTP_LOAD_DRIVER}" == "vegeta" ]]; then
   set +e
   /usr/bin/time -p vegeta -cpus="${VEGETA_CPUS}" attack \
     -lazy \
@@ -353,6 +396,26 @@ else
   encode_status="${pipeline_status[1]}"
   filter_status="${pipeline_status[2]}"
   set -e
+else
+  set +e
+  /usr/bin/time -p -o "${RUN_K6_TIME}" \
+    k6 run \
+    --quiet \
+    --out "json=${RUN_K6_JSONL}" \
+    -e "EAP_RUN_ID=${RUN_ID}" \
+    -e "EAP_BENCHMARK_CONTRACT=external-http-matched-steady-state-chain" \
+    -e "EAP_TARGETS_FILE=${RUN_TARGETS}" \
+    -e "EAP_TARGET_ORDER_TPS=${TARGET_ORDER_TPS}" \
+    -e "EAP_TOTAL_SECONDS=${TOTAL_SECONDS}" \
+    -e "EAP_K6_PRE_ALLOCATED_VUS=${K6_PRE_ALLOCATED_VUS}" \
+    -e "EAP_K6_HTTP_TIMEOUT=${K6_HTTP_TIMEOUT}" \
+    -e "EAP_K6_GRACEFUL_STOP=${K6_GRACEFUL_STOP}" \
+    -e "EAP_K6_MAX_P95_MS=${K6_MAX_P95_MS}" \
+    -e "EAP_K6_SUMMARY_PATH=${RUN_K6_SUMMARY}" \
+    -e "EAP_K6_REPORT_PATH=${RUN_K6_REPORT}" \
+    "${K6_SCRIPT}" > "${RUN_K6_CONSOLE}" 2>&1
+  attack_status=$?
+  set -e
 fi
 
 touch "${RUN_MONITOR_STOP}"
@@ -363,7 +426,7 @@ monitor_status=$?
 set -e
 MONITOR_PID=""
 
-if (( attack_status != 0 )); then
+if (( attack_status != 0 )) && [[ "${HTTP_LOAD_DRIVER}" == "vegeta" ]]; then
   echo "[ERROR] Vegeta attack failed with status ${attack_status}." >&2
   exit "${attack_status}"
 fi
@@ -380,6 +443,11 @@ if (( monitor_status != 0 )); then
   cat "${RUN_MONITOR_LOG}" >&2
   exit "${monitor_status}"
 fi
+if [[ "${HTTP_LOAD_DRIVER}" == "k6" && ! -s "${RUN_K6_SUMMARY}" ]]; then
+  echo "[WARN] k6 did not emit a summary; persisting an empty rejected driver artifact." >&2
+  jq -n --argjson exitStatus "${attack_status}" \
+    '{metrics:{},driverSummaryMissing:true,driverExitStatus:$exitStatus}' > "${RUN_K6_SUMMARY}"
+fi
 
 run_status=0
 set +e
@@ -388,47 +456,102 @@ set +e
   ${COMMON_ARGS} | tee "${RUN_REPORT_LOG}"
 run_status=${PIPESTATUS[0]}
 set -e
-if [[ "${LOAD_GENERATOR_PLACEMENT}" == "co-located" ]]; then
+if [[ "${LOAD_GENERATOR_PLACEMENT}" == "co-located" && "${HTTP_LOAD_DRIVER}" == "vegeta" ]]; then
   vegeta report -type=json "${RUN_VEGETA_JSONL}" > "${RUN_VEGETA_REPORT}"
 fi
 http_matched_stop_diagnostics
 http_matched_collect_after_run_diagnostics
 
 persist_status=0
+HTTP_MATCHED_DEFER_REPORT_RENDER=true
 http_matched_persist_result "${run_status}" "external-http-matched-steady-state-chain" || persist_status=$?
+unset HTTP_MATCHED_DEFER_REPORT_RENDER
 if [[ -f "${RUN_REPORT_JSON}" ]]; then
   enriched_result="${RUN_REPORT_JSON}.external.tmp.$$"
-  jq \
-    --arg placement "${LOAD_GENERATOR_PLACEMENT}" \
-    --arg vegetaReport "${RUN_VEGETA_REPORT}" \
-    --arg driverTime "${RUN_VEGETA_TIME}" \
-    --arg manifest "${RUN_MANIFEST}" \
-    --arg remoteMetadata "${RUN_REMOTE_METADATA}" \
-    --arg remotePreflight "${RUN_REMOTE_PREFLIGHT}" \
-    --slurpfile driverReportData "${RUN_VEGETA_REPORT}" \
-    --argjson cpus "${VEGETA_CPUS}" \
-    --argjson workers "${VEGETA_WORKERS}" \
-    --argjson maxWorkers "${VEGETA_MAX_WORKERS}" \
-    '. + {
-      externalOpenLoopDriver: true,
-      loadGeneratorPlacement: $placement,
-      externalDriverCpuLimit: $cpus,
-      externalDriverInitialWorkers: $workers,
-      externalDriverMaxWorkers: $maxWorkers,
-      externalScheduledRequests: $driverReportData[0].requests,
-      externalScheduledRequestRate: $driverReportData[0].rate,
-      externalResponseThroughput: $driverReportData[0].throughput,
-      externalHttpSuccessRatio: $driverReportData[0].success,
-      externalDriverReport: $vegetaReport,
-      externalDriverTime: $driverTime,
-      workloadManifest: $manifest,
-      remoteDriverMetadata: (if $placement == "remote-host" then $remoteMetadata else null end),
-      remoteDriverPreflight: (if $placement == "remote-host" then $remotePreflight else null end)
-    }' "${RUN_REPORT_JSON}" > "${enriched_result}"
+  if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
+    jq \
+      --arg placement "${LOAD_GENERATOR_PLACEMENT}" \
+      --arg driverReport "${RUN_K6_SUMMARY}" \
+      --arg driverTime "${RUN_K6_TIME}" \
+      --arg driverConsole "${RUN_K6_CONSOLE}" \
+      --arg manifest "${RUN_MANIFEST}" \
+      --argjson preAllocatedVUs "${K6_PRE_ALLOCATED_VUS}" \
+      --argjson totalSeconds "${TOTAL_SECONDS}" \
+      --argjson driverExitStatus "${attack_status}" \
+      --slurpfile driverReportData "${RUN_K6_SUMMARY}" \
+      'def metric($name): $driverReportData[0].metrics[$name];
+      def metricCount($name): (metric($name).values.count // metric($name).count // 0);
+      def metricRate($name): (metric($name).values.rate // metric($name).rate // 0);
+      def metricValue($name): (metric($name).values.rate // metric($name).value // 0);
+      def metricStat($name; $stat): (metric($name).values[$stat] // metric($name)[$stat] // null);
+      . + {
+        externalOpenLoopDriver: true,
+        externalDriver: "k6",
+        loadGeneratorPlacement: $placement,
+        externalDriverPreAllocatedVUs: $preAllocatedVUs,
+        externalDriverExitStatus: $driverExitStatus,
+        externalScheduledRequests: metricCount("http_reqs"),
+        externalScheduledRequestRate: (metricCount("http_reqs") / $totalSeconds),
+        externalDroppedIterations: metricCount("dropped_iterations"),
+        externalOutOfRangeIterations: metricCount("eap_out_of_range_iterations"),
+        externalResponseThroughput: metricRate("http_reqs"),
+        externalHttpSuccessRatio: (1 - metricValue("http_req_failed")),
+        externalHttpLatencyMs: {
+          average: metricStat("http_req_duration"; "avg"),
+          median: metricStat("http_req_duration"; "med"),
+          p90: metricStat("http_req_duration"; "p(90)"),
+          p95: metricStat("http_req_duration"; "p(95)"),
+          p99: metricStat("http_req_duration"; "p(99)"),
+          maximum: metricStat("http_req_duration"; "max")
+        },
+        externalDriverReport: $driverReport,
+        externalDriverTime: $driverTime,
+        externalDriverConsole: $driverConsole,
+        workloadManifest: $manifest,
+        remoteDriverMetadata: null,
+        remoteDriverPreflight: null
+      }' "${RUN_REPORT_JSON}" > "${enriched_result}"
+  else
+    jq \
+      --arg placement "${LOAD_GENERATOR_PLACEMENT}" \
+      --arg vegetaReport "${RUN_VEGETA_REPORT}" \
+      --arg driverTime "${RUN_VEGETA_TIME}" \
+      --arg manifest "${RUN_MANIFEST}" \
+      --arg remoteMetadata "${RUN_REMOTE_METADATA}" \
+      --arg remotePreflight "${RUN_REMOTE_PREFLIGHT}" \
+      --slurpfile driverReportData "${RUN_VEGETA_REPORT}" \
+      --argjson cpus "${VEGETA_CPUS}" \
+      --argjson workers "${VEGETA_WORKERS}" \
+      --argjson maxWorkers "${VEGETA_MAX_WORKERS}" \
+      '. + {
+        externalOpenLoopDriver: true,
+        externalDriver: "vegeta",
+        loadGeneratorPlacement: $placement,
+        externalDriverCpuLimit: $cpus,
+        externalDriverInitialWorkers: $workers,
+        externalDriverMaxWorkers: $maxWorkers,
+        externalScheduledRequests: $driverReportData[0].requests,
+        externalScheduledRequestRate: $driverReportData[0].rate,
+        externalResponseThroughput: $driverReportData[0].throughput,
+        externalHttpSuccessRatio: $driverReportData[0].success,
+        externalDriverReport: $vegetaReport,
+        externalDriverTime: $driverTime,
+        workloadManifest: $manifest,
+        remoteDriverMetadata: (if $placement == "remote-host" then $remoteMetadata else null end),
+        remoteDriverPreflight: (if $placement == "remote-host" then $remotePreflight else null end)
+      }' "${RUN_REPORT_JSON}" > "${enriched_result}"
+  fi
   mv "${enriched_result}" "${RUN_REPORT_JSON}"
+fi
+http_matched_render_report "${RUN_REPORT_JSON}" || true
+if (( run_status == 0 && attack_status != 0 )); then
+  run_status="${attack_status}"
 fi
 if (( run_status == 0 && persist_status != 0 )); then
   run_status="${persist_status}"
 fi
-echo "[INFO] Vegeta report=${RUN_VEGETA_REPORT}, driver time=${RUN_VEGETA_TIME}"
+echo "[INFO] ${HTTP_LOAD_DRIVER} report=${RUN_DRIVER_REPORT}, driver time=${RUN_DRIVER_TIME}"
+if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
+  echo "[INFO] k6 readable report=${RUN_K6_REPORT}"
+fi
 exit "${run_status}"

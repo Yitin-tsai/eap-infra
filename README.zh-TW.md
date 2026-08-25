@@ -45,7 +45,7 @@ flowchart LR
 
 MatchEngine 不再維護額外的下游 Completion View，也不等待 Order 或 Wallet 回傳完成事件。各服務擁有自己的處理結果；跨服務收斂是交易路徑之外的驗證，不是新的業務依賴。
 
-完整交易邊界、事件流、復原方式與獨立的 TDA 流程請見[架構文件](docs/architecture.md)。
+完整交易邊界、事件流、復原方式與獨立的 TDA 流程請見[架構文件](docs/architecture.zh-TW.md)。
 
 ## 服務責任
 
@@ -113,6 +113,7 @@ flowchart TD
 - [低觀測與高輸入探針](docs/benchmarks/2026-08-18-low-observability-and-high-rate-probes.md)：被拒絕的 648 重跑，以及受 driver 限制的 1200／2000 短時間過載診斷；不提高容量宣稱。
 - [預先準備 HTTP driver 診斷](docs/benchmarks/2026-08-18-prepared-http-driver.md)：將 request 資料準備移出流量計時、2,000 requests/s driver-only 校準，以及短時間 full-chain A/B 的證據邊界。
 - [外部 open-loop driver](docs/benchmarks/2026-08-19-external-open-loop-driver.md)：低成本固定速率送流量、lifecycle 交接、正確性關卡，以及尚未解決的主機隔離邊界。
+- [k6 648 完整長窗驗證](docs/benchmarks/2026-08-25-k6-full-lifecycle-648.md)：完整保留 dropped iterations、三服務正確收斂、VU 校準失敗與需要 remote driver 的決策。
 - [排程隔離診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)：較早的採用修正與被拒絕高流量證據。
 - [Wallet 穩健性報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)：交易安全、混合流量、長時間及故障證據。
 - [取消責任與回歸報告](docs/benchmarks/2026-08-24-cancellation-ownership-and-regression.md)：說明 Wallet 為何不投影每張訂單，以及競態、亂序與正常流程回歸證據。
@@ -137,12 +138,13 @@ Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測�
 ## 建議閱讀順序
 
 1. [面試快速入口](docs/interview-guide.zh-TW.md)：五分鐘掌握功能、架構、一致性、效能、優缺點與可展開故事。
-2. [架構文件](docs/architecture.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
-3. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
-4. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
-5. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
-6. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
-7. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
-8. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
+2. [架構文件](docs/architecture.zh-TW.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
+3. [CDA 訂單事件完整生命週期](docs/order-event-lifecycle.zh-TW.md)：從下單、驗資、撮合、結算到取消訂單，包含 retry、outbox／inbox、DLQ、Saga 與非 happy path。
+4. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
+5. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
+6. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
+7. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
+8. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
+9. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
 
 `docs/archive/performance/` 下的凍結實驗歷史會保留供追溯，但不屬於一般讀者的專案介紹路徑。

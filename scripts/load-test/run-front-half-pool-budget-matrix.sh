@@ -164,4 +164,6 @@ jq -s \
 echo
 echo "[INFO] matrix summary=${MATRIX_SUMMARY}"
 jq '{claimBoundary, config, candidates: [.candidates[] | {profile, pools, exitStatus, validity}]}' "${MATRIX_SUMMARY}"
+bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" "${MATRIX_SUMMARY}" >/dev/null
+echo "[INFO] readable report=${MATRIX_SUMMARY%.json}-report.md"
 exit "${overall_status}"

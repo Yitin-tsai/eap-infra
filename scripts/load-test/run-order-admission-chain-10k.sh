@@ -308,6 +308,8 @@ if [[ -d "${RUN_DIAG_DIR}" && -f "${RUN_DIAG_DIR}/runtime-samples.log" ]]; then
 fi
 if extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted run result json=${RUN_REPORT_JSON}"
+  bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" "${RUN_REPORT_JSON}" >/dev/null
+  echo "[INFO] readable report=${RUN_REPORT_JSON%.json}-report.md"
 else
   echo "[WARN] could not extract run result JSON from ${RUN_REPORT_LOG}" >&2
   rm -f "${RUN_REPORT_JSON}"

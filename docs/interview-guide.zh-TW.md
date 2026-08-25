@@ -77,7 +77,7 @@ HTTP 下單
 ## 建議閱讀順序
 
 - **面試前 5 分鐘：** 本文件。
-- **再花 10 分鐘：** [中文 README](../README.zh-TW.md)與[架構文件](architecture.md)。
+- **再花 10 分鐘：** [中文 README](../README.zh-TW.md)與[架構文件](architecture.zh-TW.md)。
 - **準備效能追問：** [效能報告](performance-report.md)與[壓測分類](benchmarks/load-test-taxonomy.md)。
 - **準備取消訂單深挖：** [取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
 - **準備 AI／工作方法題：** [AI 工程工作流](ai-engineering-workflow.md)與 [Hello World Dev 案例](talks/hello-world-dev-conference-2026-case-study.md)。

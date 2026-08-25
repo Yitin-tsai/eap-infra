@@ -38,6 +38,7 @@ does not retain the raw binary attack stream.
 Example:
 
 ```bash
+HTTP_LOAD_DRIVER=vegeta \
 LOAD_GENERATOR_PLACEMENT=remote-host \
 REMOTE_DRIVER_SSH_TARGET=loadtest@192.0.2.20 \
 ORDER_URL=http://192.0.2.10:8080/eap-order \

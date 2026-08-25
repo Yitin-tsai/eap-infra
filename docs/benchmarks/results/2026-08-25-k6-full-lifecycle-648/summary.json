@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "campaign": "k6-full-lifecycle-648",
+  "date": "2026-08-25",
+  "decision": "reject_same_host_k6_capacity_evidence",
+  "benchmarkContract": "external-http-matched-steady-state-chain",
+  "evidenceMode": "diagnostic",
+  "loadGeneratorPlacement": "co-located",
+  "host": {
+    "logicalCpus": 10,
+    "physicalMemoryBytes": 17179869184
+  },
+  "workload": {
+    "targetOrdersPerSecond": 648,
+    "warmupSeconds": 60,
+    "measurementSeconds": 900,
+    "preparedRequests": 622080,
+    "preparedTrades": 311040,
+    "arrivalPattern": "shuffled",
+    "seed": 20260825
+  },
+  "completedRun": {
+    "runId": "K6_FULL_648_60S_900S_SEED_20260825_R1",
+    "preAllocatedVUs": 648,
+    "executedRequests": 610517,
+    "acceptedRequests": 610517,
+    "droppedIterations": 11563,
+    "httpSuccessRatio": 1.0,
+    "requestRate": 635.9321,
+    "latencyMilliseconds": {
+      "median": 9.433,
+      "p95": 870.0192,
+      "p99": 1714.8214,
+      "maximum": 3876.549
+    },
+    "steadyAcceptedOrdersPerSecond": 635.08,
+    "steadyCompletedTradesPerSecond": 310.16,
+    "steadyCompletionTargetRatio": 0.9573,
+    "maximumBacklog": 2841,
+    "backlogSlopePerSecond": 0.9992,
+    "fullConvergenceSeconds": 996.482,
+    "fullConvergenceTradesPerSecond": 306.32,
+    "durableTrades": {
+      "matchEngine": 305240,
+      "order": 305240,
+      "wallet": 305240,
+      "tradeIdsEqual": true
+    },
+    "orderTradeInbox": {
+      "appliedRows": 4428,
+      "unappliedRows": 0,
+      "maximumAttempts": 3
+    },
+    "finalQueueBacklog": 0,
+    "finalDlqBacklog": 0,
+    "activeMatchReservations": 0,
+    "assetsReconciled": true,
+    "validForSustainedCapacity": false,
+    "invalidReasons": [
+      "http_accepted_count_mismatch",
+      "traffic_scheduling_deadline_exceeded"
+    ]
+  },
+  "calibrations": [
+    {
+      "runId": "K6_FULL_648_60S_900S_SEED_20260825_R2",
+      "preAllocatedVUs": 2048,
+      "status": "aborted_after_driver_drop",
+      "droppedIterationsObservedBeforeAbort": 1776,
+      "durableTradesAtFinalReconciliation": 158801,
+      "threeServiceTradeIdsEqual": true,
+      "finalQueueBacklog": 0,
+      "activeMatchReservations": 0
+    },
+    {
+      "runId": "K6_FULL_648_60S_900S_SEED_20260825_R3",
+      "preAllocatedVUs": 4096,
+      "status": "aborted_after_same_host_resource_interference",
+      "minimumDroppedIterationsObservedBeforeAbort": 25469,
+      "httpRequestTimeoutObserved": true,
+      "maximumObservedBacklog": 20693,
+      "completeResultAvailable": false
+    }
+  ],
+  "claimBoundary": "The completed run proves correctness for the traffic actually delivered, but k6 did not deliver the exact 648 orders/s schedule on the co-located 16 GiB host. Existing release-pinned capacity evidence remains unchanged."
+}

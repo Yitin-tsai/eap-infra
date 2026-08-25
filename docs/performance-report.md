@@ -418,6 +418,48 @@ can be generated without the old permit ceiling while the service chain still
 cannot consume it during the measurement window.
 See the [external open-loop driver report](benchmarks/2026-08-19-external-open-loop-driver.md).
 
+## k6 External Driver Integration - 2026-08-25
+
+The external open-loop lifecycle now supports k6 and selects it by default for
+local diagnostic runs. It uses the same prepared, checksummed shuffled request
+set, Java business monitor, convergence verifier, and evidence gates as the
+historical Vegeta path. Vegeta remains selectable for same-workload controls
+and remains the only implemented remote-host driver.
+
+The latest modular integration smoke used `100 orders/s`, `2s` warm-up, and a
+`10s` measurement window. k6 scheduled exactly `1200/1200` requests with zero
+dropped or out-of-range iterations, zero failed checks, and 100% HTTP success. The
+measured steady accepted rate was `99.96 orders/s`; same-window completion was
+`49.81 trades/s`, or `99.62%` of the paired target. All `600` trades converged with identical MatchEngine,
+Order, and Wallet IDs; assets reconciled; both order books, Match reservations,
+all measured queues, and the DLQ ended at zero.
+
+The k6 code now separates configuration/thresholds, finite prepared-workload
+materialization, and driver-report generation. It emits exact request-count,
+HTTP-failure, check, dropped-iteration, and finite-schedule-boundary thresholds plus p90/p95/p99 latency,
+while a separate final EAP report retains the durable business gates. This proves
+the modular k6 result adapter and full correctness handoff. The short,
+dirty-worktree diagnostic has `capacityClaimAllowed=false`; it does not change
+the release-pinned `648 orders/s` boundary or establish k6/Vegeta equivalence.
+The next valid comparison is a same-commit, same-seed, same-duration k6/Vegeta
+A/B before any long capacity rerun. See the
+[k6 driver smoke report](benchmarks/2026-08-25-k6-open-loop-driver.md).
+
+The subsequent full `60s + 900s` k6 diagnostic at 648 did not pass the
+driver gate. With 648 pre-allocated VUs, k6 executed `610517/622080` requests
+at `635.93 requests/s` and reported `11563` dropped iterations. Every executed
+request returned 2xx, and all `305240` resulting trades converged with identical
+MatchEngine, Order, and Wallet IDs, reconciled assets, zero final queue/DLQ,
+zero active reservations, and zero unapplied Order inbox rows. Steady completion
+was `310.16 trades/s` and full convergence was `306.32 trades/s`, but neither
+number is a valid 648-capacity result because the exact offered schedule was not
+delivered. Increasing the same-host budget to 2048 and 4096 VUs still produced
+drops; the latter also produced request timeouts and host-monitor stalls. The
+decision is to reject further same-host VU escalation and require remote-driver
+isolation for the next long k6 comparison. This diagnostic does not change the
+existing release-pinned 648 boundary. See the
+[full k6 lifecycle report](benchmarks/2026-08-25-k6-full-lifecycle-648.md).
+
 A same-seed deep `legacy -> external -> legacy` control later reconfirmed this
 boundary with jar-launched services. The two legacy runs averaged `328.93`
 same-window completed trades/s and `312.64` full-lifecycle trades/s; corrected
@@ -1083,6 +1125,8 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | 624 sustained evidence | Two 15-minute seeds each accepted `599040` orders and converged `299520` exact trades. Same-window completion was `307.19` and `312.03 trades/s`; full-lifecycle completion was `300.28` and `310.05 trades/s`; maximum backlog was `4257` and `1164`; all final debt was zero | promote the exact same-host shuffled mixed HTTP sustained lower-bound class from 600 to 624, while retaining short-window variability and shared-host pressure as limits |
 | 648 sustained pressure boundary | Two 15-minute seeds each accepted `622080` orders and converged `311040` exact trades. Same-window completion was `315.96` and `314.84 trades/s`; full-lifecycle completion was `309.73` and `301.14 trades/s`; maximum backlog was `4001` and `4907`; all final debt was zero | promote 648 as the highest repeatable same-host lower-bound class, but classify it as the pressure knee because full-lifecycle throughput stayed in the 624 range while tail, pool pending, and CPU pressure increased |
 | Vegeta unattended current-worktree validation | `25` full-chain runs over about `11h07m`; all correctness gates passed, `24/25` capacity contracts passed, and all `16` independent 20-minute 700 orders/s repeats passed. One 800 confirmation had `14` HTTP timeouts despite exact durable convergence | adopt Vegeta as the preferred high-rate diagnostic driver and retain 700 as a current-worktree lower-bound candidate; do not promote 800 or rewrite the release-pinned 648 boundary before review and commit |
+| k6 external-driver integration smoke | `1200/1200` HTTP requests at `100 orders/s`, zero dropped iterations, 100% HTTP success, exact `600` three-service trades, reconciled assets, and zero final debt | adopt k6 as the default local diagnostic driver; retain Vegeta for historical controls and remote-host runs; require a controlled A/B before comparing capacity |
+| k6 648 full-window diagnostic | 648 VUs executed `610517/622080` requests and dropped `11563`; all executed requests were 2xx and all `305240` resulting trades converged across three services with reconciled assets and zero final debt. Same-host 2048／4096 VU calibrations also dropped traffic; 4096 caused request timeouts and monitor stalls | reject as capacity evidence, stop increasing same-host VUs, retain the existing release-pinned 648 boundary, and require remote-driver isolation for the next long k6 comparison |
 | Release-pinned source provenance and 700 repeat | Clean committed source and exact container/tool provenance; `882000/882000` HTTP success and exact `441000` three-service trades, but only `240.01` same-window and `209.51` full-lifecycle trades/s with an `844.93s` post-input drain | adopt the provenance gate, reject 700 as current capacity, retain 648, and add per-stage durable-debt slopes before another high-cost repeat |
 
 ## Seeded Matched-Completion Bottleneck

@@ -65,3 +65,5 @@ jq '{
   correctness,
   capacityClaimAllowed
 }' "${OUTPUT}"
+bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" "${OUTPUT}" >/dev/null
+echo "[INFO] readable report=${OUTPUT%.json}-report.md"

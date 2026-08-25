@@ -14,8 +14,8 @@ http_matched_sha256() {
 http_matched_write_provenance_snapshot() {
   local output="$1"
   local captured_at repositories_json containers_json os_name os_version architecture
-  local logical_cpus physical_memory_bytes java_version docker_version vegeta_version
-  local compose_sha runner_sha library_sha runner_path
+  local logical_cpus physical_memory_bytes java_version docker_version vegeta_version k6_version
+  local compose_sha runner_sha library_sha k6_bundle_sha runner_path
   local repositories_file="${output}.repositories.tmp.$$"
 
   mkdir -p "$(dirname "${output}")"
@@ -90,6 +90,7 @@ EOF
   java_version="$(${LOADTEST_SERVICE_JAVA_BIN:-java} -version 2>&1 | head -n 1 || true)"
   docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)"
   vegeta_version="$(vegeta --version 2>&1 | head -n 1 || true)"
+  k6_version="$(k6 version 2>&1 | head -n 1 || true)"
   compose_sha="$(http_matched_sha256 "${ROOT_DIR}/docker-compose.loadtest.yml")"
   if [[ "$0" == /* ]]; then
     runner_path="$0"
@@ -98,6 +99,11 @@ EOF
   fi
   runner_sha="$(http_matched_sha256 "${runner_path}")"
   library_sha="$(http_matched_sha256 "${ROOT_DIR}/scripts/load-test/http-matched-loadtest-lib.sh")"
+  k6_bundle_sha="$({
+    while IFS= read -r k6_file; do
+      http_matched_sha256 "${k6_file}"
+    done < <(find "${ROOT_DIR}/scripts/load-test/k6" -type f -name '*.js' | sort)
+  } | http_matched_sha256 /dev/stdin)"
   captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   containers_json='[]'
@@ -129,9 +135,11 @@ EOF
     --arg javaVersion "${java_version}" \
     --arg dockerVersion "${docker_version}" \
     --arg vegetaVersion "${vegeta_version}" \
+    --arg k6Version "${k6_version}" \
     --arg composeSha256 "${compose_sha}" \
     --arg runnerSha256 "${runner_sha}" \
     --arg librarySha256 "${library_sha}" \
+    --arg k6BundleSha256 "${k6_bundle_sha}" \
     --argjson repositories "${repositories_json}" \
     --argjson containers "${containers_json}" \
     '{schemaVersion:1,capturedAt:$capturedAt,evidenceMode:$evidenceMode,
@@ -144,9 +152,21 @@ EOF
         serviceLaunchMode:$serviceLaunchMode,diagnosticsLevel:$diagnosticsLevel,
         postgres:{synchronousCommit:$synchronousCommit,trackIoTiming:$trackIoTiming,
           trackWalIoTiming:$trackWalIoTiming}},
-      tooling:{java:$javaVersion,docker:$dockerVersion,vegeta:$vegetaVersion},
+      tooling:{java:$javaVersion,docker:$dockerVersion,vegeta:$vegetaVersion,k6:$k6Version},
       fingerprints:{composeSha256:$composeSha256,runnerSha256:$runnerSha256,
-        librarySha256:$librarySha256},containers:$containers}' > "${output}"
+        librarySha256:$librarySha256,k6BundleSha256:$k6BundleSha256},containers:$containers}' > "${output}"
+}
+
+http_matched_render_report() {
+  local result_json="${1:-${RUN_REPORT_JSON:-}}"
+  local output_markdown="${2:-${result_json%.json}-report.md}"
+  if [[ -z "${result_json}" || ! -f "${result_json}" ]]; then
+    echo "[WARN] cannot render load-test report; result JSON is missing: ${result_json:-<empty>}" >&2
+    return 1
+  fi
+  bash "${ROOT_DIR}/scripts/load-test/render-loadtest-report.sh" \
+    "${result_json}" "${output_markdown}" >/dev/null
+  echo "[INFO] readable report=${output_markdown}"
 }
 
 http_matched_prepare_provenance() {
@@ -300,6 +320,9 @@ http_matched_persist_result() {
       mv "${temp_json}" "${RUN_REPORT_JSON}"
       echo "[ERROR] RabbitMQ resource alarm observed; capacity artifact invalidated." >&2
       http_matched_enrich_provenance "${run_status}" "${benchmark_contract}"
+      if [[ "${HTTP_MATCHED_DEFER_REPORT_RENDER:-false}" != "true" ]]; then
+        http_matched_render_report "${RUN_REPORT_JSON}" || true
+      fi
       return 3
     fi
   else
@@ -323,6 +346,9 @@ http_matched_persist_result() {
     echo "[INFO] persisted rejected harness-failure JSON=${RUN_REPORT_JSON}"
   fi
   http_matched_enrich_provenance "${run_status}" "${benchmark_contract}"
+  if [[ "${HTTP_MATCHED_DEFER_REPORT_RENDER:-false}" != "true" ]]; then
+    http_matched_render_report "${RUN_REPORT_JSON}" || true
+  fi
 }
 
 http_matched_validate_common() {

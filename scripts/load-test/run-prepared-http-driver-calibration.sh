@@ -34,6 +34,7 @@ set -e
 
 if http_matched_extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSON}"; then
   echo "[INFO] persisted result JSON=${RUN_REPORT_JSON}"
+  http_matched_render_report "${RUN_REPORT_JSON}" || true
 else
   echo "[ERROR] could not extract calibration result JSON from ${RUN_REPORT_LOG}" >&2
   exit 1

@@ -60,7 +60,7 @@ EAP 的專案背景與架構介紹安排在 3–8 分，共 5 分鐘，約為整
 
 ## 公開證據與限制
 
-公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[取消責任與回歸報告](../benchmarks/2026-08-24-cancellation-ownership-and-regression.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[排程隔離診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[短窗邊界重測](../benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)與[最新 648 持續壓力邊界](../benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)。
+公開證據：[README](../../README.zh-TW.md)、[系統架構](../architecture.zh-TW.md)、[AI 工程工作流](../ai-engineering-workflow.md)、[效能報告](../performance-report.md)、[Wallet 穩健性報告](../benchmarks/2026-08-05-wallet-settlement-robustness.md)、[取消責任與回歸報告](../benchmarks/2026-08-24-cancellation-ownership-and-regression.md)、[歷史混合 HTTP 階梯式壓測](../benchmarks/2026-08-04-balanced-mixed-http-staircase.md)、[排程隔離診斷](../benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)、[短窗邊界重測](../benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)與[最新 648 持續壓力邊界](../benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)。
 
 EAP 不宣稱 `2000 completed TPS`。目前 release-pinned 公開下界是 2 個 workload seed 都通過的單機 `648 accepted orders/s` 等級 CDA 隨機混合 HTTP 15 分鐘證據；兩輪 full-lifecycle 分別為 `309.73` 與 `301.14 trades/s`，而且同機 CPU、連線池與 tail latency 壓力明顯，因此是壓力邊界，不是正式環境容量。較舊版本另有單機短時間 `699.98 accepted orders/s`、`346.12 same-window trades/s`、`320.47 full-lifecycle trades/s` 的歷史診斷。`922.38/s` 是 CDA 依序上限診斷；`20405.04/s` 是已拒絕版本的隔離診斷。已確認訂單、混合流量、短時間窗、長時間、元件隔離、歷史版本、深度診斷與 TDA 必須分開。
 

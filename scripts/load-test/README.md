@@ -10,7 +10,7 @@ results.
 | Question | Command | Evidence boundary |
 | --- | --- | --- |
 | What shuffled mixed HTTP load is sustainable? | `run-http-matched-steady-state.sh` | Canonical full-chain capacity contract |
-| Can a lower-cost or remote open-loop driver reproduce it? | `run-http-matched-external-open-loop.sh` | Same business gates; driver-placement diagnostic until promoted |
+| Can an external open-loop driver reproduce it? | `run-http-matched-external-open-loop.sh` | k6 by default; same business gates; driver-placement diagnostic until promoted |
 | Where is the first unsustainable rate? | `run-http-matched-staircase.sh` | Full-chain knee search, not a soak guarantee |
 | What is the sequential full-HTTP upper bound? | `run-http-matched-trade-completion-10k.sh` | SELL then BUY; not mixed-flow capacity |
 | Does cancellation converge across all three services? | `run-http-cancellation-lifecycle.sh` | Open, partial-fill, and bounded match/cancel race correctness; not capacity evidence |
@@ -25,6 +25,68 @@ The default capacity workflow is:
 4. require exact trade IDs, assets, order-book and reservation cleanup, queue/DLQ
    drain, offered load, completion rate, and bounded backlog;
 5. repeat a different seed before promoting a sustained boundary.
+
+## Test Types
+
+The common k6 names describe workload shape, not interchangeable evidence:
+
+| Test type | EAP entry point | Decision it supports |
+| --- | --- | --- |
+| Smoke | short `run-http-matched-external-open-loop.sh` | harness and correctness wiring only |
+| Load / soak | `run-http-matched-steady-state.sh` | sustained mixed-flow capacity candidate |
+| Stress | `run-http-matched-staircase.sh` | first unsustainable rate and provisional knee |
+| Focused diagnostic | scripts under Focused Probes below | one component or transport boundary |
+| Spike | not implemented | do not relabel a staircase or short overload as spike evidence |
+
+## k6 External Driver
+
+The external open-loop runner uses k6 by default while retaining Vegeta for
+historical A/B comparisons. Both drivers consume the same finite, checksummed
+request schedule and hand their request-level results to the same Java monitor
+and verifier. A k6 summary alone is not EAP correctness evidence.
+
+Run a short local harness smoke:
+
+```bash
+docker compose -f docker-compose.loadtest.yml up -d --wait --wait-timeout 120
+
+TARGET_ORDER_TPS=100 \
+WARMUP_SECONDS=2 \
+DURATION_SECONDS=10 \
+K6_PRE_ALLOCATED_VUS=100 \
+RUN_ID=K6_SMOKE_100_R1 \
+bash scripts/load-test/run-http-matched-external-open-loop.sh
+
+docker compose -f docker-compose.loadtest.yml down
+```
+
+The runner starts and stops the three application processes by default. The
+dedicated PostgreSQL, RabbitMQ, and Redis containers must already be healthy;
+the final `down` keeps their named volumes.
+
+k6 uses the `constant-arrival-rate` executor. `K6_PRE_ALLOCATED_VUS` must be
+large enough for the observed response latency; any `dropped_iterations` or
+missing prepared request invalidates the run. Increase VUs only after checking
+driver CPU and memory, because dynamic VU allocation can distort a benchmark.
+`K6_MAX_P95_MS` optionally adds a driver-side p95 threshold; leave it unset when
+the workload contract has not defined an HTTP latency SLO.
+
+The 2026-08-25 co-located 648 long-window calibration established a practical
+stop condition for this laptop. 648 VUs dropped `11563` of `622080` prepared
+iterations; 2048 and 4096 VUs still dropped traffic, while 4096 also introduced
+request timeouts and host-monitor stalls. Do not keep increasing VUs on this
+16 GiB host. Use the existing remote Vegeta placement, or implement equivalent
+remote k6 preflight and artifact transfer, before repeating that long-window
+comparison. See the
+[campaign report](../../docs/benchmarks/2026-08-25-k6-full-lifecycle-648.md).
+
+The k6 code is split into configuration, prepared-workload, and reporting modules.
+See [the k6 module guide](k6/README.md). The entry script contains only the request
+execution flow.
+
+For a same-workload Vegeta control, set `HTTP_LOAD_DRIVER=vegeta`. Remote-host
+placement remains Vegeta-only until the remote helper has an equivalent k6
+preflight and artifact-transfer contract.
 
 ## Evidence Mode and Provenance
 
@@ -45,7 +107,7 @@ capacity claim.
 
 ## Artifact Lifecycle
 
-Runners write raw logs, result JSON, samples, and diagnostics to
+Workload runners write raw logs, result JSON, generated Markdown, samples, and diagnostics to
 `build/load-test-reports/`. This is disposable local output and is ignored by Git.
 It is useful for investigation and reruns, but a committed report must not depend on
 that directory remaining on one machine.
@@ -55,6 +117,25 @@ After review, promote only the evidence needed for the decision into
 under `docs/benchmarks/`, and update `docs/performance-report.md` only when the
 evidence class permits the claim. See the
 [benchmark evidence guide](../../docs/benchmarks/README.md).
+
+For k6-backed runs, read artifacts in this order:
+
+1. `*-report.md`: final EAP decision, throughput, durable correctness, and claim limits;
+2. `*-result.json`: machine-readable source for the final decision;
+3. `*-k6-report.md`: HTTP driver-only checks, offered load, and latency;
+4. `*-k6-summary.json` and `*-k6.jsonl`: aggregated and request-level raw driver data;
+5. `*-manifest.json`, samples, and diagnostics: workload identity and bottleneck evidence.
+
+Primary workloads, focused probes, and experiment summaries automatically call
+`render-loadtest-report.sh`. To render an older JSON result without rerunning load:
+
+```bash
+bash scripts/load-test/render-loadtest-report.sh \
+  build/load-test-reports/<run>-result.json
+```
+
+Generated Markdown improves local review but does not promote an artifact or make it
+capacity evidence.
 
 ## Focused Probes
 

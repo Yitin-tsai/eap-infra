@@ -7,7 +7,8 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 
 | Area | Location | Purpose |
 | --- | --- | --- |
-| System design | [`architecture.md`](architecture.md) | Current service ownership, event flows, and transaction boundaries |
+| System design | [`architecture.md`](architecture.md) / [`architecture.zh-TW.md`](architecture.zh-TW.md) | Current service ownership, event flows, and transaction boundaries |
+| CDA lifecycle deep dive | [`order-event-lifecycle.zh-TW.md`](order-event-lifecycle.zh-TW.md) | End-to-end order, trade, cancellation, retry, outbox, inbox, and Saga failure paths |
 | Engineering workflow | [`ai-engineering-workflow.md`](ai-engineering-workflow.md) | Current role boundaries, evidence gates, and human decisions |
 | Performance claims | [`performance-report.md`](performance-report.md) | Canonical current capacity claims and limitations |
 | API contracts | [`api/`](api/) | Reviewed OpenAPI snapshots for public service contracts |
