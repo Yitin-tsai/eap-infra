@@ -64,6 +64,7 @@ REMOTE_DRIVER_IDENTITY_FILE="${REMOTE_DRIVER_IDENTITY_FILE:-}"
 REMOTE_DRIVER_WORK_DIR="${REMOTE_DRIVER_WORK_DIR:-/tmp/eap-loadtest-${RUN_ID}}"
 REMOTE_DRIVER_MAX_CLOCK_SKEW_SECONDS="${REMOTE_DRIVER_MAX_CLOCK_SKEW_SECONDS:-2}"
 REMOTE_DRIVER_KEEP_ARTIFACTS="${REMOTE_DRIVER_KEEP_ARTIFACTS:-false}"
+KEEP_RAW_LOADTEST_ARTIFACTS="${KEEP_RAW_LOADTEST_ARTIFACTS:-false}"
 GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
 REPORT_DIR="${ROOT_DIR}/build/load-test-reports"
 RUN_PREFIX="${REPORT_DIR}/http-matched-external-${RUN_ID}"
@@ -194,6 +195,36 @@ external_cleanup() {
 }
 trap external_cleanup EXIT
 
+remove_local_raw_artifacts() {
+  if [[ "${KEEP_RAW_LOADTEST_ARTIFACTS}" == "true" ]]; then
+    echo "[INFO] preserving request-level load-test artifacts by request"
+    return 0
+  fi
+  if [[ ! -s "${RUN_REPORT_JSON}" ]]; then
+    echo "[WARN] final result was not persisted; preserving raw artifacts for diagnosis" >&2
+    return 0
+  fi
+
+  rm -f -- \
+    "${RUN_REPORT_LOG}" \
+    "${RUN_SAMPLES_CSV}" \
+    "${RUN_TARGETS}" \
+    "${RUN_MONITOR_CSV}" \
+    "${RUN_MONITOR_LOG}" \
+    "${RUN_MONITOR_READY}" \
+    "${RUN_MONITOR_STOP}" \
+    "${RUN_K6_JSONL}" \
+    "${RUN_K6_TIME}" \
+    "${RUN_K6_CONSOLE}" \
+    "${RUN_VEGETA_JSONL}" \
+    "${RUN_VEGETA_GZIP}" \
+    "${RUN_VEGETA_TIME}" \
+    "${RUN_REMOTE_PREFLIGHT}" \
+    "${RUN_CLASSPATH}"
+  rm -rf -- "${RUN_DIAG_DIR}"
+  echo "[INFO] removed disposable raw artifacts; set KEEP_RAW_LOADTEST_ARTIFACTS=true to retain them"
+}
+
 if (( TARGET_ORDER_TPS <= 0 || TARGET_ORDER_TPS % 2 != 0 )); then
   echo "[ERROR] TARGET_ORDER_TPS must be a positive even number." >&2
   exit 2
@@ -205,6 +236,10 @@ fi
 if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]] \
     && { [[ ! "${K6_PRE_ALLOCATED_VUS}" =~ ^[0-9]+$ ]] || (( K6_PRE_ALLOCATED_VUS <= 0 )); }; then
   echo "[ERROR] K6_PRE_ALLOCATED_VUS must be a positive integer." >&2
+  exit 2
+fi
+if [[ "${KEEP_RAW_LOADTEST_ARTIFACTS}" != "true" && "${KEEP_RAW_LOADTEST_ARTIFACTS}" != "false" ]]; then
+  echo "[ERROR] KEEP_RAW_LOADTEST_ARTIFACTS must be true or false." >&2
   exit 2
 fi
 if [[ -z "${RESET_DATA_ON_PREPARE+x}" ]]; then
@@ -554,4 +589,5 @@ echo "[INFO] ${HTTP_LOAD_DRIVER} report=${RUN_DRIVER_REPORT}, driver time=${RUN_
 if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
   echo "[INFO] k6 readable report=${RUN_K6_REPORT}"
 fi
+remove_local_raw_artifacts
 exit "${run_status}"

@@ -36,7 +36,7 @@
                                 "schema": {
                                     "type": "array",
                                     "items": {
-                                        "$ref": "#/components/schemas/OrderConfirmedEvent"
+                                        "$ref": "#/components/schemas/OrderAssetReservationSucceededEvent"
                                     }
                                 }
                             }
@@ -100,7 +100,7 @@
     },
     "components": {
         "schemas": {
-            "OrderConfirmedEvent": {
+            "OrderAssetReservationSucceededEvent": {
                 "type": "object",
                 "properties": {
                     "orderId": {

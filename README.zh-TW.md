@@ -6,7 +6,9 @@ EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向�
 
 專案主要回答三個工程問題：每一項業務事實應由哪個服務負責、交易如何在重試與局部失敗下維持正確，以及工程成果如何用持久化證據驗證。它不是單純的 CRUD 範例，也不是只為了展示壓測數字的專案。
 
-> **證據摘要：** 兩個 workload seed 的同機、隨機混合 HTTP CDA 證據，支持 `648 accepted orders/s` 等級的 release-pinned 15 分鐘持續下界。兩輪各接受 `622,080` 筆訂單並收斂為三服務完全一致的 `311,040` 筆交易，完整流程速率分別為 `309.73` 與 `301.14 trades/s`。提高輸入後，完整流程吞吐沒有超出先前 624 的範圍，CPU、連線池與 tail latency 壓力反而上升，因此 648 是同機壓力邊界，不是寬裕容量。較舊版本曾有約 `700 accepted orders/s` 的另一類短窗結果；歷史高資料量測試另以 `200,000` 筆 HTTP 訂單完成 `100,000` 筆交易，沒有交易紀錄遺失或資產差異。這些工作負載邊界不同，也都不是正式環境 SLA；完整定義與限制請見[效能報告](docs/performance-report.md)。
+> **目前版本證據（2026-09-03）：** 加入 Order／Wallet／MatchEngine durable inbox 與 Order 雙狀態後，新版 k6 長窗在嚴格計算 RabbitMQ 與 service-owned inbox debt 的 gate 下，單一 seed 通過 `200 accepted orders/s`、`100 completed trades/s`；`192,000` 筆 HTTP 訂單收斂為三服務一致的 `96,000` 筆交易，資產、projection、queue、DLQ 與 reservation 全部正確。300 與 400 雖最終資料也收斂，但 Order reservation-result inbox 會累積到至少 5.1／5.3 萬筆，因此被拒絕為完整系統可持續容量。這是 dirty-worktree 同機診斷下界，不是 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-03-current-version-full-chain.md)。
+>
+> **歷史證據邊界：** 舊 commits 曾由兩個 release-pinned seed 支持 `648 accepted orders/s` 的 15 分鐘同機壓力邊界，但不能沿用成目前可靠性版本的容量。失敗結果沒有否定 durable inbox 的正確性價值，而是量出它目前的處理成本與下一個瓶頸。
 
 ## 系統總覽
 
@@ -19,7 +21,7 @@ flowchart LR
     Order -->|OrderSubmitted| MQ[(RabbitMQ)]
     MQ --> Wallet[Wallet Service]
     Wallet --> WalletDB[(Wallet DB)]
-    Wallet -->|OrderConfirmed| MQ
+    Wallet -->|OrderAssetReservationSucceeded| MQ
     MQ --> Match[MatchEngine]
     MQ --> Order
     Match <--> Redis[(Redis 訂單簿)]
@@ -35,13 +37,13 @@ flowchart LR
 
 1. 使用者透過 Order HTTP API 提交 BUY 或 SELL 訂單。
 2. Order 驗證命令，在同一筆交易中寫入訂單事件與 outbox。
-3. Wallet 接收訂單、保留所需資產，再透過自己的 outbox 發布確認結果。
-4. MatchEngine 將合格訂單放入 Redis sorted-set 訂單簿，並用 Lua 原子執行撮合。
+3. Wallet 接收訂單、保留所需資產，再透過自己的 outbox 發布 `OrderAssetReservationSucceededEvent`。
+4. MatchEngine 先把這項事實寫入 durable admission inbox，再由 lease worker 將合格訂單放入 Redis sorted-set 訂單簿，並用 Lua 原子執行撮合。
 5. 成交時，MatchEngine 在同一筆資料庫交易中寫入 `TradeExecuted`、trade outbox，以及必要的 reservation cleanup task。
 6. Order 將成交結果套用到命令端訂單狀態；Wallet 完成買賣雙方資產結算。
 7. 營運驗證在交易路徑之外，比對 MatchEngine、Order、Wallet 各自持久化的 trade ID，核對資產，並確認 queue 與 retry debt 已清空。
 
-取消訂單採用獨立的非同步決策流程：Order 先持久化受理請求，MatchEngine 再確保訂單剩餘數量只會由撮合或取消其中一方取得，Wallet 只釋放 MatchEngine 確認的未成交資產。若取消結果早於先前成交事件抵達 Order，系統會保留並重試，而不是覆蓋成交事實。
+取消訂單採用獨立的非同步決策流程：Order 先持久化受理請求，MatchEngine 再確保訂單剩餘數量只會由撮合或取消其中一方取得。MatchEngine 回覆成功後 Order 先進入 `CANCELLING`；Wallet 透過 durable inbox 套用結果、釋放精確未成交資產並發出 `OrderAssetReservationReleasedEvent`，Order 收到這項釋放事實後才成為 `CANCELLED`。若成交、取消結果或資產釋放事件亂序抵達，各自的 durable inbox 會保留並等待前置事實，而不是覆蓋已成立的成交。
 
 MatchEngine 不再維護額外的下游 Completion View，也不等待 Order 或 Wallet 回傳完成事件。各服務擁有自己的處理結果；跨服務收斂是交易路徑之外的驗證，不是新的業務依賴。
 
@@ -64,12 +66,12 @@ TDA 是另一條已實作的市場模式，會收集通過驗資的階梯式出�
 | 失敗或一致性風險 | 現行控制方式 |
 | --- | --- |
 | 資料庫提交成功，但事件發布失敗 | Transactional Outbox 與可重試 relay |
-| RabbitMQ 重複投遞事件 | 資料庫冪等紀錄與唯一約束 |
-| Consumer 在 ACK 前停止 | 本地交易提交後才進行 manual ACK |
+| RabbitMQ 重複投遞事件 | 資料庫冪等紀錄、payload identity guard 與唯一約束 |
+| Consumer 在 ACK 前停止 | 關鍵 Order／Wallet consumer 先 durable intake；commit 後才 manual ACK 或由 container ACK，後續以 lease worker 恢復 |
 | 錯誤事件無法處理 | Retry policy 與 DLX／DLQ |
 | Redis reservation 清理中斷 | 持久化 cleanup task、精確 `tradeId` 對應與 reconciliation |
 | 讀取 projection 延遲 | Projection 可重建，且不阻擋命令端交易套用 |
-| 取消訂單與撮合競爭，或取消結果先於成交事件抵達 | MatchEngine 確保訂單剩餘數量不會同時被撮合與取消，並持久化處理結果；Wallet 冪等套用資產異動；Order 在前置狀態完成後重試 |
+| 取消訂單與撮合競爭，或事件亂序抵達 | MatchEngine 決定剩餘量歸屬；Wallet durable inbox 冪等釋放並發布釋放事實；Order 以 `CANCELLING → CANCELLED` 與 prerequisite retry 等待收斂 |
 | 局部指標正常，但完整流程尚未完成 | 三服務 trade-ID 一致、資產核對及 queue／retry debt 清空 |
 
 CDA 交易只有在 MatchEngine 已寫入成交、Order 已套用成交、Wallet 已完成結算、三服務持久化 trade-ID 集合一致、資產正確，而且量測範圍內的 queue 與 retry debt 都清空後，才算完整業務完成。
@@ -105,6 +107,7 @@ flowchart TD
 [文件地圖](docs/README.md)。
 
 - [效能報告](docs/performance-report.md)：目前宣稱、定義、限制與瓶頸歷程。
+- [最新版本全鏈報告](docs/benchmarks/2026-09-03-current-version-full-chain.md)：新版 400／300 拒絕、嚴格 200 通過與 inbox backlog 量測修正。
 - [壓測分類](docs/benchmarks/load-test-taxonomy.md)：各種工作負載能證明及不能證明的內容。
 - [最新 canonical mixed 短窗邊界](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)：目前 CDA 短窗轉折區與限制。
 - [624 持續測試證據](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md)：2 個有效的 15 分鐘 seed，支持前一級持續下界。
@@ -137,14 +140,17 @@ Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測�
 
 ## 建議閱讀順序
 
-1. [面試快速入口](docs/interview-guide.zh-TW.md)：五分鐘掌握功能、架構、一致性、效能、優缺點與可展開故事。
-2. [架構文件](docs/architecture.zh-TW.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
-3. [CDA 訂單事件完整生命週期](docs/order-event-lifecycle.zh-TW.md)：從下單、驗資、撮合、結算到取消訂單，包含 retry、outbox／inbox、DLQ、Saga 與非 happy path。
-4. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
-5. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
-6. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
-7. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
-8. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
-9. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
+1. [最新版本導覽](docs/current-version-guide.zh-TW.md)：先掌握這次可靠性大改版、目前數據、限制與分流閱讀入口。
+2. [面試快速入口](docs/interview-guide.zh-TW.md)：五分鐘掌握功能、架構、一致性、效能、優缺點與可展開故事。
+3. [架構文件](docs/architecture.zh-TW.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
+4. [CDA 訂單事件完整生命週期](docs/order-event-lifecycle.zh-TW.md)：從下單、驗資、撮合、結算到取消訂單，包含 retry、outbox／inbox、DLQ、Saga 與非 happy path。
+5. [事件驅動一致性的五個核心問題](docs/event-consistency-five-questions.zh-TW.md)：詳細回答 distributed transaction、Outbox、at-least-once、business complete 與 Saga compensation 的邊界。
+6. [Wallet Inbox 與取消最終確認](docs/wallet-inbox-and-cancellation-completion.zh-TW.md)：本次 durable intake、錯誤分類、lease retry、資料表與 `CANCELLING → CANCELLED` 的實作證據。
+7. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
+8. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
+9. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
+10. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
+11. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
+12. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
 
 `docs/archive/performance/` 下的凍結實驗歷史會保留供追溯，但不屬於一般讀者的專案介紹路徑。

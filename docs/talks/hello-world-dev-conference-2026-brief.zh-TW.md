@@ -50,6 +50,8 @@ CDA 是本次有完整證據鏈的主要案例。TDA 只用來說明「功能存
 
 > 第三個案例把效能與監測連在一起。監測發現 MatchEngine 只有一條 scheduler 同時做 reservation cleanup 與 trade outbox，排程隔離讓 800 階段從 `167.93` 提升到 `383.45 trades/s`，最大積壓從 `4090` 降到 `246`，所以修正本身被採用。但後續高流量測試發現一張買單被重複撮合，整次高 TPS 結果必須作廢。修復 reservation 的 `tradeId` 核對後，最終公開證據只保留兩個 seed 都通過的 `648 accepted orders/s` 壓力邊界，完整流程為 `309.73` 與 `301.14 trades/s`，不宣稱 `2000 completed TPS`。
 
+> 2026-09-03 更新：這段 648 是講綱案例當時版本的 release-pinned 證據。後續加入三服務 durable inbox 後，新版嚴格 gate 只在單一 seed 通過 200 orders/s；300／400 因 Order inbox 持續累積被拒絕。若主管追問最新狀況，應用這個例子補充「證據會隨寫入路徑改變而失效，而且 Rabbit queue 歸零不代表 service-owned work 已完成」。
+
 這一段也負責說清楚 TPS 定義：HTTP 接受、RabbitMQ 收到、MatchEngine 寫出成交，都還不等於完整業務交易。必須等 MatchEngine、Order、Wallet 的 `trade_id` 一致、資產正確，而且 queue、DLQ 與處理債務清空。
 
 ### 四、人工質疑：取消訂單的 Wallet 投影
@@ -80,7 +82,7 @@ CDA 是本次有完整證據鏈的主要案例。TDA 只用來說明「功能存
 
 - 所有案例和數據都來自個人公開 EAP 專案，不涉及現職公司的程式碼、架構、資料或機密。
 - AI 角色是結構化的個人自我審查，不等於多位獨立工程師的正式審查。
-- `648 accepted orders/s` 是同機、release-pinned 的壓力邊界，不是正式環境容量。
+- `648 accepted orders/s` 是講綱提交版本的同機、release-pinned 壓力邊界，不是正式環境容量，也不是 2026-09-03 可靠性 worktree 的容量；新版單一 seed 診斷下界是 200 orders/s。
 - `922.38 trades/s` 是依序元件診斷；`20405.04 settlements/s` 來自已拒絕版本，兩者都不能當作完整系統 TPS。
 
 ## 會前閱讀入口

@@ -6,7 +6,9 @@ EAP is an independently built, event-driven electricity market backend. It suppo
 
 The project is designed around three questions: which service owns each business fact, how a trade remains correct under retries and partial failures, and how an engineering claim can be verified with durable evidence. It is not a CRUD demo or a benchmark-only project.
 
-> **Evidence snapshot:** two workload seeds support a release-pinned, same-host, shuffled mixed-HTTP CDA 15-minute sustained lower-bound class of `648 accepted orders/s`. Both runs accepted `622,080` orders and converged to `311,040` exact three-service trades; their full-lifecycle rates were `309.73` and `301.14 trades/s`. The higher input did not increase full-lifecycle throughput beyond the prior 624 range, while CPU, connection-pool pressure, and tail latency increased, so 648 is treated as a shared-host pressure boundary rather than comfortable capacity. An older revision reached about `700 accepted orders/s` in a separate short window, and a historical high-volume run verified `100,000` completed trades from `200,000` HTTP orders without missing trade records or asset discrepancies. These workloads have different boundaries and are not production SLAs. See the [performance report](docs/performance-report.md) for exact definitions and limitations.
+> **Current revision evidence (2026-09-03):** after adding service-owned durable inboxes and separate Order execution/reservation state, the stricter k6 long-window gate passes one diagnostic seed at `200 accepted orders/s` and `100 completed trades/s`. All `192,000` HTTP orders converged into `96,000` exact three-service trades with correct assets, projection, queues, DLQ, and reservations. The 300 and 400 runs also converged eventually, but Order's reservation-result inbox accumulated at least 51K/53K rows, so they are rejected as whole-system sustained capacity. This is a dirty-worktree, same-host diagnostic lower bound, not a production SLA. See the [current-version guide](docs/current-version-guide.zh-TW.md) and [campaign report](docs/benchmarks/2026-09-03-current-version-full-chain.md).
+>
+> **Historical boundary:** two release-pinned seeds supported a `648 accepted orders/s` 15-minute same-host pressure boundary for older commits. That evidence remains valid for those commits but is not the capacity of the current reliability revision.
 
 ## System Overview
 
@@ -19,7 +21,7 @@ flowchart LR
     Order -->|OrderSubmitted| MQ[(RabbitMQ)]
     MQ --> Wallet[Wallet Service]
     Wallet --> WalletDB[(Wallet DB)]
-    Wallet -->|OrderConfirmed| MQ
+    Wallet -->|OrderAssetReservationSucceeded| MQ
     MQ --> Match[MatchEngine]
     MQ --> Order
     Match <--> Redis[(Redis Order Book)]
@@ -35,8 +37,8 @@ There is no distributed transaction across the services. A service that must pub
 
 1. A client submits a BUY or SELL order through the Order HTTP API.
 2. Order validates the command, appends the order event, and writes an outbox record atomically.
-3. Wallet consumes the submitted order, reserves the required asset, and publishes the confirmed order through its outbox.
-4. MatchEngine admits the confirmed order into a Redis sorted-set order book and performs atomic matching with Lua.
+3. Wallet consumes the submitted order, reserves the required asset, and publishes `OrderAssetReservationSucceededEvent` through its outbox.
+4. MatchEngine durably stores that fact in its admission inbox, then a leased worker admits the order into a Redis sorted-set order book and performs atomic matching with Lua.
 5. A match commits the `TradeExecuted` fact, trade outbox, and any required reservation-cleanup task in the MatchEngine database.
 6. Order applies the trade to its command-side order state; Wallet settles the buyer and seller assets.
 7. Operational verification compares the durable trade IDs owned by MatchEngine, Order, and Wallet, reconciles assets, and checks that queues and retry debt have drained.
@@ -65,7 +67,7 @@ TDA is implemented as a separate market mode that collects confirmed stepped bid
 | --- | --- |
 | Database commit succeeds but event publication fails | Transactional outbox and retryable relay |
 | RabbitMQ redelivers an event | Database-backed idempotency and unique constraints |
-| Consumer stops before acknowledgement | Manual ACK after the local transaction commits |
+| Consumer stops before acknowledgement | Durable intake or durable local effect commits before manual/container acknowledgement |
 | Poison event cannot be processed | Retry policy plus DLX / DLQ |
 | Redis reservation cleanup is interrupted | Durable cleanup task, exact `tradeId` correlation, and reconciliation |
 | Read projection is delayed | Projection remains rebuildable and does not block command-side trade application |
@@ -105,6 +107,7 @@ Start with the [documentation map](docs/README.md) for the current source-of-tru
 benchmark-evidence, generated-artifact, and archive boundaries.
 
 - [Performance report](docs/performance-report.md): current claims, definitions, limitations, and bottleneck history.
+- [Latest current-version campaign](docs/benchmarks/2026-09-03-current-version-full-chain.md): rejected 400/300 runs, strict 200 diagnostic pass, and the durable-inbox backlog gate.
 - [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md): what each workload measures and what it cannot claim.
 - [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
 - [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.
@@ -136,11 +139,12 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for repository setup and service operations. Lo
 
 ## Reading Order
 
-1. [Architecture](docs/architecture.md) - service ownership, CDA/TDA flows, transaction boundaries, and completion semantics.
-2. [AI engineering workflow](docs/ai-engineering-workflow.md) - role contracts, human checkpoints, evidence gates, and rejected experiments.
-3. [Conference case study](docs/talks/hello-world-dev-conference-2026-case-study.md) - how the workflow is applied and generalized.
-4. [Performance report](docs/performance-report.md) - benchmark contracts and current evidence.
-5. [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md) - detailed workload boundaries.
-6. Service repositories: [Order](https://github.com/Yitin-tsai/eap-order), [Wallet](https://github.com/Yitin-tsai/eap-wallet), [MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine), and [Common](https://github.com/Yitin-tsai/eap-common).
+1. [Current-version guide](docs/current-version-guide.zh-TW.md) - the reliability redesign, current evidence, limitations, and reading routes.
+2. [Architecture](docs/architecture.md) - service ownership, CDA/TDA flows, transaction boundaries, and completion semantics.
+3. [AI engineering workflow](docs/ai-engineering-workflow.md) - role contracts, human checkpoints, evidence gates, and rejected experiments.
+4. [Conference case study](docs/talks/hello-world-dev-conference-2026-case-study.md) - how the workflow is applied and generalized.
+5. [Performance report](docs/performance-report.md) - benchmark contracts and current evidence.
+6. [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md) - detailed workload boundaries.
+7. Service repositories: [Order](https://github.com/Yitin-tsai/eap-order), [Wallet](https://github.com/Yitin-tsai/eap-wallet), [MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine), and [Common](https://github.com/Yitin-tsai/eap-common).
 
 The frozen experiment history under `docs/archive/performance/` is retained for traceability but is not part of the normal introduction path.

@@ -465,6 +465,7 @@ http_matched_start_services() {
   fi
   echo "[INFO] stopping stale loadtest services"
   bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
+  http_matched_bootstrap_schemas_if_needed
   echo "[INFO] purging EAP queues before service start"
   RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
     bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
@@ -473,6 +474,41 @@ http_matched_start_services() {
   LOADTEST_SERVICE_LAUNCH_MODE="${LOADTEST_SERVICE_LAUNCH_MODE}" \
   LOADTEST_SERVICE_JAVA_BIN="${LOADTEST_SERVICE_JAVA_BIN}" \
     bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
+}
+
+http_matched_schemas_ready() {
+  local order_container="${LOADTEST_ORDER_POSTGRES_CONTAINER:-eap-order-postgres-loadtest}"
+  local wallet_container="${LOADTEST_WALLET_POSTGRES_CONTAINER:-eap-wallet-postgres-loadtest}"
+  local match_container="${LOADTEST_MATCH_POSTGRES_CONTAINER:-eap-match-postgres-loadtest}"
+  local order_ready wallet_ready match_ready
+
+  order_ready="$(docker exec "${order_container}" psql -U "${JDBC_USER}" -d eap_order_db -Atqc \
+    "SELECT to_regclass('order_service.order_event_store') IS NOT NULL" 2>/dev/null || true)"
+  wallet_ready="$(docker exec "${wallet_container}" psql -U "${JDBC_USER}" -d eap_wallet_db -Atqc \
+    "SELECT to_regclass('wallet_service.wallets') IS NOT NULL" 2>/dev/null || true)"
+  match_ready="$(docker exec "${match_container}" psql -U "${JDBC_USER}" -d eap_match_db -Atqc \
+    "SELECT to_regclass('match_engine.trade_executions') IS NOT NULL" 2>/dev/null || true)"
+
+  [[ "${order_ready}" == "t" && "${wallet_ready}" == "t" && "${match_ready}" == "t" ]]
+}
+
+http_matched_bootstrap_schemas_if_needed() {
+  if http_matched_schemas_ready; then
+    return 0
+  fi
+
+  echo "[INFO] fresh loadtest database detected; bootstrapping Liquibase schemas"
+  LOADTEST_SCHEMA_BOOTSTRAP_ONLY=true \
+    LOADTEST_SERVICE_LAUNCH_MODE="${LOADTEST_SERVICE_LAUNCH_MODE}" \
+    LOADTEST_SERVICE_JAVA_BIN="${LOADTEST_SERVICE_JAVA_BIN}" \
+    bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
+  bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
+
+  if ! http_matched_schemas_ready; then
+    echo "[ERROR] loadtest schema bootstrap did not create every required table" >&2
+    return 1
+  fi
+  echo "[INFO] loadtest schemas ready"
 }
 
 http_matched_pre_reset_data() {

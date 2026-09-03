@@ -6,6 +6,7 @@ LOG_DIR="${TMPDIR:-/tmp}/eap-loadtest-logs"
 GRADLE_USER_HOME_DIR="${ROOT_DIR}/.cache/gradle"
 SERVICE_LAUNCH_MODE="${LOADTEST_SERVICE_LAUNCH_MODE:-boot-run}"
 SERVICE_JAVA_BIN="${LOADTEST_SERVICE_JAVA_BIN:-java}"
+SCHEMA_BOOTSTRAP_ONLY="${LOADTEST_SCHEMA_BOOTSTRAP_ONLY:-false}"
 SERVICE_JAVA_VERSION="managed by Gradle toolchain"
 SERVICE_JAVA_BIN_QUOTED=""
 
@@ -62,6 +63,11 @@ start_service() {
   local log_file="${LOG_DIR}/${repo}.log"
   local pid_file="${LOG_DIR}/${repo}.pid"
   local launch_command=""
+  local service_args="--spring.profiles.active=loadtest"
+
+  if [[ "${SCHEMA_BOOTSTRAP_ONLY}" == "true" ]]; then
+    service_args="${service_args} --spring.rabbitmq.listener.simple.auto-startup=false --eap.scheduling.enabled=false"
+  fi
 
   if lsof -Pi ":${port}" -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "[WARN] port ${port} is already in use; stop the existing process before starting ${repo}" >&2
@@ -70,12 +76,12 @@ start_service() {
 
   case "${SERVICE_LAUNCH_MODE}" in
     boot-run)
-      launch_command="GRADLE_USER_HOME='${GRADLE_USER_HOME_DIR}' ./gradlew --no-daemon bootRun --args='--spring.profiles.active=loadtest'"
+      launch_command="GRADLE_USER_HOME='${GRADLE_USER_HOME_DIR}' ./gradlew --no-daemon bootRun --args='${service_args}'"
       ;;
     jar)
       local boot_jar
       boot_jar="$(find_service_jar "${repo}")"
-      launch_command="exec ${SERVICE_JAVA_BIN_QUOTED} -jar '${boot_jar}' --spring.profiles.active=loadtest"
+      launch_command="exec ${SERVICE_JAVA_BIN_QUOTED} -jar '${boot_jar}' ${service_args}"
       ;;
   esac
 
@@ -107,6 +113,7 @@ start_service eap-matchEngine 8082 /match-engine/actuator/health
 
 echo "[INFO] loadtest services ready"
 echo "[INFO] service launch mode: ${SERVICE_LAUNCH_MODE}"
+echo "[INFO] schema bootstrap only: ${SCHEMA_BOOTSTRAP_ONLY}"
 echo "[INFO] service Java: ${SERVICE_JAVA_VERSION}; binary=${SERVICE_JAVA_BIN}"
 echo "[INFO] logs:"
 echo "  tail -f ${LOG_DIR}/eap-wallet.log"

@@ -51,8 +51,8 @@ MatchEngine
 graph TD
     client["Client / Load Generator"] -->|HTTP 下單| orderAccept["Order：保存命令事實與 outbox"]
     orderAccept -->|OrderSubmittedEvent| walletReserve["Wallet：保留資產並寫入 outbox"]
-    walletReserve -->|OrderConfirmedEvent| orderConfirm["Order：確認資產保留"]
-    walletReserve -->|OrderConfirmedEvent| match["MatchEngine：撮合並持久化 TradeExecuted"]
+    walletReserve -->|OrderAssetReservationSucceededEvent| orderConfirm["Order：確認資產保留"]
+    walletReserve -->|OrderAssetReservationSucceededEvent| match["MatchEngine：撮合並持久化 TradeExecuted"]
     match -->|TradeExecuted| orderApply["Order：套用成交"]
     match -->|TradeExecuted| walletSettle["Wallet：結算資產"]
     match --> redis[("Redis Order Book")]
@@ -160,7 +160,7 @@ MatchEngine 只發布 `TradeExecuted` 時，尚不能把交易計為 business-co
 4. MatchEngine、Order、Wallet 擁有完全相同的 durable `trade_id` 集合。
 5. RabbitMQ ready／unacked、DLQ 與量測範圍內的 durable debt 都已排空。
 
-Order projection lag 會另外報告，但不屬於 command-side business gate，因為 projection 是可以重建的 read model。
+Order projection lag 不會改寫已成立的 command-side 成交事實，因為 projection 是可重建的 read model；但對「完整系統可持續容量」而言，使用者查詢狀態與 durable inbox 也不能長期落後。因此壓測會把交易完成 gate 與 read-model／inbox 收斂 gate 分開呈現，最後兩者都必須通過才可宣稱整條服務穩態跟得上。
 
 MatchEngine 不接收 Order 或 Wallet 的 completion callback。每個下游服務各自擁有持久化結果、retry state、idempotency 與 failure handling。完整流程的 verifier 在交易路徑外比對三個服務擁有的 durable table，不會在 MatchEngine 再建立另一份跨服務業務狀態。
 
@@ -217,7 +217,7 @@ graph TD
 
 2026-08-14 的 isolated boundary campaign 量到：真實 Match listener 最高約 `918.46 persisted trades/s`、直接下游 Order／Wallet fanout 最高約 `1972.77 durable trades/s`、預先建立交易資料的 Match relay 加下游收斂約 `2125.20-2521.07 trades/s`。這些都是 `capacityClaimAllowed=false` 的短時間 component diagnostic，不能當成完整系統 TPS。
 
-在 canonical mixed HTTP recheck 中，`600 orders/s` 有 3 個有效 seed 通過，`624` 有 2 個通過、1 個失敗，`648` 當時只有 1 個短樣本通過且 HTTP tail latency 與 transient backlog 偏高。之後兩個 624 長窗通過，再由兩個 release-pinned `648 orders/s`、15 分鐘長窗分別達到 `315.96` 與 `314.84 same-window trades/s`。兩輪 648 都完整收斂，建立目前同機 `648 accepted orders/s` 下界；但最大 backlog 達 `4001-4907`，tail latency、pool pressure 與 shared-host CPU 都較高，因此它是壓力邊界，不是舒適容量。
+在 canonical mixed HTTP recheck 中，`600 orders/s` 有 3 個有效 seed 通過，`624` 有 2 個通過、1 個失敗，`648` 當時只有 1 個短樣本通過且 HTTP tail latency 與 transient backlog 偏高。之後兩個 624 長窗通過，再由兩個 release-pinned `648 orders/s`、15 分鐘長窗分別達到 `315.96` 與 `314.84 same-window trades/s`。兩輪 648 都完整收斂，建立該歷史版本的同機 `648 accepted orders/s` 下界；但最大 backlog 達 `4001-4907`，tail latency、pool pressure 與 shared-host CPU 都較高，因此它是壓力邊界，不是舒適容量。
 
 Redis resting-order reservation 也會保存預期產生的精確 durable `tradeId`。Cleanup、compensation 與 orphan reconciliation 在修改 reservation 前，都必須把該 ID 交給 Lua 核對，避免舊 cleanup 或依 timestamp 推測造成的 false negative，錯誤釋放已成交訂單，或刪除相同 order ID 的更新 reservation generation。
 
@@ -226,6 +226,8 @@ Redis resting-order reservation 也會保存預期產生的精確 durable `trade
 後續低 external-observability repeat 在前半段接近已通過 run，後半段卻退化；但 load generator 內仍保留每秒一次的 durable-count monitor，而且缺少 resource diagnostics，因此無法判定原因。Prepared-sync diagnostic 把 deterministic schedule 和 JSON 建構移出 traffic clock，並在 no-op endpoint 校準到 `1999.98 requests/s`，但 full-chain 1200／2000 probe 仍未達 offered-load gate。外部 Vegeta driver 排除了 Java driver scheduling 的歧義，也通過短時間的 648 equivalence sandwich，但沒有創造新的服務容量。
 
 一輪 release-pinned 20 分鐘 700 測試完整送入 `882000` 個 request 並最終正確收斂，但 same-window 只完成 `240.01 trades/s`，輸入結束後還需要約 `844.93s` 排空。只看 RabbitMQ backlog 無法揭露這些 service-owned debt。因此下一個有判斷力的步驟，是先量每個 durable stage 的 debt 與 slope，再執行另一輪高成本容量測試；只有在要突破同機邊界時，才需要把 load generator 移到另一台主機。
+
+2026-09-03 的可靠性版本已新增 Wallet／Order／Match durable inbox 與 Order 雙狀態，不能沿用上述 648。新版 k6 長窗在新加入的 Order reservation-result inbox level／slope gate 下，單一 seed 通過 `200 orders/s`、`100 trades/s`；300 與 400 雖最終正確收斂，但服務內 inbox 分別累積至少 5.1 萬與 5.3 萬筆，因此被拒絕。現行瓶頸是 Order reservation-result worker／projector 的持續消化能力，完整數據見[最新全鏈報告](benchmarks/2026-09-03-current-version-full-chain.md)。
 
 ## 為什麼現在不再拆更多服務
 
@@ -287,13 +289,15 @@ EAP 把 RabbitMQ ordering 視為 queue-scoped，而不是 global ordering。開�
 MatchEngine 是唯一的 cancellation arbiter：
 
 1. 先在 `match_engine.order_cancellations` 保存 `PENDING` recovery record，再寫入 Redis cancellation intent。DB row 讓中斷的 request 可被重新發現，但它本身不是 admission fence。
-2. Redis 決定 cancellation 的先後結果。尚未 admission 的訂單，由 admission 使用的同一個 Lua 邊界檢查 intent；已存在 order book 的訂單，cancellation Lua 與 matching Lua 會競爭移除同一個 ZSET member。先成功的 Redis operation 決定取消是阻止 admission、移除剩餘量，或輸給 matching。正常 `OrderConfirmed` 處理不查 PostgreSQL cancellation table。
+2. Redis 決定 cancellation 的先後結果。尚未 admission 的訂單，由 admission 使用的同一個 Lua 邊界檢查 intent；已存在 order book 的訂單，cancellation Lua 與 matching Lua 會競爭移除同一個 ZSET member。先成功的 Redis operation 決定取消是阻止 admission、移除剩餘量，或輸給 matching。正常 `OrderAssetReservationSucceededEvent` admission 不查 PostgreSQL cancellation table。
 3. 對 open resting order 而言，只有 cancellation Lua 實際移除一個 ZSET member 時才算成功，並直接回傳被移除的精確 order snapshot。已經進入 match reservation 的訂單不能同時被回報為 cancelled。
 4. 如果 request 在 Redis intent 寫入前中斷，或輸給正在進行的 admission／reservation，狀態會維持 pending。Reconciliation 會補回 intent，並在 admission 仍處理中時等待。Worker 使用 `SKIP LOCKED`、bounded lease 與 exponential retry delay claim row，避免多個 instance 重複處理同一筆尚未解決的 cancellation。最後依 visible remainder 或 durable trade，透過 transactional outbox 發布 `CANCELLED`、`ALREADY_MATCHED` 或 `NOT_OPEN`。Durable decision 同時保存 immutable original amount 與精確 cancelled remainder；前者用來驗證 replay identity，後者供 Order 與 Wallet 套用。
 
-Wallet 把 MatchEngine 的 cancellation result 當作精確 unmatched quantity 的權威事實。Wallet 自己推導 asset delta，只套用一次，並以 cancellation ID 與 order ID 保存狹義的 cancellation application。正常 reservation 與 trade settlement 不會在 Wallet 維護第二份 order-state projection。
+Wallet 把 MatchEngine 的 cancellation result 當作精確 unmatched quantity 的權威事實。Order submission 與 cancellation result 都先寫入 `wallet_service.message_inbox`；listener durable intake 後 ACK，再由 lease worker 分類、backoff 與重試。Wallet 自己推導 asset delta，只套用一次，並以 cancellation ID 與 order ID 保存狹義的 cancellation application。正常 reservation 與 trade settlement 不會在 Wallet 維護第二份 order-state projection。
 
-Trade settlement 消耗 matched quantity，cancellation 釋放彼此不重疊的 remainder，因此兩種事件不論哪個先抵達都應收斂成相同 balance。Order 會把 cancellation result 放入 durable inbox；如果 cancellation result 比較早到，但先前 trade 尚未更新 Order command state，就保持 `PENDING_PREREQUISITE` 並重試，而不是阻塞或推翻 trade application。`ALREADY_MATCHED` 透過正常 trade event 收斂；若 `NOT_OPEN` 又找不到 durable trade，則保留成可觀測 consistency debt，不會靜默當作 cancellation 已完成。
+Trade settlement 消耗 matched quantity，cancellation 釋放彼此不重疊的 remainder，因此兩種事件不論哪個先抵達都應收斂成相同 balance。Order 會把 cancellation result 放入 durable inbox；如果 cancellation result 比較早到，但先前 trade 尚未更新 Order command state，就保持 `PENDING_PREREQUISITE` 並重試，而不是阻塞或推翻 trade application。MatchEngine 的 `CANCELLED` 套用完成後，Order append `OrderCancellationAcceptedV1` 並進入 `CANCELLING`，不會過早宣稱整張訂單已完成取消。
+
+Wallet 真正釋放資產時，cancellation application、balance update、release publication guard、`OrderAssetReservationReleasedEvent` outbox 與 Wallet inbox `APPLIED` 在同一筆 local transaction 提交。Order 另以 durable release inbox 接收這個 Wallet-owned fact；若它早於 cancellation accepted 抵達就 defer，條件成立後 append `OrderCancellationCompletedV1`，此時狀態才是 `CANCELLED`。`ALREADY_MATCHED` 透過正常 trade event 收斂；若 `NOT_OPEN` 又找不到 durable trade，則保留成可觀測 consistency debt，不會靜默當作 cancellation 已完成。
 
 Focused PostgreSQL／Redis integration test 涵蓋 cancellation 對 reservation、duplicate result、identity conflict，以及 cancellation／trade 兩種抵達順序。跨服務 HTTP lifecycle 也測試 open order、partial fill 與有限次 match/cancel concurrency。這些屬於正確性證據，不是 cancellation-heavy capacity benchmark。在另行定義 workload 與 full-lifecycle gate 前，現行公開 CDA throughput boundary 不包含 cancellation-heavy 流量。
 
@@ -301,4 +305,4 @@ Ownership 決策、被拒絕的 Wallet projection 與修改後回歸證據，記
 
 取消功能也是一個有用的容量與系統設計情境：即使業務命令冪等，重複 request 仍會消耗 HTTP、Redis 與 database work；大量不同的 open order 則產生真正的 arbitration 與 asset release 工作。目前 Order endpoint 只用 `userId` 示範本地 rate limit，並保留可替換 policy boundary，未來可以放 account quota、open-order limit、cancellation-ratio control 或 queue-aware admission。這些是討論與擴充點，不是目前學習專案的部署 backlog，也不能取代競爭判定與冪等保證。
 
-這個邊界刻意信任 MatchEngine 提供的 immutable cancellation fact，就像 Wallet 信任 `TradeExecuted` 一樣。Wallet 仍擁有 balance calculation、non-negative guard、transaction rollback 與 idempotent application；MatchEngine 不會命令 Wallet 寫入某個絕對 balance。這讓 cancellation-only persistence 不會進入正常 order／trade write path，同時保留 replay 與 out-of-order convergence。
+這個邊界刻意信任 MatchEngine 提供的 immutable cancellation fact，就像 Wallet 信任 `TradeExecuted` 一樣。Wallet 仍擁有 balance calculation、non-negative guard、transaction rollback 與 idempotent application；MatchEngine 不會命令 Wallet 寫入某個絕對 balance。Wallet 回傳的 release event 也只提供 workflow identity 與 released quantity，不暴露餘額或 Wallet table schema。這讓 cancellation-only persistence 不會進入正常 order／trade write path，同時保留 replay 與 out-of-order convergence。更完整的資料表、retry 與 crash-window 說明見 [Wallet Inbox 與取消訂單最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)。

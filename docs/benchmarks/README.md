@@ -1,5 +1,7 @@
 # Benchmark Evidence Guide
 
+Current worktree entry: [2026-09-03 latest reliability-version full-chain campaign](2026-09-03-current-version-full-chain.md). It separates eventual correctness from sustainable service-owned inbox drain and supersedes the 2026-09-01／02 checkpoints as current status.
+
 This directory separates benchmark definitions, human decisions, and machine-readable
 evidence. A high TPS number is not published merely because a runner emitted JSON.
 

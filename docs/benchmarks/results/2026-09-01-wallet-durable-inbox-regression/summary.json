@@ -1,0 +1,48 @@
+{
+  "evidenceMode": "diagnostic",
+  "sourceState": "dirty-worktree",
+  "acceptedLongWindowRun": {
+    "runId": "WALLET_INBOX_CANONICAL_400_15M_20260901_R1",
+    "contract": "http-matched-steady-state-chain",
+    "workloadSeed": 20260820,
+    "warmupSeconds": 60,
+    "measurementSeconds": 900,
+    "targetOrderTps": 400,
+    "acceptedOrderTps": 400.0,
+    "steadyCompletedTradeTps": 199.96,
+    "fullConvergenceTradeTps": 199.45,
+    "acceptedOrders": 384000,
+    "convergedTrades": 192000,
+    "steadyMaxBacklog": 177,
+    "steadyBacklogSlopePerSecond": -0.0026,
+    "threeServiceTradeIdsEqual": true,
+    "finalQueueBacklog": 0,
+    "activeMatchReservations": 0,
+    "negativeWallets": 0,
+    "walletInboxApplied": 384000,
+    "walletInboxP95ApplySeconds": 0.1543,
+    "walletInboxP99ApplySeconds": 0.2754,
+    "walletInboxMaxApplySeconds": 1.1948,
+    "walletOutboxSent": 384000
+  },
+  "rejectedRates": [
+    {
+      "runId": "WALLET_INBOX_K6_500_20260901_R1",
+      "targetOrderTps": 500,
+      "steadyCompletedTradeTps": 175.01,
+      "reason": "steady_completion_rate_below_minimum"
+    },
+    {
+      "runId": "WALLET_ATOMIC_K6_648_20260901_R1",
+      "targetOrderTps": 648,
+      "steadyCompletedTradeTps": 150.49,
+      "reason": "steady_completion_rate_below_minimum"
+    }
+  ],
+  "inconclusiveRuns": [
+    {
+      "runId": "WALLET_INBOX_K6_450_20260901_R1",
+      "reason": "host_or_driver_interruption_and_http_eof"
+    }
+  ]
+}

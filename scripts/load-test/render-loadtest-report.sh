@@ -41,7 +41,8 @@ jq -r \
       .threeServiceTradeIdsEqual,
       .completedTradeIdSetsEqual,
       .tradeIdsEqual,
-      .assetReconciliationPassed
+      .assetReconciliationPassed,
+      .orderReadModelConverged
     ][]; . == false);
   def decision:
     if .capacityClaimAllowed == true then "PASS — capacity evidence eligible"
@@ -109,11 +110,17 @@ jq -r \
     + row("Steady backlog end"; .steadyBacklogEnd)
     + row("Maximum steady backlog"; pick([.steadyMaxBacklog, .steadyMaximumBacklog]))
     + row("Backlog slope/s"; pick([.steadyBacklogSlopePerSecond, .backlogGrowthPerSecond]))
+    + row("Order reservation inbox backlog start"; .steadyOrderReservationInboxBacklogStart)
+    + row("Order reservation inbox backlog end"; .steadyOrderReservationInboxBacklogEnd)
+    + row("Order reservation inbox maximum backlog"; .steadyOrderReservationInboxBacklogMax)
+    + row("Order reservation inbox backlog slope/s";
+      .steadyOrderReservationInboxBacklogSlopePerSecond)
     + row("Configured maximum backlog"; .maxSteadyBacklog)
     + row("Configured maximum growth/s"; .maxBacklogGrowthPerSecond)
     + row("Final queue backlog"; .finalQueueBacklog)
     + row("Final DLQ backlog"; .finalDlqBacklog)
     + row("Active reservations"; pick([.activeMatchReservations, .activeReservations]))
+    + row("Order projection lag events"; .finalOrderProjectionLagEvents)
     + "\n## Correctness\n\n"
     + "| Gate | Result |\n| --- | ---: |\n"
     + row("Overall validity"; .valid)
@@ -121,6 +128,11 @@ jq -r \
     + row("Three-service trade IDs equal"; pick([.threeServiceTradeIdsEqual,
       .completedTradeIdSetsEqual, .tradeIdsEqual]))
     + row("Asset reconciliation"; .assetReconciliationPassed)
+    + row("Order read model converged"; .orderReadModelConverged)
+    + row("Order projection rows"; .finalOrderProjectionRows)
+    + row("Reservation-succeeded projection rows";
+      .finalOrderProjectionReservationSucceededRows)
+    + row("User-visible matched order rows"; .finalUserVisibleMatchedOrderRows)
     + row("Correctness gate"; pick([.correctnessGate, .correctness]))
     + row("Order book BUY debt"; pick([.remainingBuyOrders, .remainingOrderbookBuyOrders]))
     + row("Order book SELL debt"; pick([.remainingSellOrders, .remainingOrderbookSellOrders]))

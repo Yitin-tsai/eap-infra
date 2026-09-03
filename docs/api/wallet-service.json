@@ -31,36 +31,6 @@
                 }
             }
         },
-        "/v1/wallet/check": {
-            "post": {
-                "tags": [
-                    "wallet-controller"
-                ],
-                "operationId": "checkWallet",
-                "requestBody": {
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "$ref": "#/components/schemas/OrderConfirmedEvent"
-                            }
-                        }
-                    },
-                    "required": true
-                },
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "content": {
-                            "*/*": {
-                                "schema": {
-                                    "type": "boolean"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/v1/wallet/users": {
             "get": {
                 "tags": [
@@ -174,34 +144,6 @@
                     },
                     "success": {
                         "type": "boolean"
-                    }
-                }
-            },
-            "OrderConfirmedEvent": {
-                "type": "object",
-                "properties": {
-                    "orderId": {
-                        "type": "string",
-                        "format": "uuid"
-                    },
-                    "userId": {
-                        "type": "string",
-                        "format": "uuid"
-                    },
-                    "price": {
-                        "type": "integer",
-                        "format": "int32"
-                    },
-                    "amount": {
-                        "type": "integer",
-                        "format": "int32"
-                    },
-                    "orderType": {
-                        "type": "string"
-                    },
-                    "createdAt": {
-                        "type": "string",
-                        "format": "date-time"
                     }
                 }
             },

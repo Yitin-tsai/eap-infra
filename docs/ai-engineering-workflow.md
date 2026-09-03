@@ -294,6 +294,8 @@ Wallet 實驗移除事件監聽器外層的明確資料庫交易。在 30K 隔�
 
 這輪來源仍有未提交修改且使用 diagnostic evidence mode，因此只證明目前工作樹通過完整長窗回歸，不能宣稱移除投影帶來 TPS 提升，也不取代既有 release-pinned 容量邊界。這個案例呈現 AI 輔助審查的另一個價值：人工可以推翻看似保守的設計，AI 再協助重建反例、測試與證據，而不是讓既有實作替自己辯護。完整紀錄見[取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
 
+後續 2026-09-03 可靠性改版再次證明相同原則：三服務加入 durable inbox 後，舊 648 數字不再代表目前寫入路徑；而且壓測發現 Rabbit queue 已歸零時，Order inbox 仍可累積數萬筆。工具補上 service-owned debt gate 後，原本顯示通過的 300 被人工審查推翻，最新版只保留單一 seed 的 200 orders/s 診斷下界。這是「驗證工具本身也要被 review」的最新案例。
+
 ## 一致性、效能、監測與決策
 
 | 面向 | EAP 證據 | 主要角色責任 |

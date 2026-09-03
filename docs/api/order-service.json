@@ -948,6 +948,10 @@
                     },
                     "status": {
                         "type": "string"
+                    },
+                    "assetReservationStatus": {
+                        "type": "string",
+                        "enum": ["PENDING", "SUCCEEDED", "REJECTED", "RELEASED"]
                     }
                 }
             },

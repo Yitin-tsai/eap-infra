@@ -2,11 +2,43 @@
 
 This report is the canonical current EAP capacity summary. The append-only experiment history is frozen in [archive/performance/2026-06-global-loadtest-2000-tps.md](archive/performance/2026-06-global-loadtest-2000-tps.md).
 
+## Current Reliability Worktree Diagnostic - 2026-09-03
+
+The current source materially differs from the release-pinned revision that supported
+the historical `648 accepted orders/s` class. Wallet reservation/cancellation intake,
+Order reservation results, and Match order admission now use service-owned durable
+inboxes; Order also exposes separate execution and asset-reservation state. Historical
+capacity remains valid only for its recorded commits.
+
+A current-worktree k6 campaign used a `60s` warm-up plus `900s` measurement window,
+shuffled balanced HTTP BUY/SELL traffic, and exact final three-service verification:
+
+| Target | Steady accepted | Steady completed | Completion target | Order reservation inbox | Decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| `400 orders/s` | `399.99 orders/s` | `187.75 trades/s` | `93.88%` | observed `>=53231` non-APPLIED | reject |
+| `300 orders/s` | `300.01 orders/s` | `149.70 trades/s` | `99.80%` | observed `>=51007` non-APPLIED | reject after durable-debt review |
+| `200 orders/s` | `200.00 orders/s` | `100.00 trades/s` | `100.00%` | max `791`, slope `+0.0035/s` | pass diagnostic |
+
+Every accepted workload eventually converged with exact MatchEngine, Order, and Wallet
+trade IDs, reconciled assets, query projection lag `0`, and zero final queue, DLQ,
+order-book, reservation, or locked-asset debt. The 300 result had been marked valid by
+the older runner because RabbitMQ was empty while Order's durable inbox accumulated.
+The runner now samples and gates Rabbit backlog and Order reservation-result inbox
+backlog independently. This is a measurement-contract correction, not a throughput
+optimization.
+
+The current worktree therefore has a one-seed, same-host diagnostic lower bound of
+`200 orders/s` (`100 trades/s`) under the stricter complete-system gate. The exact knee
+between 200 and 300 is not measured. Because the worktree is dirty, the load generator
+is co-located, and load-test PostgreSQL uses `synchronous_commit=off`, this does not
+promote a public capacity claim (`capacityClaimAllowed=false`). See the
+[2026-09-03 campaign report](benchmarks/2026-09-03-current-version-full-chain.md).
+
 The CDA cancellation redesign keeps per-order state in MatchEngine and adds only a
 cancellation-application idempotency row when Wallet actually releases assets. Normal
 Wallet order reservation and trade settlement do not maintain a cancellation projection.
 Cancellation adds one intent check to the existing Redis admission Lua, but normal
-`OrderConfirmed` processing does not query the PostgreSQL cancellation table. Focused PostgreSQL/Redis tests and the three-service HTTP
+`OrderAssetReservationSucceededEvent` admission does not query the PostgreSQL cancellation table. Focused PostgreSQL/Redis tests and the three-service HTTP
 cancellation lifecycle cover deterministic open/partial-fill cases plus a bounded
 match/cancel race, but these are correctness evidence rather than capacity
 evidence. A final `60s + 900s` shuffled mixed-HTTP diagnostic passed at
@@ -18,20 +50,53 @@ The release-pinned `648 orders/s` boundary remains evidence for the exact commit
 recorded in its artifacts; it must not be presented as a measured capacity result for
 the post-redesign revision until a new commit-pinned benchmark passes the same gates.
 
+The 2026-09-01 and 2026-09-02 paragraphs below are intermediate regression history;
+the 2026-09-03 section above supersedes them as current-worktree status.
+
+The newer 2026-09-01 Wallet durable-inbox worktree materially changes that current
+diagnostic picture. A canonical `60s + 900s` shuffled mixed-HTTP run passed at
+`400.00 accepted orders/s`, `199.96 steady completed trades/s`, and `199.45`
+full-lifecycle trades/s, with exact convergence across `192000` trades and no final
+asset, inbox, outbox, queue, DLQ, order-book, or reservation debt. Same-workload k6
+diagnostics rejected 500 and 648 because their measurement-window completion rates
+fell to `175.01` and `150.49 trades/s`. At 648 this is about 53.5% below the older
+same-host short-window `323.28–323.79 trades/s` class. The 450 run was environmentally
+invalid and cannot narrow the boundary. These dirty-worktree results prove a serious
+performance regression and one sustained 400 diagnostic point; they do not establish
+a new release-pinned capacity limit or justify removing the reliability controls. See
+the [Wallet durable-inbox regression report](benchmarks/2026-09-01-wallet-durable-inbox-regression.md).
+
+On 2026-09-02, MatchEngine admission changed again: its Rabbit listener now persists
+`OrderAssetReservationSucceededEvent` to `match_engine.order_admission_inbox`, and a
+bounded concurrent lease worker performs Redis admission. A same-seed staircase after
+that change passed the explicit Match inbox gate and the full correctness gate at the
+400 stage: `400.00 accepted orders/s` and `199.96 completed trades/s`. The 500 stage
+still failed, but a ready-only Order trade-inbox claim improved it from `181.87` to
+`218.67 trades/s` and reduced Match-to-Order p95 lag from `10.314s` to `4.471s`.
+All `56000` orders eventually converged into `28000` exact three-service trades with
+zero final inbox debt, queue debt, asset discrepancy, book remainder, or reservation debt. This short dirty-worktree
+campaign does not replace the release-pinned capacity claim; it establishes a current
+diagnostic passing point at 400 and rejects 500. See the
+[Match／Order inbox regression report](benchmarks/2026-09-02-match-and-order-inbox-regression.md).
+The affected path was not technical-failure retry: `25746/28000` trades entered
+`PENDING_PREREQUISITE` exactly once because independent Order and Match queues can
+deliver the confirmation state and resulting trade in different cross-queue order.
+All such inbox rows finished at attempt two, with no retry-exhaustion debt.
+
 ## Throughput Definitions
 
 EAP reports multiple throughput numbers because they answer different questions.
 
 The current benchmark suite is split into contracts:
 
-- `order-admission-chain` (implemented): `Order API -> Wallet reservation -> OrderConfirmedEvent -> MatchEngine orderbook admission`.
+- `order-admission-chain` (implemented): `Order API -> Wallet reservation -> OrderAssetReservationSucceededEvent -> MatchEngine orderbook admission`.
 - `matched-trade-completion-chain` (implemented): seeded confirmed orders enter MatchEngine and the benchmark waits for MatchEngine, Order, and Wallet durable trade completion.
 - `http-matched-trade-completion-chain` (implemented): BUY and SELL use the public HTTP path, followed by reservation, matching, settlement, three-service trade-ID convergence, and queue drain.
 - `http-matched-steady-state-chain` (implemented): the same public lifecycle under a warmup plus fixed-rate measurement window with backlog trend sampling.
 - `http-matched-staircase-chain` (implemented): progressively increases full-lifecycle order load to locate the first unsustainable stage.
 - `reservation-cleanup-isolated` (implemented diagnostic): Match PostgreSQL and Redis cleanup-task processing without the transaction path or other services.
 - `match-processor-combined-isolated` (implemented diagnostic): shuffled mixed MatchEngine processing through Redis matching and durable trade/outbox/cleanup writes without RabbitMQ or downstream services.
-- `rabbit-to-match-intake-isolated` (implemented diagnostic): paced shuffled OrderConfirmed messages through the real Match RabbitMQ listener, Redis matching, durable Match writes, and cleanup without downstream services.
+- `rabbit-to-match-intake-isolated` (implemented diagnostic): paced shuffled `OrderAssetReservationSucceededEvent` messages through the real Match RabbitMQ listener, durable admission inbox, Redis matching, durable Match writes, and cleanup without downstream services.
 - `trade-consumer-fanout-isolated` (implemented diagnostic): paced TradeExecuted messages through RabbitMQ fanout, real Order batch application, and real Wallet settlement without MatchEngine or HTTP admission.
 - `rabbitmq-publish-only` (implemented diagnostic): RabbitMQ broker-confirmed input ceiling with service processing removed.
 
@@ -94,12 +159,12 @@ CPU saturation. It still converged exactly, but failed the sustained gate at
 slope, and `28004` maximum backlog. No TPS improvement or regression is attributed
 to the ownership change from this run.
 
-The short-window mixed-HTTP lower-bound class remains about `700 accepted
-orders/s`, but the current release-pinned revision does not have a repeatable
+For that historical revision, the short-window mixed-HTTP lower-bound class was
+about `700 accepted orders/s`, but that release-pinned revision did not have a repeatable
 15-minute sustained 700 result. See the
 [release-pinned 700 and recovery ownership report](benchmarks/2026-08-11-release-pinned-700-and-recovery-ownership.md).
 
-## Current Release-Pinned Sustained Lower Bound - 2026-08-13
+## Historical Release-Pinned Sustained Lower Bound - 2026-08-13
 
 The downward search established a repeatable same-host point at `600 orders/s`
 with the same `60s` warmup and `900s` measurement window across two workload
@@ -198,7 +263,7 @@ sustained lower bound. See the
 ## Match Processor Combined Diagnostic - 2026-08-14
 
 A new low-resource probe filled the gap between the separate Redis/Lua and Match
-database ceilings. It sends shuffled mixed OrderConfirmed events directly through
+database ceilings. It sends shuffled mixed `OrderAssetReservationSucceededEvent` facts directly through
 the incoming-order idempotency guard, Redis matching, and transactionally durable
 trade, outbox, and cleanup-task writes, using only Match PostgreSQL and Redis.
 Cleanup is drained after processor timing so its isolated rate and final
@@ -268,8 +333,8 @@ same-window trades/s`, or `100.01%` of the completion target. Backlog started at
 messages/s` regression slope. Full convergence took `966.0380s`, or `310.05
 trades/s`. Neither run observed a RabbitMQ resource alarm or queue-read failure.
 
-Both runs passed the configured sustained-capacity and correctness gates, so the
-current release-pinned, same-host 15-minute lower-bound class is promoted from
+Both runs passed the configured sustained-capacity and correctness gates, so at that
+historical checkpoint the release-pinned, same-host 15-minute lower-bound class was promoted from
 `600` to `624 accepted orders/s`. This is not a comfortable headroom result:
 Order command-pool pending requests peaked at `85` and `80`, system CPU averaged
 roughly `80-88%` and reached about `100%`, and the first run had a `1.424s`
@@ -390,7 +455,7 @@ A low-rate harness smoke sent exactly `1200/1200` requests at a reported
 over `12.03s` wall time; all `600` trades converged across the three services,
 assets reconciled, and final queues, DLQ, order books, and reservations drained.
 This validates the harness only. It is not a capacity result and does not
-promote or reinterpret the current 648 same-host boundary.
+promote or reinterpret that historical 648 same-host boundary.
 
 The default placement is explicitly `co-located`: moving traffic generation to
 another process reduces generator overhead but does not create CPU or host
@@ -762,7 +827,7 @@ rejected happy-path ceiling experiment, not as a safe/current Wallet throughput 
 ### MatchEngine Compact Permanent Idempotency Boundary
 
 `IncomingOrderProcessingStore` previously kept one permanent `COMPLETED` UUID field per
-order in 256 Redis hashes. Adding TTL was rejected because an old `OrderConfirmed`
+order in 256 Redis hashes. Adding TTL was rejected because an old asset-reservation success
 redelivery could then rematch a resting or already completed order.
 
 The 2026-08-06 implementation instead uses the Order-owned `(market_id,
@@ -1127,7 +1192,7 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | Vegeta unattended current-worktree validation | `25` full-chain runs over about `11h07m`; all correctness gates passed, `24/25` capacity contracts passed, and all `16` independent 20-minute 700 orders/s repeats passed. One 800 confirmation had `14` HTTP timeouts despite exact durable convergence | adopt Vegeta as the preferred high-rate diagnostic driver and retain 700 as a current-worktree lower-bound candidate; do not promote 800 or rewrite the release-pinned 648 boundary before review and commit |
 | k6 external-driver integration smoke | `1200/1200` HTTP requests at `100 orders/s`, zero dropped iterations, 100% HTTP success, exact `600` three-service trades, reconciled assets, and zero final debt | adopt k6 as the default local diagnostic driver; retain Vegeta for historical controls and remote-host runs; require a controlled A/B before comparing capacity |
 | k6 648 full-window diagnostic | 648 VUs executed `610517/622080` requests and dropped `11563`; all executed requests were 2xx and all `305240` resulting trades converged across three services with reconciled assets and zero final debt. Same-host 2048／4096 VU calibrations also dropped traffic; 4096 caused request timeouts and monitor stalls | reject as capacity evidence, stop increasing same-host VUs, retain the existing release-pinned 648 boundary, and require remote-driver isolation for the next long k6 comparison |
-| Release-pinned source provenance and 700 repeat | Clean committed source and exact container/tool provenance; `882000/882000` HTTP success and exact `441000` three-service trades, but only `240.01` same-window and `209.51` full-lifecycle trades/s with an `844.93s` post-input drain | adopt the provenance gate, reject 700 as current capacity, retain 648, and add per-stage durable-debt slopes before another high-cost repeat |
+| Release-pinned source provenance and 700 repeat | Clean committed source and exact container/tool provenance; `882000/882000` HTTP success and exact `441000` three-service trades, but only `240.01` same-window and `209.51` full-lifecycle trades/s with an `844.93s` post-input drain | adopt the provenance gate, reject 700 for that revision, retain 648 only as its historical boundary, and add per-stage durable-debt slopes before another high-cost repeat |
 
 ## Seeded Matched-Completion Bottleneck
 
@@ -1229,18 +1294,37 @@ The current business gate requires:
 - target Order command-side trade application reached;
 - target Wallet settlement count reached;
 - identical completed trade-ID sets across MatchEngine, Order, and Wallet;
+- `orders_current` contains every accepted order, all successful reservation facts are
+  projected, the user-facing join exposes every matched order, and projection checkpoint
+  lag is zero;
 - RabbitMQ ready and unacked messages drained to zero;
 - DLQ remains zero;
 - duplicate and idempotency checks pass in focused tests.
 
-Projection lag is diagnostic only. It is not included in the business gate because projections are rebuildable read models.
+Projection lag used to be diagnostic only because the read model is rebuildable. The
+2026-09-02 dual-status regression showed that the former load-test profile could finish
+the command-side gate with only `5300/36000` orders present in `orders_current`: its
+`500`-event batch every `5s` provided roughly `100 events/s` while the workload generated
+about `800 Order events/s`. Full HTTP runners now require read-model convergence; being
+rebuildable no longer excuses an unavailable user-facing order history.
+
+The follow-up `DUAL_STATUS_PROJECTION_20260902_400TPS_R1` diagnostic changed the
+load-test projection profile to a `100ms` poll, `500` events per batch, and at most
+four batches per tick. It accepted `36000/36000` orders at `399.99 orders/s`, completed
+`200.52 trades/s` in the measurement window, and converged all `36000` query rows with
+`36000` successful reservation states. The user-facing join exposed all `36000`
+matched orders, while the projection checkpoint and event-store maximum both ended at
+`72000`. Three-service trade IDs, assets, order books, reservations, queues, and DLQ
+also converged exactly. Full convergence improved from the preceding ungated
+`102.340s` run to `93.123s`; this remains dirty-worktree short-window diagnostic
+evidence, not a replacement for the release-pinned sustained boundary.
 
 ## Known Gaps
 
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The current release-pinned 15-minute lower bound is a two-seed 648 class; an earlier 650 probe on a prior snapshot failed its completion, scheduling, and maximum-backlog gates. The later 2026-08-20 Vegeta matrix supports 700 only as separate current-worktree evidence, and the 2026-08-21 provenance-pinned repeat was rejected at `240.01 same-window trades/s` despite exact final convergence.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The later two-seed 648 class is the highest release-pinned historical boundary for those commits; the current 2026-09-03 reliability worktree instead has a one-seed strict diagnostic lower bound at 200. An earlier 650 probe and later 700 provenance run remain rejected historical evidence.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
@@ -1249,7 +1333,7 @@ Projection lag is diagnostic only. It is not included in the business gate becau
 - RabbitMQ management queue statistics refresh more slowly than the 100ms client sampling loop, so the Rabbit-to-Match diagnostic treats sampled ready/unacked peaks as potentially undercounted. Final queue/DLQ drain and durable record equality remain correctness gates; peak samples are diagnostic only.
 - The trade-consumer fanout diagnostic samples queue totals every `500ms`; a reported peak of zero can miss sub-interval backlog. Durable arrival counts, exact trade-ID equality, assets, and final queue/DLQ drain are its correctness evidence. Three zero samples add about one second of verification delay, so durable arrival and queue-drain verification are reported separately.
 - The Match-relay-to-downstream diagnostic starts from pre-seeded durable facts and a synchronized backlog activation. It measures drain capacity for that component boundary, not a natural mixed-arrival workload. Its `500ms` queue sampling can undercount transient peaks, and the final three zero samples are reported separately from durable convergence.
-- The short-window `624 orders/s` staircase stage passed two of three valid seeds and failed one. Two later 624 long-window runs passed, followed by two passing 648 long-window seeds. The current 648 lower-bound class remains pressure-qualified because full-lifecycle throughput stayed in the 624 range while pool, CPU, backlog, and tail latency increased.
+- The short-window `624 orders/s` staircase stage passed two of three valid seeds and failed one. Two later 624 long-window runs passed, followed by two passing 648 long-window seeds. That historical 648 lower-bound class remains pressure-qualified for its pinned commits because full-lifecycle throughput stayed in the 624 range while pool, CPU, backlog, and tail latency increased; it is not the current worktree claim.
 
 ## Historical Seeded Steady-State Evidence
 
@@ -1307,7 +1391,7 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Do not move directly to 672. First compare the 648 contract with lower observability overhead or a separated load-generator CPU domain while keeping business logic and service concurrency unchanged.
+1. Do not retry the historical 648 target. First instrument and optimize the Order reservation-result worker／projector path, then use same-seed 250/300 A/B runs with the durable-inbox gate.
 2. Keep macOS sleep disabled and reject any run with HTTP count mismatch, broker alarm, cross-JVM starvation warning, or lost diagnostic samples.
 3. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/queue debt in every accepted run.
 4. Capture Order command-pool wait, HTTP latency, queue slope, PostgreSQL/WAL, and system/process CPU without changing pool or listener concurrency in the same experiment.
@@ -1320,7 +1404,7 @@ The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchma
 
 Latest full HTTP lifecycle wording:
 
-> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, and settlement. The current release-pinned same-host evidence establishes a repeatable 15-minute `648 accepted orders/s` class across two seeds with exact Match, Order, and Wallet trade records, balances, and final queue drain. The two full-lifecycle rates were `309.73` and `301.14 trades/s`; higher tail latency, CPU, and connection-pool pressure make this a tested shared-host boundary, not a production SLA or comfortable ceiling. Historical high-volume tests separately validated 100,000 completed trades from 200,000 HTTP orders without record or asset loss.
+> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, settlement, and durable asynchronous recovery. After adding service-owned inboxes, the current dirty-worktree k6 diagnostic sustains one 15-minute seed at `200 accepted orders/s` and `100 completed trades/s` with exact three-service trade IDs, assets, query projection, and zero final debt. The 300 and 400 runs eventually converged but were rejected because Order's durable inbox kept growing. An older release-pinned revision supported 648 orders/s across two seeds; I keep that as version-specific historical evidence rather than presenting it as current capacity.
 
 Sequential diagnostic wording, when the benchmark distinction is relevant:
 

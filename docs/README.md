@@ -7,10 +7,18 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 
 | Area | Location | Purpose |
 | --- | --- | --- |
+| Latest-version entry | [`current-version-guide.zh-TW.md`](current-version-guide.zh-TW.md) | 2026-09-03 reliability redesign, current evidence, limitations, and reading paths |
 | System design | [`architecture.md`](architecture.md) / [`architecture.zh-TW.md`](architecture.zh-TW.md) | Current service ownership, event flows, and transaction boundaries |
 | CDA lifecycle deep dive | [`order-event-lifecycle.zh-TW.md`](order-event-lifecycle.zh-TW.md) | End-to-end order, trade, cancellation, retry, outbox, inbox, and Saga failure paths |
+| Event consistency FAQ | [`event-consistency-five-questions.zh-TW.md`](event-consistency-five-questions.zh-TW.md) | Distributed transactions, outbox limits, idempotency, business completion, and Saga compensation |
+| Order reservation-result reliability | [`order-asset-reservation-result-reliability.zh-TW.md`](order-asset-reservation-result-reliability.zh-TW.md) | Detailed durable inbox schema, transaction, lease, retry, crash windows, costs, and limitations |
+| Wallet inbox and cancellation completion | [`wallet-inbox-and-cancellation-completion.zh-TW.md`](wallet-inbox-and-cancellation-completion.zh-TW.md) | Implemented Wallet durable intake/retry and the `CANCELLING → CANCELLED` release-confirmation protocol |
+| Match order-admission inbox | [`match-order-admission-inbox.zh-TW.md`](match-order-admission-inbox.zh-TW.md) | Asset-reservation event contract, durable Match intake, lease retry, crash windows, operations, and limits |
+| Active Order reliability ticket | [`features/order-asset-reservation-result-reliability.zh-TW.md`](features/order-asset-reservation-result-reliability.zh-TW.md) | Implemented Order reservation-result inbox and remaining intake-outage, Saga timeout, and recovery work |
+| Active Wallet reliability ticket | [`features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md`](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md) | Wallet durable inbox, retry classification, Saga timeout, DLQ recovery, and failure-injection backlog |
 | Engineering workflow | [`ai-engineering-workflow.md`](ai-engineering-workflow.md) | Current role boundaries, evidence gates, and human decisions |
 | Performance claims | [`performance-report.md`](performance-report.md) | Canonical current capacity claims and limitations |
+| Latest full-chain campaign | [`benchmarks/2026-09-03-current-version-full-chain.md`](benchmarks/2026-09-03-current-version-full-chain.md) | k6 400／300 rejection, strict 200 diagnostic pass, and durable-inbox backlog discovery |
 | API contracts | [`api/`](api/) | Reviewed OpenAPI snapshots for public service contracts |
 | Benchmark methods | [`benchmarks/load-test-taxonomy.md`](benchmarks/load-test-taxonomy.md) | Workload definitions and claim boundaries |
 | Benchmark campaigns | [`benchmarks/`](benchmarks/) | Human-readable dated experiment reports |
@@ -48,6 +56,7 @@ runner / tests
 
 See the [benchmark evidence guide](benchmarks/README.md) for the promotion checklist.
 
-For an upcoming conversation rather than a deep document review, start with the
-[Traditional Chinese interview guide](interview-guide.zh-TW.md) or the
-[Hello World Dev brief](talks/hello-world-dev-conference-2026-brief.zh-TW.md).
+For this reliability revision, start with the
+[latest-version guide](current-version-guide.zh-TW.md). For an upcoming conversation,
+continue with the [Traditional Chinese interview guide](interview-guide.zh-TW.md) or
+the [Hello World Dev brief](talks/hello-world-dev-conference-2026-brief.zh-TW.md).

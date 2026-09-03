@@ -12,19 +12,19 @@ All contracts below exercise the CDA order/trade path. TDA uses separate auction
 
 | Contract | Status | Entry Point | What It Measures | What It Does Not Measure |
 | --- | --- | --- | --- | --- |
-| `order-admission-chain` | implemented | `scripts/load-test/run-order-admission-chain-10k.sh` | `Order API -> Order event store/outbox -> Wallet reservation -> OrderConfirmedEvent -> MatchEngine orderbook admission` | trade execution, Order trade application, Wallet settlement |
+| `order-admission-chain` | implemented | `scripts/load-test/run-order-admission-chain-10k.sh` | `Order API -> Order event store/outbox -> Wallet reservation -> OrderAssetReservationSucceededEvent -> MatchEngine orderbook admission` | trade execution, Order trade application, Wallet settlement |
 | `matched-trade-completion-chain` | implemented | `scripts/load-test/run-matched-trade-completion-10k.sh` | seeded confirmed orders entering MatchEngine, `TradeExecuted` persistence, Order trade application, Wallet settlement, durable trade-ID set equality, and final measured queue drain | Order HTTP API, initial order submission persistence, Wallet reservation decision cost |
 | `http-matched-trade-completion-chain` | implemented | `scripts/load-test/run-http-matched-trade-completion-10k.sh` | HTTP SELL admission followed by HTTP BUY matching, Match/Order/Wallet durable trade-ID equality, asset settlement, MatchEngine reservation cleanup, and final queue drain | isolated component ceilings; simultaneous mixed-side arrival patterns |
 | `http-matched-steady-state-chain` | implemented | `scripts/load-test/run-http-matched-steady-state.sh` | sustained balanced, seeded, mixed-side HTTP traffic; steady accepted-order and completed-trade rates; queue backlog level/slope; three-service durable convergence; asset settlement; and final drain | side-imbalanced, cancellation-heavy, or multi-price market behavior; multi-node failover |
 | `http-cancellation-lifecycle` | implemented | `scripts/load-test/run-http-cancellation-lifecycle.sh` | deterministic HTTP cancellation through real RabbitMQ; open-order cancellation; partial-fill remainder cancellation; Match decision, Redis visibility, Order state, Wallet cancellation application/assets, trade-ID equality, outbox debt, queue/DLQ drain | cancellation throughput, broad randomized races, multi-node failover |
-| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite checksummed open-loop schedule; k6 is the default local driver and Vegeta remains available for historical controls | automatic CPU or host isolation; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
+| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite checksummed open-loop schedule; k6 is the default local driver; RabbitMQ and Order reservation-result durable-inbox backlog are sampled independently | automatic CPU or host isolation; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
 | `http-matched-staircase-chain` | implemented | `scripts/load-test/run-http-matched-staircase.sh` | one uninterrupted balanced, seeded, mixed-side HTTP run with progressively higher total order rates, per-stage throughput/latency/backlog gates, automatic knee detection, and final full-chain convergence | a long-duration guarantee at the provisional knee; side-imbalanced flow; multi-host load generation |
 | `reservation-cleanup-isolated` | implemented diagnostic | `scripts/load-test/run-reservation-cleanup-ab.sh` | MatchEngine cleanup task claim, Redis reservation removal, completion update, and batch-size A/B using only Match PostgreSQL and Redis | HTTP admission, RabbitMQ scheduling, trade persistence, Order application, Wallet settlement, or full-chain capacity |
-| `match-processor-combined-isolated` | implemented diagnostic | `scripts/load-test/run-match-processor-probe.sh` | shuffled mixed OrderConfirmed processing through the idempotency guard, Redis Lua matching, transactionally persisted trade/outbox/cleanup facts, and a separately timed cleanup drain using only Match PostgreSQL and Redis | RabbitMQ listener delivery/acknowledgement, concurrent cleanup contention, Order, Wallet, HTTP, or full-chain capacity |
-| `rabbit-to-match-intake-isolated` | implemented diagnostic | `scripts/load-test/run-rabbit-match-intake-probe.sh` | paced shuffled mixed OrderConfirmed messages through real RabbitMQ publisher confirms, Match listener/acknowledgement, Redis matching, durable trade/outbox/cleanup writes, and concurrent cleanup using only RabbitMQ, Match PostgreSQL, and Redis | Match trade outbox relay, Order, Wallet, HTTP, cross-service completion, or full-chain capacity |
+| `match-processor-combined-isolated` | implemented diagnostic | `scripts/load-test/run-match-processor-probe.sh` | shuffled mixed `OrderAssetReservationSucceededEvent` processing through the idempotency guard, Redis Lua matching, transactionally persisted trade/outbox/cleanup facts, and a separately timed cleanup drain using only Match PostgreSQL and Redis | RabbitMQ listener delivery/acknowledgement, concurrent cleanup contention, Order, Wallet, HTTP, or full-chain capacity |
+| `rabbit-to-match-intake-isolated` | implemented diagnostic | `scripts/load-test/run-rabbit-match-intake-probe.sh` | paced shuffled mixed `OrderAssetReservationSucceededEvent` messages through real RabbitMQ publisher confirms, Match listener/acknowledgement, Redis matching, durable trade/outbox/cleanup writes, and concurrent cleanup using only RabbitMQ, Match PostgreSQL, and Redis | Match trade outbox relay, Order, Wallet, HTTP, cross-service completion, or full-chain capacity |
 | `trade-consumer-fanout-isolated` | implemented diagnostic | `scripts/load-test/run-trade-consumer-fanout-probe.sh` | seeded locked Wallet balances followed by paced persistent TradeExecuted messages through real RabbitMQ fanout, Order batch application, Wallet single-event settlement, exact downstream trade-ID and asset reconciliation, and final queue drain using only Order, Wallet, RabbitMQ, and their PostgreSQL databases | Match trade outbox relay, Match persistence, Redis matching, HTTP admission, reservation-decision cost, or full-chain capacity |
 | `match-relay-downstream-isolated` | implemented diagnostic | `scripts/load-test/run-match-relay-downstream-probe.sh` | pre-seeded durable Match trade/outbox backlog through the real Match relay and RabbitMQ fanout into real Order/Wallet durable application, exact three-service trade IDs, assets, and final drain | HTTP admission, Wallet reservation, Order confirmation, Redis matching, Match trade persistence, simultaneous mixed-flow contention, or full-chain capacity |
-| `rabbitmq-publish-only` | implemented diagnostic | `scripts/load-test/run-rabbitmq-publish-only-10k.sh` | RabbitMQ broker-confirmed input ceiling for persistent `OrderConfirmedEvent` messages | service processing, DB writes, matching, settlement |
+| `rabbitmq-publish-only` | implemented diagnostic | `scripts/load-test/run-rabbitmq-publish-only-10k.sh` | RabbitMQ broker-confirmed input ceiling for persistent `OrderAssetReservationSucceededEvent` messages | service processing, DB writes, matching, settlement |
 
 Scripts named `run-global-matched-e2e*` are lower-level seed/project/run drivers used by the backend wrapper and isolated diagnostics. Their publisher fan-out and phase controls do not define additional public capacity contracts. Use the entry points in the table for comparable results.
 
@@ -120,6 +120,7 @@ In addition to final correctness and drain gates, a sustained run is valid only 
 - measured completed-trade rate reaches at least `95%` of the target order rate divided by two;
 - aggregate queue backlog stays below the configured ceiling;
 - linear queue backlog growth stays below the configured messages/s ceiling;
+- Order reservation-result durable-inbox backlog stays below the same configured ceiling and does not grow meaningfully during the steady window;
 - per-second RabbitMQ management samples are readable throughout the steady window.
 
 Registered load-test wallets are funded during setup according to the planned run length. Registration and funding are outside the measurement window; every measured order, reservation, match, trade application, and settlement still uses the real service path.
@@ -258,7 +259,7 @@ Each stage reports:
 - queue backlog start, end, maximum, and linear regression slope;
 - an explicit pass/fail reason list.
 
-The default runner stops after the first failed stage, then waits for all traffic already accepted to converge. A usable capacity-search result still requires exact Match/Order/Wallet trade-ID equality, exact aggregate asset deltas, empty order books and reservations, and final RabbitMQ ready/unacked plus DLQ drain.
+The default runner stops after the first failed stage, then waits for all traffic already accepted to converge. A usable capacity-search result still requires exact Match/Order/Wallet trade-ID equality, exact aggregate asset deltas, an Order read model caught up through the event-store checkpoint with every accepted order query-visible, empty order books and reservations, and final RabbitMQ ready/unacked plus DLQ drain.
 
 Queue growth is treated as sustained debt only when both the regression and net-growth rates exceed the configured limit and the net increase is larger than one second of offered load. This prevents a short RabbitMQ sampling spike from being mislabeled as a capacity knee; the independent maximum-backlog ceiling still rejects large oscillations.
 
@@ -298,18 +299,18 @@ gates.
 
 ## Next Benchmark Work
 
-1. Keep `648 accepted orders/s` as the two-seed, 15-minute same-host sustained
-   lower-bound class and treat it as a pressure boundary. The release-pinned
-   20-minute 700 repeat supplied every request and converged exactly, but failed at
-   `240.01 same-window trades/s` after a long drain.
-2. Extend the business monitor with separate durable debt and slope for Order
-   submission-to-reservation, reservation-to-confirmation, confirmation-to-Match,
+1. Keep `648 accepted orders/s` only as the two-seed historical boundary for its
+   release-pinned commits. The 2026-09-03 reliability worktree has a one-seed strict
+   diagnostic lower bound at 200 orders/s; 300/400 are rejected because Order
+   reservation-result durable debt grows even when RabbitMQ is empty.
+2. Order reservation-result durable debt now has an independent level and slope gate.
+   Continue extending the business monitor for Order submission-to-reservation, confirmation-to-Match,
    Match trade-to-relay, downstream Order/Wallet application, and reservation
    cleanup. RabbitMQ ready/unacked alone did not expose the 700 run's debt.
-3. After that instrumentation is committed, use a short deep 700 diagnostic to
-   capture Hikari, PostgreSQL wait/WAL, outbox, cleanup, and per-stage evidence.
-   Do not pay for another 15-20 minute repeat until one stage has a testable
-   bottleneck hypothesis.
+3. Measure Order reservation-result worker timing, batch size, oldest age, scheduler,
+   PostgreSQL wait/WAL, and projection work before changing concurrency. Use a short
+   250/300 same-seed A/B for an accepted optimization, then repeat multiple 15-minute
+   seeds before promoting a new release-pinned boundary.
 4. Repeat a surviving boundary with a separate load-generator host. Co-located
    Vegeta reduces driver cost but does not isolate EAP from laptop CPU contention.
 5. Add a separate imbalance contract for `60/40`, `40/60`, burst, residual-book,

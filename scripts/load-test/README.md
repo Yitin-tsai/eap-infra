@@ -23,7 +23,8 @@ The default capacity workflow is:
 2. use the external driver for low-cost, same-seed A/B diagnostics;
 3. verify a candidate with the canonical mixed steady-state contract;
 4. require exact trade IDs, assets, order-book and reservation cleanup, queue/DLQ
-   drain, offered load, completion rate, and bounded backlog;
+   drain, Order read-model convergence, offered load, completion rate, bounded RabbitMQ
+   backlog, and bounded Order reservation-result inbox backlog;
 5. repeat a different seed before promoting a sustained boundary.
 
 ## Test Types
@@ -112,6 +113,23 @@ Workload runners write raw logs, result JSON, generated Markdown, samples, and d
 It is useful for investigation and reruns, but a committed report must not depend on
 that directory remaining on one machine.
 
+The external k6/Vegeta runner deletes request-level JSONL, generated targets,
+samples, diagnostics, monitor logs, and other temporary runtime files after the
+final EAP result has been persisted. The JSONL files can be many times larger than
+the order count because the driver emits multiple metric records per request. The
+runner retains the compact result, readable reports, driver summary, manifest, and
+provenance. Set
+`KEEP_RAW_LOADTEST_ARTIFACTS=true` only for a run that needs request-level diagnosis.
+If a run fails before it can persist a result, the raw files are preserved.
+
+Use the retention tool to remove interrupted-run leftovers and older diagnostics.
+It is a dry run unless `DRY_RUN=false` is supplied:
+
+```bash
+PRUNE_ALL_RAW=true bash scripts/load-test/prune-loadtest-reports.sh
+PRUNE_ALL_RAW=true DRY_RUN=false bash scripts/load-test/prune-loadtest-reports.sh
+```
+
 After review, promote only the evidence needed for the decision into
 `docs/benchmarks/results/YYYY-MM-DD-topic/`, write or update the dated campaign report
 under `docs/benchmarks/`, and update `docs/performance-report.md` only when the
@@ -123,8 +141,14 @@ For k6-backed runs, read artifacts in this order:
 1. `*-report.md`: final EAP decision, throughput, durable correctness, and claim limits;
 2. `*-result.json`: machine-readable source for the final decision;
 3. `*-k6-report.md`: HTTP driver-only checks, offered load, and latency;
-4. `*-k6-summary.json` and `*-k6.jsonl`: aggregated and request-level raw driver data;
-5. `*-manifest.json`, samples, and diagnostics: workload identity and bottleneck evidence.
+4. `*-k6-summary.json`: aggregated driver data; `*-k6.jsonl` exists only when raw retention is enabled;
+5. `*-manifest.json`: workload identity; samples and diagnostics exist only when raw retention is enabled.
+
+For current external full-chain results, the latency/backlog section must contain both
+`steadyBacklog*` (RabbitMQ ready＋unacked) and
+`steadyOrderReservationInboxBacklog*` (Order service-owned non-`APPLIED` work).
+RabbitMQ at zero with a growing inbox is a failed whole-system sustained result even
+when all accepted orders eventually converge after traffic stops.
 
 Primary workloads, focused probes, and experiment summaries automatically call
 `render-loadtest-report.sh`. To render an older JSON result without rerunning load:

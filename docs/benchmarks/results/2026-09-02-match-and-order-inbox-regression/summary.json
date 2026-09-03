@@ -1,0 +1,35 @@
+{
+  "evidenceMode": "diagnostic",
+  "sourceState": "dirty-worktree",
+  "contract": "http-matched-staircase-chain",
+  "workloadSeed": 20260804,
+  "stageWarmupSeconds": 10,
+  "stageMeasurementSeconds": 30,
+  "baseline": {
+    "runId": "MATCH_INBOX_STAIRCASE_200_600_20260902_R1",
+    "highestPassingOrderTps": 400,
+    "completedTradeTpsAt400": 198.47,
+    "completedTradeTpsAt500": 181.87,
+    "matchToOrderP95Ms": 10314.2,
+    "matchToOrderP99Ms": 10725.2
+  },
+  "adopted": {
+    "runId": "MATCH_INBOX_STAIRCASE_READY_CLAIM_200_600_20260902_R5",
+    "highestPassingOrderTps": 400,
+    "completedTradeTpsAt400": 199.96,
+    "completedTradeTpsAt500": 218.67,
+    "tradeTpsImprovementAt500Percent": 20.23,
+    "matchToOrderP95Ms": 4470.81,
+    "matchToOrderP99Ms": 4643.36,
+    "acceptedOrders": 56000,
+    "convergedTrades": 28000,
+    "matchAdmissionInboxApplied": 56000,
+    "matchAdmissionInboxNonApplied": 0,
+    "orderTradeInboxApplied": 25746,
+    "orderTradeInboxNonApplied": 0,
+    "threeServiceTradeIdsEqual": true,
+    "finalQueueBacklog": 0,
+    "activeMatchReservations": 0
+  },
+  "decision": "retain_ready_only_order_trade_inbox_claim_but_do_not_promote_500_capacity"
+}
