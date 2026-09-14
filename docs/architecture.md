@@ -183,7 +183,7 @@ graph TD
 | poison message blocks queue | DLX / DLQ and retry state |
 | projection falls behind | checkpointed projector and lag metrics |
 | downstream application is delayed | service-owned retry/inbox state, DLQ alerts, and external durable-fact reconciliation |
-| Redis reservation cleanup is interrupted | durable cleanup task plus reservation reconciler |
+| Redis reservation cleanup is interrupted | durable cleanup task with owner/token lease fencing plus a durable reservation-issue record |
 | benchmark observer effect | light/deep diagnostics levels and queue-first sampling |
 
 ## Current Scaling Boundary
@@ -307,6 +307,23 @@ MatchEngine is the sole cancellation arbiter:
    transactional outbox. The durable decision stores both the immutable original amount
    and the exact cancelled remainder; replay identity uses the former, while Order and
    Wallet apply the latter.
+
+Cancellation reconciliation now counts prerequisite waiting separately from technical
+failures. Waiting for admission, an active reservation, an order snapshot, or a verified
+runtime generation does not consume the 20-attempt technical budget, but it records timing
+and emits periodic alerts. Retry exhaustion and order-book identity invariants become durable
+`FAILED_TERMINAL` decisions. Likewise, orphan reservation payload and ownership failures are
+stored in `reservation_reconciliation_issues`, keyed by a generation plus trade/payload
+fingerprint rather than the reusable Redis key alone. Exact terminal identities are skipped,
+while a later reservation for the same order remains recoverable. A durable trade must also
+match the reservation's market, order, user, sequence, price, and quantity before Redis is
+mutated. Terminal rows remain visible even if their Redis key disappears; only retryable
+mutation debt may auto-resolve after a bounded direct fingerprint check. Reservation traversal
+uses a generation-bound shared Redis cursor and bounded pages rather than a full keyspace scan
+on every poll. Cleanup task renew/complete/failure updates require both the worker owner
+and a unique claim token, so an expired worker cannot overwrite a newly claimed task. See the
+[Match terminal error semantics](match-terminal-error-semantics.zh-TW.md) for the state and
+operator queries.
 
 Wallet treats MatchEngine's atomic cancellation result as the authoritative fact for
 the exact unmatched quantity. Order submissions, trade executions, and cancellation results are first

@@ -7,7 +7,7 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 
 | Area | Location | Purpose |
 | --- | --- | --- |
-| Latest-version entry | [`current-version-guide.zh-TW.md`](current-version-guide.zh-TW.md) | 2026-09-04 reliability redesign, current evidence, limitations, and reading paths |
+| Latest-version entry | [`current-version-guide.zh-TW.md`](current-version-guide.zh-TW.md) | Current reliability redesign, evidence, limitations, and reading paths |
 | Prioritized engineering backlog | [`backlog.zh-TW.md`](backlog.zh-TW.md) | Cross-service P0-P3 ordering, dependencies, acceptance boundaries, and deferred scope |
 | System design | [`architecture.md`](architecture.md) / [`architecture.zh-TW.md`](architecture.zh-TW.md) | Current service ownership, event flows, and transaction boundaries |
 | CDA lifecycle deep dive | [`order-event-lifecycle.zh-TW.md`](order-event-lifecycle.zh-TW.md) | End-to-end order, trade, cancellation, retry, outbox, inbox, and Saga failure paths |
@@ -16,6 +16,7 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 | Wallet inbox and cancellation completion | [`wallet-inbox-and-cancellation-completion.zh-TW.md`](wallet-inbox-and-cancellation-completion.zh-TW.md) | Implemented Wallet durable intake/retry and the `CANCELLING → CANCELLED` release-confirmation protocol |
 | Wallet trade-settlement inbox | [`wallet-trade-settlement-inbox.zh-TW.md`](wallet-trade-settlement-inbox.zh-TW.md) | `TradeExecuted` durable intake, lease retry, atomic settlement, crash windows, and remaining limits |
 | Match order-admission inbox | [`match-order-admission-inbox.zh-TW.md`](match-order-admission-inbox.zh-TW.md) | Asset-reservation event contract, durable Match intake, lease retry, crash windows, operations, and limits |
+| Match terminal error semantics | [`match-terminal-error-semantics.zh-TW.md`](match-terminal-error-semantics.zh-TW.md) | Cancellation retry classes, reservation issue quarantine, cleanup lease fencing, operator SQL, and remaining control-plane boundary |
 | Active Order reliability ticket | [`features/order-asset-reservation-result-reliability.zh-TW.md`](features/order-asset-reservation-result-reliability.zh-TW.md) | Implemented Order reservation-result inbox and remaining intake-outage, Saga timeout, and recovery work |
 | Active Wallet reliability ticket | [`features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md`](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md) | Wallet durable inbox, retry classification, Saga timeout, DLQ recovery, and failure-injection backlog |
 | Engineering workflow | [`ai-engineering-workflow.md`](ai-engineering-workflow.md) | Current role boundaries, evidence gates, and human decisions |

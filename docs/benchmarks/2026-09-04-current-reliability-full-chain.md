@@ -122,7 +122,7 @@ terminal／identity-conflict debt 必須同時通過：
 
 後續進度（2026-09-14）：`EAP-REL-101` 已完成 order-book generation／`run_id`
 fail-closed gate 與受控 activation，且最新版短版全鏈 smoke 再次通過。依
-[工程 Backlog](../backlog.zh-TW.md)，下一步是 `EAP-REL-102` 的 Match terminal
+[工程 Backlog](../backlog.zh-TW.md)，本報告產出當時的下一步是 `EAP-REL-102` Match terminal
 semantics；之後再處理跨服務 durable-debt SLO、inbox commit 前長時間 DB outage、
 Saga timeout 與受控 DLQ recovery。
 

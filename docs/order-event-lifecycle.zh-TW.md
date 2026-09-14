@@ -432,10 +432,10 @@ Match inbox 的 schema、crash window、operator retry 與限制另見 [Match �
 #### Durable trade commit 後
 
 1. `TradeExecuted` 已是 pivot，不允許因 Redis cleanup 失敗而刪除 trade。
-2. full fill 的 cleanup task 與 trade 同 transaction commit；worker 預設每 100 ms claim，使用 `SKIP LOCKED` 與 30 秒 processing timeout。Redis timeout、連線或 script 執行錯誤屬 technical failure，最多 10 次、1 秒 exponential backoff、最高 300 秒，耗盡後標 `FAILED`。
+2. full fill 的 cleanup task 與 trade 同 transaction commit；worker 預設每 100 ms claim，使用 `SKIP LOCKED`、30 秒 lease 與每次 claim 唯一 token。renew、完成、重排與 terminal 更新都必須同時符合 task ID、owner 與 token，過期 worker 不能覆寫新 claim。Redis timeout、連線或 script 執行錯誤屬 technical failure，最多 10 次、1 秒 exponential backoff、最高 300 秒，耗盡後標 `FAILED`。
 3. cleanup Lua 回傳 `COMPLETED` 或 `ALREADY_COMPLETED` 才能把 task 標成完成。若 reservation 內的 `orderId` 不符，或已由較新的 `tradeId` 擁有，代表 identity／ownership invariant 衝突：Lua 不修改任何 Redis key，worker 立即保存 `FAILED`、attempt、order ID、expected trade ID 與 outcome，不能重試到新 reservation 消失後再把舊任務誤判成成功。
 4. partial fill 需取得 per-order lock，最多等 5 秒、lease 10 秒，再把精確 remainder 放回。若這一步失敗，reservation 仍在 Redis；generic listener retry 之外，orphan reconciler 也會查 durable trade，依 `trade.quantity` 釋放正確 remainder。
-5. orphan reconciler 沒有自己的 attempt row／terminal status；單筆失敗只記 metrics／log，下次 5 秒掃描仍會再試。invalid reservation 目前只記 error，不會自動修正或隔離。
+5. orphan reconciler 以 `reservation_reconciliation_issues` 保存 generation＋trade／payload fingerprint、reservation key、trade／order／user identity、原始 payload、attempt 與最後錯誤。invalid payload 或 ownership conflict 直接 `TERMINAL`；一般 action failure 最多 10 次後 terminal。後續有界游標掃描只跳過完全相同的 terminal identity，同 key 的新 reservation 仍能處理；terminal row 不會因 Redis key 消失就被洗成 resolved。成功的 transient issue，或已確認 fingerprint 不存在的 retryable mutation debt，會保留為 `RESOLVED` 稽核紀錄。
 6. incoming order 已完成部分成交後中斷時，redelivery recovery 會從 durable trades 加總已成交量，再處理剩餘量，避免把原始 amount 全部重做。
 
 這一層的設計重點不是「Redis 操作都能 rollback」，而是 PostgreSQL trade 決定真相。commit 前可以恢復 reservation；commit 後只能 roll forward cleanup。`cleanup FAILED`、invalid reservation 或仍存在的 orphan 都必須算 correctness debt，不能因 trade 已發布就宣稱完成。
@@ -479,7 +479,7 @@ Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 �
 1. Listener 是一般 container ACK。`coordinator.request` exception 會走 Rabbit 3 attempts，耗盡後 DLQ。
 2. 先在 PostgreSQL 建立冪等 `PENDING` decision，再寫 Redis cancellation intent。若 process 在兩者之間 crash，broker redelivery 與 scheduled reconciler 都能從 PENDING 重建 intent。
 3. cancel Lua 沒贏過 active reservation 時不猜結果，decision 留在 PENDING。Reconciler 預設每 250 ms 掃描、初始 delay 1 秒、batch 50、lease 30 秒；retry delay 從 250 ms 指數增加，最高 30 秒。
-4. 現在 Match cancellation reconciliation **沒有 max-attempts／terminal status**。這適合等待短暫 match convergence，但永久 Redis／identity 問題會無限累積 attempt；必須靠 age、attempt、last error 告警，未來應區分 prerequisite waiting 與 permanent technical failure。
+4. cancellation reconciliation 現在把 prerequisite waiting 與 technical failure 拆成不同 counter／起始時間。等待 admission、reservation、snapshot 或 runtime ready 不消耗 20 次 technical budget，但會保存原因並依等待次數告警；Redis／DB 暫時故障 bounded retry，耗盡後 `FAILED_TERMINAL`；order-book detail／identity invariant 直接 terminal，不再無限碰撞。
 5. Redis arbitration 已移除 order、但 PostgreSQL complete 前 crash 時，reconciler 可以用 snapshot 重放 Lua marker，再完成 decision。
 6. outcome 與 `OrderCancellationResultEvent` outbox 在同一 Match DB transaction 提交；任一失敗就不留下只有 decision、沒有發布意圖的完成狀態。
 
@@ -515,11 +515,11 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 | Order trade inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，必須有 age SLO |
 | Order cancellation inbox | poll 500 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，必須有 age SLO |
 | Order asset-release inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts | `FAILED_PERMANENT` | release 早於 cancellation accepted 時 prerequisite 無上限 |
-| Match cleanup task | poll 100 ms、lease timeout 30 秒；10 attempts；1 秒至 300 秒 | `FAILED` | 必須納入 business-complete gate |
-| Match orphan reservation scan | 每 5 秒；30 秒後才處理 | 沒有 terminal row | 失敗會反覆掃描；invalid reservation 只有 log／metric |
-| Match cancellation reconciler | poll 250 ms、lease 30 秒；250 ms 至 30 秒 backoff | 目前無上限 | 需區分正常等待、poison data 與基礎設施故障 |
+| Match cleanup task | poll 100 ms、lease 30 秒＋owner/token fence；10 technical attempts；1 秒至 300 秒 | `FAILED` | 必須納入 business-complete gate；安全人工恢復介面仍待 REL-106 |
+| Match orphan reservation scan | 每 5 秒；30 秒後才處理；一般 action failure 最多 10 次 | `reservation_reconciliation_issues.TERMINAL` | durable payload／ownership／last error 已保存；修復與 re-drive control plane 尚待 REL-106 |
+| Match cancellation reconciler | poll 250 ms、lease 30 秒；20 technical attempts；250 ms 至 30 秒 backoff；prerequisite 獨立計時 | `FAILED_TERMINAL` | prerequisite 仍需 REL-103 oldest-age SLO；人工恢復介面待 REL-106 |
 
-目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。但各 inbox commit 前的 DB outage、Saga timeout、Match cancellation 無上限，以及 terminal outbox／DLQ 的完整 recovery control plane 仍未完成。實作細節見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在 [Order reliability ticket](features/order-asset-reservation-result-reliability.zh-TW.md) 與 [Wallet reliability ticket](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md)。
+目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，但各 inbox commit 前的 DB outage、Saga timeout、跨服務 durable-debt SLO，以及 terminal outbox／DLQ 的完整 recovery control plane仍未完成。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
 
 ## Retry、ACK、DLQ 與恢復層次
 

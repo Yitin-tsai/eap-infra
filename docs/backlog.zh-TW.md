@@ -115,7 +115,7 @@ contract，不包含 `EAP-MATCH-202` 的自動 full-book rebuild；R7 短測不�
 `INITIALIZE_EMPTY`；traffic-only generator 不清資料，20/20 inbox `APPLIED`、20/20
 訂單可見且 queue debt 為 0。
 
-### EAP-REL-102：補齊 Match 剩餘 terminal error semantics
+### EAP-REL-102：補齊 Match 剩餘 terminal error semantics（完成）
 
 **範圍：** cancellation reconciler 無上限、reservation reconciler 的 ownership conflict
 只有 log／metric、invalid reservation 只有 log／metric、missing／invalid order detail
@@ -123,10 +123,26 @@ contract，不包含 `EAP-MATCH-202` 的自動 full-book rebuild；R7 短測不�
 
 **完成條件：**
 
-- prerequisite waiting 與 technical retry 分開計時及告警。
-- poison／invariant failure 有 durable terminal record，不會無限掃描或重試。
-- operator 可以看見 ownership、payload 與最後一次失敗原因。
-- 過期 cleanup worker 不能覆寫已被新 worker 接手的 task 狀態。
+- [x] prerequisite waiting 與 technical retry 分開計時及告警。
+- [x] poison／invariant failure 有 durable terminal record，不會無限執行 recovery mutation
+  或重複洗掉錯誤現場。
+- [x] operator 可以看見 ownership、payload 與最後一次失敗原因。
+- [x] 過期 cleanup worker 不能覆寫已被新 worker 接手的 task 狀態。
+
+**驗證（2026-09-14）：** cancellation decision 新增獨立 prerequisite／technical counter、
+起始時間、error type、last error 與 `FAILED_TERMINAL`；Redis order detail invariant 由
+admission inbox 直接分類為 `PERMANENT_ORDER_BOOK_DATA_INVARIANT`。Orphan reservation
+另以 durable issue table 保存 generation＋trade／payload fingerprint、raw payload、
+attempt 與 terminal／resolved 狀態；相同 terminal identity 不再被無限重試，同 Redis
+key 的新版 reservation 不受舊 issue 影響。找到 durable trade 時會核對完整 order／user／
+market／side／sequence／price／quantity identity，衝突時 Redis 零變更。generation-bound
+共享 Redis cursor／buffer 讓每輪 scan 與 action 都受 batch 限制，terminal／fresh／active
+cleanup item 不會餓死後續工作。只有 retryable issue 可在 fingerprint 確認消失後自動
+收斂；terminal row 必須留給受控處理。Cleanup task 的 renew／完成／重排／失敗
+更新都核對 instance owner 與每次 claim token。Match unit suite 與 PostgreSQL／Redis
+crash-recovery integration suite（58 tests）通過；詳細流程與 operator SQL 見
+[Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)。本項沒有實作
+DLQ replay UI、Saga timeout 或 Redis full-book rebuild。
 
 ### EAP-REL-103：建立跨服務 durable-debt SLO 與告警
 
@@ -252,8 +268,8 @@ TDA、read replica 與進階 scaling 保持延後
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003／101 已完成。下一件事是 EAP-REL-102：** 補齊 Match
-cancellation／reservation／invalid detail／cleanup lease 的 terminal error semantics，
-讓 prerequisite waiting、可重試技術錯誤與需要人工介入的 invariant failure 不再混在
-無上限重試裡。DLQ control plane 暫停在 **EAP-REL-106**，不是取消；200 orders/s
-以上的邊界搜尋也先讓位給 P1 reliability。
+**EAP-REL-001／002／003／101／102 已完成。下一件事是 EAP-REL-103：** 建立跨服務
+durable-debt SLO 與告警，讓 inbox、outbox、cleanup、cancellation、projection 與 Rabbit
+DLQ 的 count、oldest age、retry／terminal 定義和 business-complete gate 對齊。DLQ
+control plane 暫停在 **EAP-REL-106**，不是取消；200 orders/s 以上的邊界搜尋也先讓位給
+P1 reliability。

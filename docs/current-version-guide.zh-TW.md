@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-09-04
+> 更新日期：2026-09-14
 
 > 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -12,6 +12,7 @@
 4. **取消訂單有真正的完成語意。** MatchEngine 取得未成交剩餘量後，Order 只進入 `CANCELLING`；Wallet 實際釋放資產並發布 `OrderAssetReservationReleasedEvent`，Order 才進入 `CANCELLED`。
 5. **CQRS projection 被納入使用者可見正確性。** Command-side 成交不等待 read model，但壓測最後必須驗證 `orders_current` 數量、reservation／execution 狀態與 checkpoint lag。
 6. **壓測不再只看 RabbitMQ。** schema v3 gate 會分別量 Order、Wallet、Match durable inbox 的 backlog、oldest age 與 terminal／identity-conflict debt；最終還會核對三服務 outbox 與 Match cleanup debt。最新版 200 orders/s 長窗已通過這套完整 gate。
+7. **Match 本地 recovery 不再用無上限 retry 掩蓋 poison state。** Cancellation prerequisite 與 technical attempt 分開；reservation invalid payload／ownership conflict 有 durable terminal issue；cleanup lease 使用 owner＋claim token fencing。
 
 ## 現行能力與誠實邊界
 
@@ -57,7 +58,8 @@ BUY／SELL workload 重跑目前程式：
 2. [Wallet inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)。
 3. [Wallet 成交結算 durable inbox](wallet-trade-settlement-inbox.zh-TW.md)。
 4. [Match order-admission inbox](match-order-admission-inbox.zh-TW.md)。
-5. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
+5. [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)。
+6. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
 
 ### 準備面試
 
@@ -69,6 +71,8 @@ BUY／SELL workload 重跑目前程式：
 可驗證性、效能與延伸功能排序。Match reservation cleanup 假成功、Wallet trade
 durable inbox、Match admission inbox 與完整 schema v3 gate 都已通過 200 orders/s
 長窗；`EAP-REL-101` 也已完成 Redis generation／`run_id` fail-closed gate、受控
-activation 與真實 restart fence 測試。下一步是 `EAP-REL-102`，先補齊 Match 剩餘
-terminal error semantics。DLQ／terminal recovery control plane 保留在 CDA 高優先級，
-但排序在基本 debt visibility 與 DB-outage 設計之後。
+activation 與真實 restart fence 測試。`EAP-REL-102` 也已補齊 Match cancellation、
+reservation issue 與 cleanup lease 的 terminal semantics。下一步是 `EAP-REL-103`，
+把跨服務 durable debt 的 count、oldest age、retry／terminal 指標與 business-complete
+gate 統一定義。DLQ／terminal recovery control plane 保留在 CDA 高優先級，但排序在
+基本 debt visibility 與 DB-outage 設計之後。

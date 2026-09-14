@@ -250,6 +250,18 @@ Cleanup Lua 也會解析 reservation JSON，精確核對 `orderId`，而不是�
 `FAILED` 並保存診斷內容。只有 timeout、連線與 script 執行等技術錯誤使用 bounded
 backoff retry，避免舊任務在新 reservation 稍後消失後被錯誤洗成成功。
 
+Cleanup task 的 lease 現在另保存 instance owner、每次 claim 唯一 token 與到期時間；
+renew、完成、重排與 terminal 更新都必須核對 owner＋token。Orphan reconciler 也不再只寫
+log：invalid payload、ownership conflict 與耗盡的 technical failure 會保存到
+`reservation_reconciliation_issues`，包含原始 payload、generation＋trade／payload
+fingerprint、attempt 與最後錯誤；只有完全相同的 terminal identity 會被跳過，同一 Redis
+key 的後續新 reservation 不會被舊紀錄隔離。reconciler 在動 Redis 前也會核對 durable
+trade 的 market、order、user、sequence、price 與 quantity；不一致時 fail closed。這些是
+durable recovery debt，不等於已修好 Redis 資料。terminal row 不會因 Redis key 消失就
+自動 resolved；只有 retryable mutation debt 能在直接核對 fingerprint 已不存在後收斂。
+reservation scan 與 retryable absence check 都使用有界、可輪轉的 page，不會每 5 秒全掃
+Redis keyspace 或整張 issue table。
+
 目前 `tradeId` **不是 UUID**，而是 MatchEngine 依 `<marketId>-<Redis match sequence>` 產生的 market-scoped 穩定字串；`sequence` 使用正整數 `BIGINT`，跨服務欄位契約上限為 80 字元。現行 CDA 的 `marketId` 固定為 `ENERGY-SPOT`，即使 sequence 達 19 位數，trade ID 也只有 31 字元。80 是 schema 的安全容量，不代表正常 ID 需要那麼長；若未來允許外部建立 market，應在 market 建立／下單入口限制 market ID，而不是等 Redis 已 reserve 訂單後才驗證 trade ID。
 
 trade persistence 發生錯誤時，MatchEngine 的順序是：先讓同一筆 PostgreSQL transaction 中的 `trade_executions`、outbox 與 cleanup task 一起 rollback，再以 reservation 內相同的 `tradeId` 立即把 resting order 放回 Redis，最後把例外交給 durable admission inbox 分類。DB／Redis 暫時故障會 backoff retry；payload 或 constraint 類永久錯誤會留下 terminal record。若即時 release 本身也因 Redis 故障失敗，原始錯誤仍保留，reservation 則由 stale-reservation reconciler 依「DB 是否已有 durable trade」決定稍後 release 或 complete。因此 trade ID 產生器必須是單純、可重算且不拋錯的函式，不能在補償路徑再次阻斷修復。
@@ -340,7 +352,7 @@ MatchEngine 是唯一的 cancellation arbiter：
 1. 先在 `match_engine.order_cancellations` 保存 `PENDING` recovery record，再寫入 Redis cancellation intent。DB row 讓中斷的 request 可被重新發現，但它本身不是 admission fence。
 2. Redis 決定 cancellation 的先後結果。尚未 admission 的訂單，由 admission 使用的同一個 Lua 邊界檢查 intent；已存在 order book 的訂單，cancellation Lua 與 matching Lua 會競爭移除同一個 ZSET member。先成功的 Redis operation 決定取消是阻止 admission、移除剩餘量，或輸給 matching。正常 `OrderAssetReservationSucceededEvent` admission 不查 PostgreSQL cancellation table。
 3. 對 open resting order 而言，只有 cancellation Lua 實際移除一個 ZSET member 時才算成功，並直接回傳被移除的精確 order snapshot。已經進入 match reservation 的訂單不能同時被回報為 cancelled。
-4. 如果 request 在 Redis intent 寫入前中斷，或輸給正在進行的 admission／reservation，狀態會維持 pending。Reconciliation 會補回 intent，並在 admission 仍處理中時等待。Worker 使用 `SKIP LOCKED`、bounded lease 與 exponential retry delay claim row，避免多個 instance 重複處理同一筆尚未解決的 cancellation。最後依 visible remainder 或 durable trade，透過 transactional outbox 發布 `CANCELLED`、`ALREADY_MATCHED` 或 `NOT_OPEN`。Durable decision 同時保存 immutable original amount 與精確 cancelled remainder；前者用來驗證 replay identity，後者供 Order 與 Wallet 套用。
+4. 如果 request 在 Redis intent 寫入前中斷，或輸給正在進行的 admission／reservation，狀態會維持 pending。Reconciliation 會補回 intent，並在 admission 仍處理中時等待。Worker 使用 `SKIP LOCKED`、bounded lease 與 exponential retry delay claim row，避免多個 instance 重複處理同一筆尚未解決的 cancellation。prerequisite waiting 與 technical attempt 分開計時；前者不消耗 20 次 technical budget 但會告警，後者耗盡或遇到 order-book invariant 時成為 durable `FAILED_TERMINAL`。最後依 visible remainder 或 durable trade，透過 transactional outbox 發布 `CANCELLED`、`ALREADY_MATCHED` 或 `NOT_OPEN`。Durable decision 同時保存 immutable original amount 與精確 cancelled remainder；前者用來驗證 replay identity，後者供 Order 與 Wallet 套用。
 
 Wallet 把 MatchEngine 的 cancellation result 當作精確 unmatched quantity 的權威事實。Order submission、`TradeExecutedEvent` 與 cancellation result 都先寫入 `wallet_service.message_inbox`；listener durable intake 後 ACK，再由 lease worker分類、backoff 與重試。Wallet 自己推導 asset delta，只套用一次，並以 cancellation ID、order ID 或 trade ID 保存狹義的 application fact。Wallet 不維護第二份 order-state projection。
 
@@ -350,7 +362,7 @@ Wallet 真正釋放資產時，cancellation application、balance update、relea
 
 取消命令即使冪等，重複 request 仍會消耗 HTTP、Redis 與 database work；大量不同的 open order 則產生真正的 arbitration 與 asset-release 工作。因此 cancellation rate 也是未來 admission policy 的輸入之一，但不能取代 Redis 競爭判定與資料庫冪等保證。
 
-這個邊界刻意信任 MatchEngine 提供的 immutable cancellation fact，就像 Wallet 信任 `TradeExecuted` 一樣。Wallet 仍擁有 balance calculation、non-negative guard、transaction rollback 與 idempotent application；MatchEngine 不會命令 Wallet 寫入某個絕對 balance。Wallet 回傳的 release event 也只提供 workflow identity 與 released quantity，不暴露餘額或 Wallet table schema。這讓 cancellation-only persistence 不會進入正常 order／trade write path，同時保留 replay 與 out-of-order convergence。更完整的資料表、retry 與 crash-window 說明見 [Wallet Inbox 與取消訂單最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)。
+這個邊界刻意信任 MatchEngine 提供的 immutable cancellation fact，就像 Wallet 信任 `TradeExecuted` 一樣。Wallet 仍擁有 balance calculation、non-negative guard、transaction rollback 與 idempotent application；MatchEngine 不會命令 Wallet 寫入某個絕對 balance。Wallet 回傳的 release event 也只提供 workflow identity 與 released quantity，不暴露餘額或 Wallet table schema。這讓 cancellation-only persistence 不會進入正常 order／trade write path，同時保留 replay 與 out-of-order convergence。Match 本地失敗分類見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)；跨服務完成語意見 [Wallet Inbox 與取消訂單最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)。
 
 ## 目前已知限制
 
