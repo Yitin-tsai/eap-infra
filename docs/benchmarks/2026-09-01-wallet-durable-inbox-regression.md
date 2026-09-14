@@ -1,6 +1,6 @@
 # Wallet Durable Inbox 全鏈效能回歸 - 2026-09-01
 
-> Historical checkpoint：此報告只包含 Wallet inbox 階段。Match／Order inbox 與雙狀態加入後的目前版本，請改看 [2026-09-03 最新全鏈報告](2026-09-03-current-version-full-chain.md)；本頁的 400 pass 不代表目前 worktree 容量。
+> Historical checkpoint：此報告只包含較早的 Wallet inbox 階段。目前版本請改看 [2026-09-04 最新全鏈報告](2026-09-04-current-reliability-full-chain.md)；本頁的 400 pass 不代表目前 worktree 容量。
 
 ## Decision
 

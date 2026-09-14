@@ -11,6 +11,17 @@ http_matched_sha256() {
   fi
 }
 
+http_matched_worktree_sha256() {
+  local repo_dir="$1"
+  {
+    git -C "${repo_dir}" diff --binary HEAD --
+    git -C "${repo_dir}" ls-files --others --exclude-standard | while IFS= read -r untracked; do
+      printf 'untracked:%s\n' "${untracked}"
+      http_matched_sha256 "${repo_dir}/${untracked}"
+    done
+  } | http_matched_sha256 /dev/stdin
+}
+
 http_matched_write_provenance_snapshot() {
   local output="$1"
   local captured_at repositories_json containers_json os_name os_version architecture
@@ -21,7 +32,7 @@ http_matched_write_provenance_snapshot() {
   mkdir -p "$(dirname "${output}")"
   : > "${repositories_file}"
   while IFS='|' read -r name relative_path transaction_path; do
-    local repo_dir commit branch dirty dirty_file_count available
+    local repo_dir commit branch dirty dirty_file_count available working_tree_sha256
     if [[ "${relative_path}" == "." ]]; then
       repo_dir="${ROOT_DIR}"
     else
@@ -33,25 +44,29 @@ http_matched_write_provenance_snapshot() {
       branch="$(git -C "${repo_dir}" branch --show-current)"
       dirty_file_count="$(git -C "${repo_dir}" status --porcelain --untracked-files=normal | wc -l | tr -d ' ')"
       if (( dirty_file_count == 0 )); then dirty=false; else dirty=true; fi
+      working_tree_sha256="$(http_matched_worktree_sha256 "${repo_dir}")"
     else
       available=false
       commit=""
       branch=""
       dirty=true
       dirty_file_count=0
+      working_tree_sha256=""
     fi
     jq -cn \
       --arg name "${name}" \
       --arg path "${relative_path}" \
       --arg commit "${commit}" \
       --arg branch "${branch}" \
+      --arg workingTreeSha256 "${working_tree_sha256}" \
       --argjson available "${available}" \
       --argjson dirty "${dirty}" \
       --argjson dirtyFileCount "${dirty_file_count}" \
       --argjson transactionPath "${transaction_path}" \
       '{name:$name,path:$path,available:$available,commit:$commit,
         branch:(if $branch == "" then null else $branch end),dirty:$dirty,
-        dirtyFileCount:$dirtyFileCount,transactionPath:$transactionPath}' \
+        dirtyFileCount:$dirtyFileCount,workingTreeSha256:$workingTreeSha256,
+        transactionPath:$transactionPath}' \
       >> "${repositories_file}"
   done <<'EOF'
 eap-infra|.|false
@@ -235,7 +250,72 @@ http_matched_enrich_provenance() {
     --slurpfile provenance "${provenance_json}" \
     --arg contract "${benchmark_contract}" \
     --argjson processExitStatus "${run_status}" \
-    '([
+    'def requiredV3FieldsMissing:
+      if (.benchmarkSchemaVersion // 0) >= 3
+          and .benchmarkContract == "external-http-matched-steady-state-chain" then
+        [
+          {name:"validForSustainedCapacity", value:.validForSustainedCapacity},
+          {name:"threeServiceTradeIdsEqual", value:.threeServiceTradeIdsEqual},
+          {name:"assetReconciliationPassed", value:.assetReconciliationPassed},
+          {name:"orderReadModelConverged", value:.orderReadModelConverged},
+          {name:"finalQueueBacklog", value:.finalQueueBacklog},
+          {name:"finalDlqBacklog", value:.finalDlqBacklog},
+          {name:"activeMatchReservations", value:.activeMatchReservations},
+          {name:"finalOrderProjectionLagEvents", value:.finalOrderProjectionLagEvents},
+          {name:"steadyOrderInboxBacklogMax", value:.steadyOrderInboxBacklogMax},
+          {name:"steadyOrderInboxOldestAgeMaxSeconds", value:.steadyOrderInboxOldestAgeMaxSeconds},
+          {name:"steadyOrderInboxTerminalDebtMax", value:.steadyOrderInboxTerminalDebtMax},
+          {name:"steadyWalletInboxBacklogMax", value:.steadyWalletInboxBacklogMax},
+          {name:"steadyWalletInboxOldestAgeMaxSeconds", value:.steadyWalletInboxOldestAgeMaxSeconds},
+          {name:"steadyWalletInboxTerminalDebtMax", value:.steadyWalletInboxTerminalDebtMax},
+          {name:"steadyMatchInboxBacklogMax", value:.steadyMatchInboxBacklogMax},
+          {name:"steadyMatchInboxOldestAgeMaxSeconds", value:.steadyMatchInboxOldestAgeMaxSeconds},
+          {name:"steadyMatchInboxTerminalDebtMax", value:.steadyMatchInboxTerminalDebtMax},
+          {name:"finalOrderInboxBacklog", value:.finalOrderInboxBacklog},
+          {name:"finalOrderInboxTerminalDebt", value:.finalOrderInboxTerminalDebt},
+          {name:"finalWalletInboxBacklog", value:.finalWalletInboxBacklog},
+          {name:"finalWalletInboxTerminalDebt", value:.finalWalletInboxTerminalDebt},
+          {name:"finalMatchInboxBacklog", value:.finalMatchInboxBacklog},
+          {name:"finalMatchInboxTerminalDebt", value:.finalMatchInboxTerminalDebt},
+          {name:"finalOrderOutboxActiveDebt", value:.finalOrderOutboxActiveDebt},
+          {name:"finalOrderOutboxTerminalDebt", value:.finalOrderOutboxTerminalDebt},
+          {name:"finalWalletOutboxActiveDebt", value:.finalWalletOutboxActiveDebt},
+          {name:"finalWalletOutboxTerminalDebt", value:.finalWalletOutboxTerminalDebt},
+          {name:"finalMatchOutboxActiveDebt", value:.finalMatchOutboxActiveDebt},
+          {name:"finalMatchOutboxTerminalDebt", value:.finalMatchOutboxTerminalDebt},
+          {name:"finalMatchCleanupActiveDebt", value:.finalMatchCleanupActiveDebt},
+          {name:"finalMatchCleanupTerminalDebt", value:.finalMatchCleanupTerminalDebt}
+        ] | map(select(.value == null) | .name)
+      else [] end;
+    def requiredV3FieldsInvalid:
+      if (.benchmarkSchemaVersion // 0) >= 3
+          and .benchmarkContract == "external-http-matched-steady-state-chain" then
+        . as $result
+        | (([
+            "validForSustainedCapacity", "threeServiceTradeIdsEqual",
+            "assetReconciliationPassed", "orderReadModelConverged"
+          ] | map(select($result[.] != null and ($result[.] | type) != "boolean")))
+          + ([
+            "finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
+            "finalOrderProjectionLagEvents",
+            "steadyOrderInboxBacklogMax", "steadyOrderInboxOldestAgeMaxSeconds",
+            "steadyOrderInboxTerminalDebtMax", "steadyWalletInboxBacklogMax",
+            "steadyWalletInboxOldestAgeMaxSeconds", "steadyWalletInboxTerminalDebtMax",
+            "steadyMatchInboxBacklogMax", "steadyMatchInboxOldestAgeMaxSeconds",
+            "steadyMatchInboxTerminalDebtMax", "finalOrderInboxBacklog",
+            "finalOrderInboxTerminalDebt", "finalWalletInboxBacklog",
+            "finalWalletInboxTerminalDebt", "finalMatchInboxBacklog",
+            "finalMatchInboxTerminalDebt", "finalOrderOutboxActiveDebt",
+            "finalOrderOutboxTerminalDebt", "finalWalletOutboxActiveDebt",
+            "finalWalletOutboxTerminalDebt", "finalMatchOutboxActiveDebt",
+            "finalMatchOutboxTerminalDebt", "finalMatchCleanupActiveDebt",
+            "finalMatchCleanupTerminalDebt"
+          ] | map(select($result[.] != null and ($result[.] | type) != "number"))))
+        | unique
+      else [] end;
+    requiredV3FieldsMissing as $requiredFieldsMissing
+    | requiredV3FieldsInvalid as $requiredFieldsInvalid
+    | ([
         $provenance[0].invalidReasons[],
         if $processExitStatus != 0 then "benchmark_process_failed" else empty end,
         if ($contract != "http-matched-steady-state-chain"
@@ -244,10 +324,14 @@ http_matched_enrich_provenance() {
         if ((.warmupSeconds // 0) < 60) then "insufficient_warmup_window" else empty end,
         if ((.measurementSeconds // 0) < 900) then "insufficient_measurement_window" else empty end,
         if (.validForSustainedCapacity != true) then "business_capacity_gate_failed" else empty end,
-        if (.rabbitMqResourceAlarmObserved // false) then "rabbitmq_resource_alarm_observed" else empty end
+        if (.rabbitMqResourceAlarmObserved // false) then "rabbitmq_resource_alarm_observed" else empty end,
+        ($requiredFieldsMissing[] | "missing_required_field:" + .),
+        ($requiredFieldsInvalid[] | "invalid_required_field:" + .)
       ] | unique) as $evidenceInvalidReasons
       | .benchmarkProvenance = $provenance[0]
       | .provenanceInvalidReasons = $provenance[0].invalidReasons
+      | .requiredFieldsMissing = $requiredFieldsMissing
+      | .requiredFieldsInvalid = $requiredFieldsInvalid
       | .capacityEvidenceInvalidReasons = $evidenceInvalidReasons
       | .capacityClaimAllowed = ($evidenceInvalidReasons | length == 0)
       | .validForCapacityEvidence = .capacityClaimAllowed' \
@@ -348,6 +432,11 @@ http_matched_persist_result() {
   http_matched_enrich_provenance "${run_status}" "${benchmark_contract}"
   if [[ "${HTTP_MATCHED_DEFER_REPORT_RENDER:-false}" != "true" ]]; then
     http_matched_render_report "${RUN_REPORT_JSON}" || true
+  fi
+  if jq -e '((.requiredFieldsMissing // []) + (.requiredFieldsInvalid // [])) | length > 0' \
+      "${RUN_REPORT_JSON}" >/dev/null; then
+    echo "[ERROR] benchmark schema has missing or invalid required correctness fields." >&2
+    return 4
   fi
 }
 

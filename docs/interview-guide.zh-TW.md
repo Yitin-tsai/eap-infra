@@ -4,7 +4,7 @@
 
 ## 30 秒介紹
 
-> 我獨立開發了一套 Java／Spring Boot 的事件驅動電力交易後端。Order、Wallet 與 MatchEngine 分別負責訂單、資產與撮合，透過 RabbitMQ、Transactional Outbox、durable inbox、冪等 Consumer 和 Redis Lua，在沒有分散式交易的前提下處理下單、驗資、撮合、結算與取消訂單。我不只量 HTTP TPS，而是用三個服務的持久化 trade ID、資產、queue、DLQ、inbox 與 projection debt 判斷交易是否真正完成。最新可靠性版本的單一 seed 同機診斷在嚴格 gate 下通過 `200 accepted orders/s`、`100 completed trades/s`；300／400 因 Order inbox 持續累積被拒絕。舊版 release-pinned 648 只保留為歷史 commits 的證據，兩者都不是 production SLA。
+> 我獨立開發了一套 Java／Spring Boot 的事件驅動電力交易後端。Order、Wallet 與 MatchEngine 分別負責訂單、資產與撮合，透過 RabbitMQ、Transactional Outbox、durable inbox、冪等 Consumer 和 Redis Lua，在沒有分散式交易的前提下處理下單、驗資、撮合、結算與取消訂單。我不只量 HTTP TPS，而是用三個服務的持久化 trade ID、資產、queue、DLQ、inbox、outbox、cleanup 與 projection debt 判斷交易是否真正完成。最新版在 Wallet 成交結算也納入 durable inbox 後，以完整 gate 通過單一 seed 的 `200 accepted orders/s`、`100.02 completed trades/s` 長窗；我把它定位成同機 dirty-worktree 診斷下界，不冒充 production SLA。
 
 ## 系統現在能做什麼
 
@@ -45,7 +45,8 @@ HTTP 下單
 ## 效能怎麼說才精確
 
 - 測試在同一台 10 logical CPU、16 GiB Apple Silicon 主機執行，不是 production SLA，也不能外推成叢集容量。
-- 最新版 `200 orders/s` 以 60 秒 warm-up 加 900 秒量測：`192000/192000` HTTP accepted、steady `100.00 trades/s`、三服務各 `96000` trades、projection lag 與 final debt 都是 0。
+- Wallet trade inbox 加入後的最新 `200 orders/s` 長窗以 60 秒 warm-up 加 900 秒量測：`192000/192000` HTTP accepted、steady `100.02 trades/s`、三服務各 `96000` trades、projection lag 與 final debt 都是 0。
+- Order／Wallet／Match inbox max 為 `291/389/95`，oldest age max `1/1/0s`、terminal debt 全為 0；這比只看 Rabbit queue 更接近 business complete。
 - 300 的 trade path 達 `149.70 trades/s`，但 Order reservation-result inbox 累積至少 `51007`；400 只有 `187.75 trades/s`、目標完成率 `93.88%`，inbox 至少 `53231`。兩者即使最終收斂，也不能叫穩態容量。
 - 舊版兩個 release-pinned 648 seed 與其 `301–310 full-lifecycle trades/s` 仍是歷史工程證據，但可靠性寫入路徑已改變，不能拿來描述目前 worktree。
 - 元件隔離測試曾量到 Match listener 約 `918.46 persisted trades/s`，直接下游 fanout 約 `1972.77 durable trades/s`，Match relay加下游約 `2125–2521 trades/s`。這些用來定位整合瓶頸，不能和完整 HTTP 流程的 TPS 混用。
@@ -64,13 +65,13 @@ HTTP 下單
 - CDA 的證據最完整；TDA 仍有直接發布、重送冪等、失敗回授與整場收斂缺口，不能沿用 CDA TPS。
 - 驗證使用 domain `userId`，尚未建置完整 authentication、authorization、API gateway 與防濫用邊界。
 - Redis 全量遺失後的自動訂單簿重建與 readiness gate 尚未實作。
-- 最新瓶頸是 Order reservation-result worker／projector 的持續消化能力；下一個有效實驗應先量 stage timing、batch、oldest age 與 scheduler，再做隔離或安全分片，而不是先調大 thread。
+- 最新 200 orders/s 已同時量三服務 inbox apply backlog、oldest age 與 terminal debt且沒有累積；較早 300／400 指向 Order worker，但目前版本尚未重跑更高階梯，因此不能先斷言新瓶頸位置。
 
 這些限制不是要藏起來，而是面試時可用來展示：知道目前證據能支持什麼，也知道下一個工程投資應解決什麼。
 
 ## 三個可展開的面試故事
 
-1. **TPS 定義被推翻兩次。** 一開始不能把「送出 2,000 requests/s」當完成 TPS；這次又發現 Rabbit queue 歸零時，訊息可能已搬進 service-owned inbox。把 durable-inbox slope 加進 gate 後，工具原本判定通過的 300 被推翻，最新版誠實下界成為 200 orders/s。
+1. **TPS 定義被推翻後重新證明。** 一開始不能把「送出 2,000 requests/s」當完成 TPS；後來又發現 Rabbit queue 歸零時，訊息可能已搬進 service-owned inbox。把 durable-inbox slope 加進 gate 後，工具原本判定通過的 300 被推翻；再加入 Wallet trade inbox 後，我先把舊 200 降級成 baseline，最後以三服務 inbox age／terminal debt 與 final outbox／cleanup gate 重跑，才恢復目前版本的 200 診斷下界。
 2. **快但不安全的最佳化被拒絕。** Wallet autocommit 的隔離吞吐曾從約 `11.8k` 提升到 `20.4k settlements/s`，但錯誤無法 rollback，併行測試也找到死結；因此恢復明確交易與固定 UUID 鎖順序。結論是正確性先於漂亮數字。
 3. **人工質疑改變取消設計。** 原設計讓 Wallet 投影每張訂單的剩餘量；重新檢查 ownership 後，讓 MatchEngine 決定精確未成交餘量，Wallet 只記錄取消套用並釋放資產，移除不必要的跨服務狀態複製。
 
@@ -80,5 +81,6 @@ HTTP 下單
 - **面試前 5 分鐘：** 本文件。
 - **再花 10 分鐘：** [中文 README](../README.zh-TW.md)與[架構文件](architecture.zh-TW.md)。
 - **準備效能追問：** [效能報告](performance-report.md)與[壓測分類](benchmarks/load-test-taxonomy.md)。
+- **最新實測證據：** [2026-09-04 全鏈長窗](benchmarks/2026-09-04-current-reliability-full-chain.md)。
 - **準備取消訂單深挖：** [取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
 - **準備 AI／工作方法題：** [AI 工程工作流](ai-engineering-workflow.md)與 [Hello World Dev 案例](talks/hello-world-dev-conference-2026-case-study.md)。

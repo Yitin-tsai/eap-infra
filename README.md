@@ -6,7 +6,7 @@ EAP is an independently built, event-driven electricity market backend. It suppo
 
 The project is designed around three questions: which service owns each business fact, how a trade remains correct under retries and partial failures, and how an engineering claim can be verified with durable evidence. It is not a CRUD demo or a benchmark-only project.
 
-> **Current revision evidence (2026-09-03):** after adding service-owned durable inboxes and separate Order execution/reservation state, the stricter k6 long-window gate passes one diagnostic seed at `200 accepted orders/s` and `100 completed trades/s`. All `192,000` HTTP orders converged into `96,000` exact three-service trades with correct assets, projection, queues, DLQ, and reservations. The 300 and 400 runs also converged eventually, but Order's reservation-result inbox accumulated at least 51K/53K rows, so they are rejected as whole-system sustained capacity. This is a dirty-worktree, same-host diagnostic lower bound, not a production SLA. See the [current-version guide](docs/current-version-guide.zh-TW.md) and [campaign report](docs/benchmarks/2026-09-03-current-version-full-chain.md).
+> **Latest current-version evidence (2026-09-04):** after Wallet trade settlement and Match admission moved onto durable inboxes, the schema-v3 k6 long-window gate passed one diagnostic seed at `199.99 accepted orders/s` and `100.02 completed trades/s`. All `192,000` HTTP orders converged into `96,000` exact three-service trades; assets, CQRS, Redis, RabbitMQ, DLQ, inbox, outbox, and cleanup checks passed. This is a dirty-worktree, co-located, single-seed diagnostic lower bound—not a release-pinned capacity claim or production SLA. See the [current-version guide](docs/current-version-guide.zh-TW.md) and [campaign report](docs/benchmarks/2026-09-04-current-reliability-full-chain.md).
 >
 > **Historical boundary:** two release-pinned seeds supported a `648 accepted orders/s` 15-minute same-host pressure boundary for older commits. That evidence remains valid for those commits but is not the capacity of the current reliability revision.
 
@@ -107,9 +107,9 @@ Start with the [documentation map](docs/README.md) for the current source-of-tru
 benchmark-evidence, generated-artifact, and archive boundaries.
 
 - [Performance report](docs/performance-report.md): current claims, definitions, limitations, and bottleneck history.
-- [Latest current-version campaign](docs/benchmarks/2026-09-03-current-version-full-chain.md): rejected 400/300 runs, strict 200 diagnostic pass, and the durable-inbox backlog gate.
+- [Latest current-version campaign](docs/benchmarks/2026-09-04-current-reliability-full-chain.md): strict 200 diagnostic pass with three-service inbox age/debt and final outbox/cleanup gates.
 - [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md): what each workload measures and what it cannot claim.
-- [Latest canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the current CDA short-window knee and its limits.
+- [Historical canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the earlier CDA short-window knee and its limits; not current-version capacity.
 - [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.
 - [648 sustained boundary](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md): two valid 15-minute seeds establishing the highest repeatable point and its pressure limits.
 - [Release-pinned 700 provenance validation](docs/benchmarks/2026-08-21-release-pinned-700-provenance.md): exact source and environment evidence for a rejected 700 orders/s repeat; the 648 boundary remains unchanged.

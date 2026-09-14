@@ -4,11 +4,11 @@
 >
 > 建立日期：2026-08-27
 >
-> 最近更新：2026-09-03
+> 最近更新：2026-09-04
 >
 > 範圍：CDA `OrderSubmittedEvent → Wallet reservation → OrderAssetReservationSucceededEvent／OrderFailedEvent`，並延伸至 `OrderCancellationResultEvent → Wallet release → OrderAssetReservationReleasedEvent → Order final cancellation`。不把所有 consumer 一次改造成通用框架。
 
-## 2026-09-01 Implementation Checkpoint
+## 2026-09-04 Implementation Checkpoint
 
 已完成：
 
@@ -20,15 +20,18 @@
 - PostgreSQL integration tests 覆蓋 duplicate、payload conflict、expired lease reclaim、lost-lease rollback、effect/outbox/inbox atomicity；三服務 RabbitMQ cancellation lifecycle 已收斂且無 queue／DLQ／outbox debt。
 - Wallet 不建立訂單級鎖定資產歸屬；`order_id` 只作冪等 identity。reservation feasibility 已合併到最終 conditional `UPDATE`，會在等待 row lock 後依最新 aggregate balance 重新判斷。
 - `wallets` 的 available／locked currency／amount 已加入非負數 database constraints；舊 `/v1/wallet/check` 非交易寫入入口已移除。
+- `TradeExecutedEvent` 已納入同一張 Wallet `message_inbox`：listener 在 durable intake 後返回，lease worker 再把 `trade_settlements`、buyer／seller balance 與 inbox `APPLIED` 放在同一筆 transaction；lost lease 會使全部效果 rollback。
+- `message_id` 已由 UUID 改為 `VARCHAR(80)`，讓 UUID order／cancellation identity 與原生字串 `tradeId` 使用同一套 inbox，而不製造雜湊後的假 identity；same trade ID／different payload 會永久隔離。
+- 金額乘法改用 exact arithmetic；overflow 是永久 invalid event，不會把截斷後的數字寫進資產。
 - 受控 PostgreSQL 競態測試覆蓋不同命令競爭同一 Wallet：初始 100、第一筆鎖定 80 後，第二筆 80 必須拒絕，最終固定為 available 20／locked 80；另驗證四種負數寫入均被 database 拒絕。
-- 當時 Wallet-only checkpoint 的 400 orders/s、15 分鐘 soak 曾通過；後續加入 Match／Order inbox 與雙狀態後，2026-09-03 完整重測只在嚴格 durable-debt gate 下通過 200 orders/s。300／400 最終資料仍正確，但 Order reservation-result inbox 會持續累積；現況以[最新全鏈報告](../benchmarks/2026-09-03-current-version-full-chain.md)為準，不能沿用舊 648 或中間版本 400。
+- Wallet trade inbox 加入後，2026-09-04 以三服務 inbox backlog／oldest age／terminal debt 與 final outbox／cleanup gate 重跑 200 orders/s、15 分鐘量測並通過；三服務各 `96000` 筆 trade 完全一致，Wallet inbox max `389`、oldest age max `1s`、terminal debt `0`，最終 debt 歸零。現況以[最新全鏈報告](../benchmarks/2026-09-04-current-reliability-full-chain.md)為準，不能沿用舊 648 或中間版本 400。
 
 仍未完成：
 
 - inbox commit 前 Wallet DB 長時間 outage 的 delayed broker retry／consumer pause；目前仍會在短期 Spring retry 耗盡後進 DLQ。
 - Saga timeout detector、oldest-age alert 與 prerequisite escalation。
 - 完整 DLQ inspect／classify／rate-limited replay／audit control plane。
-- Wallet `TradeExecutedEvent` durable inbox 與 60 秒 DB outage 的真實 failure-injection campaign。
+- 60 秒 DB outage、consumer process kill、duplicate／late event 的真實 Rabbit failure-injection campaign；目前只有 PostgreSQL transaction／lease integration evidence。
 
 詳細實作與驗收數據見 [Wallet Inbox 與取消訂單最終確認](../wallet-inbox-and-cancellation-completion.zh-TW.md)。以下 Current Baseline 保留的是改造前問題背景；Target／task list 同時記錄已完成與剩餘工作。
 
@@ -52,7 +55,7 @@
 - exception 仍拋出時，由 Spring Rabbit listener 再嘗試最多 3 次，約在 1 秒、2 秒後重試；耗盡且 `default-requeue-rejected=false` 時進 shared DLQ。
 - 餘額不足、電量不足、wallet 不存在等已知業務結果，會在同一 transaction 建立 `OrderFailedEvent` outbox；reservation 成功則建立 `OrderAssetReservationSucceededEvent` outbox。
 - `order_id` idempotency、資產異動與結果 outbox 已有本地 transaction／row-count 保護。
-- Wallet trade／cancellation listener 當時同樣主要依賴 broker retry＋DLQ，沒有 service-owned durable inbox；目前 cancellation 已完成 inbox 改造，trade 尚未。
+- Wallet trade／cancellation listener 當時同樣主要依賴 broker retry＋DLQ，沒有 service-owned durable inbox；目前兩者都已完成 inbox 改造，此段只保留歷史背景。
 - Order 已對 trade 與 cancellation result 實作 durable inbox／lease reconciler，可以作為設計參考，但不能直接複製所有語意。
 
 目前保住的是 safety：技術失敗不會被誤報成餘額不足，也不會留下 transaction 內的半套資產異動。缺少的是 liveness：短期 retry 耗盡後，Order 可能永久停在 `PENDING_ASSET_CHECK`，且 recovery 需要人工判讀 DLQ。
@@ -79,14 +82,14 @@ EAP 已具備 choreography-based Saga 的結構：
 
 因此後續文件與面試的精確說法應是：
 
-> EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；但 inbox commit 前的 DB outage、Saga timeout、Wallet trade consumer 與 terminal DLQ／outbox control plane 仍未完整自動化。
+> EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／trade／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；但 inbox commit 前的 DB outage、Saga timeout 與 terminal DLQ／outbox control plane 仍未完整自動化。
 
 不得再使用下列說法：
 
 - 「用了 Saga，所以所有 failure 都會自動恢復。」
 - 「進 DLQ 就代表 Saga 已處理完成。」
 - 「技術 exception 會自動轉成上游業務失敗。」
-- 「所有 consumer 都具有相同的 inbox／reconciler 保證。」
+- 「所有 consumer 都具有相同的 inbox／reconciler 保證。」TDA 與部分非核心 listener 仍不能套用 CDA 核心路徑的保證。
 
 ## Target
 
@@ -219,9 +222,9 @@ DLQ 定位為 quarantine，不是正常 retry queue。最小 control plane 不�
 - permanent debt 可列出、分類、告警與稽核。
 - 所有超過 Saga age threshold 的訂單都能被偵測。
 
-## Assumptions
+## Scope Decisions
 
-- 第一階段只處理 Wallet 的 `OrderSubmittedEvent` intake／reservation；trade 與 cancellation inbox 另開 follow-up，不在同一 ticket 擴張。
+- 第一階段原先只處理 `OrderSubmittedEvent` intake／reservation；後續已在相同機制中納入 cancellation result 與 `TradeExecutedEvent`，但三種 message 仍保留各自的業務 identity 與 transaction effect。
 - 沿用 PostgreSQL、RabbitMQ 與既有 Wallet outbox，不引入 Kafka或新的 Saga framework。
 - 沿用至少一次 delivery＋冪等 local effect，不宣稱 exactly-once messaging。
 - 第一版 Order timeout detector 只提供狀態、metric 與告警；自動 expiry 必須先完成跨 Wallet／Match protocol review。
@@ -258,11 +261,11 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 ### Must Fix Before Implementation
 
-- [ ] 接受 inbox state machine、唯一 identity 與 immutable payload contract。
+- [x] 接受 inbox state machine、唯一 identity 與 immutable payload contract。
 - [ ] 選定 intake DB outage 的 delayed retry 或 consumer-pause 策略。
-- [ ] 列出 exception taxonomy、default unknown policy 與 retry budget。
-- [ ] 定義 lease duration、fencing、backoff／jitter、age alerts。
-- [ ] 確認 reservation、result outbox、business idempotency 與 inbox terminal state 的單一 transaction。
+- [x] 列出 exception taxonomy、default unknown policy 與 retry budget。
+- [x] 定義 lease duration、fencing、backoff／jitter；age alerts 尚未完成。
+- [x] 確認 reservation、trade settlement、cancellation result、business idempotency／outbox 與 inbox terminal state 的單一 transaction。
 - [ ] 定義第一版 Saga warning threshold；自動 expiry 留在未核准範圍。
 - [ ] 定義 DLQ ownership、replay authorization 與 audit。
 
@@ -299,7 +302,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 ### Role Reviews
 
-- Product：值得做；直接強化交易正確性、故障思考與面試價值。MVP 限定 Wallet order reservation。
+- Product：值得做；直接強化交易正確性、故障思考與面試價值。核心 CDA Wallet reservation、trade settlement 與 cancellation result 已納入，TDA 不擴張。
 - Architect：Conditional；auto-expiry protocol 尚未核准。
 - Performance：需控制 write amplification、worker pool、retry storm；ACK TPS 不得冒充 completion TPS。
 - QA：failure injection 是 Definition of Done，不是選配。
@@ -315,7 +318,8 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 | WRR-103 | 建立 transient／permanent／unknown classifier | Implementation | exception mapping 有 unit tests；business result 不走 retry；unknown policy 有界 | WRR-000 |
 | WRR-104 | 建立 lease worker、backoff／jitter 與 crash reclaim | Implementation | `SKIP LOCKED`、owner fencing、expired lease reclaim、無 thread sleep | WRR-101、WRR-103 |
 | WRR-105 | 原子整合 inbox、idempotency、reservation／rejection 與 result outbox | Implementation | 任一失敗全 rollback；duplicate effect 一次；terminal state 與 outbox 同 commit | WRR-104 |
-| WRR-106 | 建立 inbox metrics／age alert／admin inspect | Implementation | pending／processing／retryable／permanent count、oldest age、attempt／error 可觀測 | WRR-104 |
+| WRR-107 | 將 `TradeExecutedEvent` 納入 Wallet durable inbox | Implementation | 原生 trade ID、payload conflict、lease retry；settlement／balance／inbox `APPLIED` 原子提交；lost lease 全 rollback | WRR-103～105；已完成 |
+| WRR-106 | 建立 inbox metrics／age alert／admin inspect | Implementation | pending／processing／retryable／permanent count、oldest age、attempt／error 可觀測；已完成 | WRR-104 |
 | WRR-201 | Order Saga timeout detector 第一版 | Implementation | 偵測過久 `PENDING_ASSET_CHECK`；metric／alert；不自動釋放資產 | WRR-000 |
 | WRR-202 | 定義 reservation status／expiry protocol | Architect／Product | Wallet／Order／Match authority、late event、terminal guard、compensation 明確 | WRR-201；第二階段 |
 | WRR-301 | 最小 DLQ quarantine／replay control plane | Implementation | list／inspect／classify／rate-limited replay／audit；不直接決定 business failure | WRR-000、WRR-103 |
@@ -327,12 +331,13 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 ## Definition of Done
 
 - [x] Wallet order-submission inbox、lease worker、error classifier 已實作並有 migration／integration tests。
+- [x] Wallet `TradeExecutedEvent` 已納入同一套 durable inbox；trade settlement、buyer／seller balance 與 inbox `APPLIED` 原子提交。
 - [x] Inbox terminal state、business idempotency、reservation／rejection與 result outbox 保持單一 local transaction。
 - [ ] Intake 前 DB outage 不會被誤 ACK，也不會在數秒內把合法流量全部變成 DLQ debt。
 - [ ] 60 秒 DB outage、listener crash、worker crash 可自動恢復。
 - [x] duplicate、identity conflict、late release event、lost lease 與 local outbox atomicity 測試通過。
 - [x] 已涵蓋流程的 available／locked asset 與 terminal result invariants 通過。
-- [ ] retryable／permanent count 已有 metrics；oldest age、lease、DLQ／outbox debt 的完整告警仍未完成。
+- [x] inbox status count、identity conflict 與 oldest unresolved age 已有低成本快照 metrics；Prometheus 對 permanent failure 與 age 提供告警；conditional read-only admin endpoint 可依 status／message type 檢視 attempt、lease 與 error，且不回傳 payload。
 - [ ] Order timeout detector 能找出 stuck Saga，但未核准前不自動改變資產。
 - [ ] DLQ replay 有 ownership、rate limit、payload conflict check 與 audit。
 - [ ] 效能與正確性報告分開 ACK intake、Wallet completion 與 full-lifecycle completion。
@@ -342,6 +347,6 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 目前可使用的敘述：
 
-> 將 Wallet 驗資與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。目前仍明確保留 inbox commit 前 DB outage、Saga timeout、DLQ control plane 與 Wallet trade inbox 等 production gap。
+> 將 Wallet 驗資、成交與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。目前仍明確保留 inbox commit 前 DB outage、Saga timeout、DLQ control plane 與真實 failure-injection campaign 等 production gap。
 
 不能使用「60 秒 DB outage 不需人工恢復」或「完整 DLQ 自動恢復」等說法，直到剩餘 Definition of Done 與 failure-injection evidence 完成。

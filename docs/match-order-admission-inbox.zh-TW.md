@@ -144,6 +144,8 @@ runners 也新增 inbox row、APPLIED row 與 non-APPLIED debt gate；queue 清�
 business complete。reset path 會清除 Match inbox workload data，避免跨 run duplicate 或資料累積
 污染下一輪結果。
 
-2026-09-03 長窗中，Match admission inbox 在 200／300／400 workload 最終都全數 `APPLIED`；
-Match durable trades 也和下游一致。高輸入的 current bottleneck 出現在 Order reservation-result
-worker，而不是 Match admission。完整版本與限制見[最新全鏈報告](benchmarks/2026-09-03-current-version-full-chain.md)。
+2026-09-04 最新長窗中，Match admission inbox 在 200 orders/s 的最大 backlog `95`、
+slope `+0.0020/s`、oldest age max `0s`、terminal debt `0`，最終全數 `APPLIED`；Match
+durable trades 也和 Order／Wallet 完全一致。較早 300／400 的瓶頸曾出現在 Order
+reservation-result worker，但目前版本尚未重跑更高邊界。完整版本與限制見
+[最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。

@@ -34,8 +34,60 @@ jq -r \
     end;
   def row($label; $value):
     if $value == null then "" else "| " + $label + " | " + ($value | show) + " |\n" end;
+  def required_v3_fields_missing:
+    if (.benchmarkSchemaVersion // 0) >= 3
+        and .benchmarkContract == "external-http-matched-steady-state-chain" then
+      . as $result
+      | [
+          "validForSustainedCapacity", "threeServiceTradeIdsEqual",
+          "assetReconciliationPassed", "orderReadModelConverged",
+          "finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
+          "finalOrderProjectionLagEvents", "steadyOrderInboxBacklogMax",
+          "steadyOrderInboxOldestAgeMaxSeconds", "steadyOrderInboxTerminalDebtMax",
+          "steadyWalletInboxBacklogMax", "steadyWalletInboxOldestAgeMaxSeconds",
+          "steadyWalletInboxTerminalDebtMax", "steadyMatchInboxBacklogMax",
+          "steadyMatchInboxOldestAgeMaxSeconds", "steadyMatchInboxTerminalDebtMax",
+          "finalOrderInboxBacklog", "finalOrderInboxTerminalDebt",
+          "finalWalletInboxBacklog", "finalWalletInboxTerminalDebt",
+          "finalMatchInboxBacklog", "finalMatchInboxTerminalDebt",
+          "finalOrderOutboxActiveDebt", "finalOrderOutboxTerminalDebt",
+          "finalWalletOutboxActiveDebt", "finalWalletOutboxTerminalDebt",
+          "finalMatchOutboxActiveDebt", "finalMatchOutboxTerminalDebt",
+          "finalMatchCleanupActiveDebt", "finalMatchCleanupTerminalDebt"
+        ] | map(select($result[.] == null))
+    elif (.requiredFieldsMissing | type) == "array" then .requiredFieldsMissing
+    else [] end;
+  def required_v3_fields_invalid:
+    if (.benchmarkSchemaVersion // 0) >= 3
+        and .benchmarkContract == "external-http-matched-steady-state-chain" then
+      . as $result
+      | (([
+          "validForSustainedCapacity", "threeServiceTradeIdsEqual",
+          "assetReconciliationPassed", "orderReadModelConverged"
+        ] | map(select($result[.] != null and ($result[.] | type) != "boolean")))
+        + ([
+          "finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
+          "finalOrderProjectionLagEvents",
+          "steadyOrderInboxBacklogMax", "steadyOrderInboxOldestAgeMaxSeconds",
+          "steadyOrderInboxTerminalDebtMax", "steadyWalletInboxBacklogMax",
+          "steadyWalletInboxOldestAgeMaxSeconds", "steadyWalletInboxTerminalDebtMax",
+          "steadyMatchInboxBacklogMax", "steadyMatchInboxOldestAgeMaxSeconds",
+          "steadyMatchInboxTerminalDebtMax", "finalOrderInboxBacklog",
+          "finalOrderInboxTerminalDebt", "finalWalletInboxBacklog",
+          "finalWalletInboxTerminalDebt", "finalMatchInboxBacklog",
+          "finalMatchInboxTerminalDebt", "finalOrderOutboxActiveDebt",
+          "finalOrderOutboxTerminalDebt", "finalWalletOutboxActiveDebt",
+          "finalWalletOutboxTerminalDebt", "finalMatchOutboxActiveDebt",
+          "finalMatchOutboxTerminalDebt", "finalMatchCleanupActiveDebt",
+          "finalMatchCleanupTerminalDebt"
+        ] | map(select($result[.] != null and ($result[.] | type) != "number"))))
+      | unique
+    elif (.requiredFieldsInvalid | type) == "array" then .requiredFieldsInvalid
+    else [] end;
   def known_failure:
-    any([
+    ((required_v3_fields_missing + required_v3_fields_invalid) | length) > 0
+    or ((.externalDriverExitStatus // 0) != 0)
+    or any([
       .validForSustainedCapacity,
       .valid,
       .threeServiceTradeIdsEqual,
@@ -45,9 +97,10 @@ jq -r \
       .orderReadModelConverged
     ][]; . == false);
   def decision:
-    if .capacityClaimAllowed == true then "PASS — capacity evidence eligible"
-    elif known_failure then "REJECT — a measured gate failed"
-    elif .validForSustainedCapacity == true then "PASS — diagnostic only"
+    if known_failure then "REJECT — a measured gate failed"
+    elif .capacityClaimAllowed == true then "PASS — capacity evidence eligible"
+    elif .validForSustainedCapacity == true
+      then "PASS — workload correctness only; capacity evidence ineligible"
     elif .valid == true then "PASS — correctness evidence"
     elif .correctness == "PASS" or .correctnessGate == "PASS"
       then "PASS — isolated diagnostic"
@@ -56,10 +109,14 @@ jq -r \
     else "REVIEW — no common final gate was found"
     end;
   def invalid_reasons:
-    pick([.capacityEvidenceInvalidReasons, .capacityInvalidReasons,
+    ((pick([.capacityEvidenceInvalidReasons, .capacityInvalidReasons,
       .provenanceInvalidReasons,
       (if (.capacityEvidence | type) == "object"
-        then .capacityEvidence.invalidReasons else null end)]) // [];
+        then .capacityEvidence.invalidReasons else null end)]) // [])
+      + (required_v3_fields_missing | map("missing_required_field:" + .))
+      + (required_v3_fields_invalid | map("invalid_required_field:" + .))
+      + [if (.externalDriverExitStatus // 0) != 0
+          then "external_driver_failed" else empty end]) | unique;
   def limitation:
     pick([.claimBoundary, .measurementBoundary, .evidenceClass,
       (if (.capacityEvidence | type) == "object"
@@ -95,6 +152,7 @@ jq -r \
     + row("Offered/published events/s"; pick([.offeredOrdersPerSecond,
       .publisherConfirmedEventsPerSecond, .businessInputBrokerAckedOrderTps]))
     + row("Driver response throughput"; .externalResponseThroughput)
+    + row("External driver exit status"; .externalDriverExitStatus)
     + row("HTTP success ratio"; pick([.externalHttpSuccessRatio, .httpSuccessRatio]))
     + row("Dropped iterations"; pick([.externalDroppedIterations, .droppedIterations]))
     + row("Out-of-range iterations"; .externalOutOfRangeIterations)
@@ -115,16 +173,57 @@ jq -r \
     + row("Order reservation inbox maximum backlog"; .steadyOrderReservationInboxBacklogMax)
     + row("Order reservation inbox backlog slope/s";
       .steadyOrderReservationInboxBacklogSlopePerSecond)
+    + row("Order inbox backlog start"; .steadyOrderInboxBacklogStart)
+    + row("Order inbox backlog end"; .steadyOrderInboxBacklogEnd)
+    + row("Order inbox maximum backlog"; .steadyOrderInboxBacklogMax)
+    + row("Order inbox backlog slope/s"; .steadyOrderInboxBacklogSlopePerSecond)
+    + row("Order inbox maximum oldest age seconds"; .steadyOrderInboxOldestAgeMaxSeconds)
+    + row("Order inbox maximum terminal debt"; .steadyOrderInboxTerminalDebtMax)
+    + row("Wallet inbox backlog start"; .steadyWalletInboxBacklogStart)
+    + row("Wallet inbox backlog end"; .steadyWalletInboxBacklogEnd)
+    + row("Wallet inbox maximum backlog"; .steadyWalletInboxBacklogMax)
+    + row("Wallet inbox backlog slope/s"; .steadyWalletInboxBacklogSlopePerSecond)
+    + row("Wallet inbox maximum oldest age seconds"; .steadyWalletInboxOldestAgeMaxSeconds)
+    + row("Wallet inbox maximum terminal debt"; .steadyWalletInboxTerminalDebtMax)
+    + row("Match inbox backlog start"; .steadyMatchInboxBacklogStart)
+    + row("Match inbox backlog end"; .steadyMatchInboxBacklogEnd)
+    + row("Match inbox maximum backlog"; .steadyMatchInboxBacklogMax)
+    + row("Match inbox backlog slope/s"; .steadyMatchInboxBacklogSlopePerSecond)
+    + row("Match inbox maximum oldest age seconds"; .steadyMatchInboxOldestAgeMaxSeconds)
+    + row("Match inbox maximum terminal debt"; .steadyMatchInboxTerminalDebtMax)
     + row("Configured maximum backlog"; .maxSteadyBacklog)
     + row("Configured maximum growth/s"; .maxBacklogGrowthPerSecond)
+    + row("Configured maximum inbox oldest age seconds"; .maxInboxOldestAgeSeconds)
     + row("Final queue backlog"; .finalQueueBacklog)
     + row("Final DLQ backlog"; .finalDlqBacklog)
     + row("Active reservations"; pick([.activeMatchReservations, .activeReservations]))
     + row("Order projection lag events"; .finalOrderProjectionLagEvents)
+    + row("Final Order inbox backlog"; .finalOrderInboxBacklog)
+    + row("Final Order inbox terminal debt"; .finalOrderInboxTerminalDebt)
+    + row("Final Wallet inbox backlog"; .finalWalletInboxBacklog)
+    + row("Final Wallet inbox terminal debt"; .finalWalletInboxTerminalDebt)
+    + row("Final Match inbox backlog"; .finalMatchInboxBacklog)
+    + row("Final Match inbox terminal debt"; .finalMatchInboxTerminalDebt)
+    + row("Final Order outbox active/terminal debt";
+      (if .finalOrderOutboxActiveDebt == null and .finalOrderOutboxTerminalDebt == null
+       then null else ((.finalOrderOutboxActiveDebt // 0 | tostring) + "/" +
+       (.finalOrderOutboxTerminalDebt // 0 | tostring)) end))
+    + row("Final Wallet outbox active/terminal debt";
+      (if .finalWalletOutboxActiveDebt == null and .finalWalletOutboxTerminalDebt == null
+       then null else ((.finalWalletOutboxActiveDebt // 0 | tostring) + "/" +
+       (.finalWalletOutboxTerminalDebt // 0 | tostring)) end))
+    + row("Final Match outbox active/terminal debt";
+      (if .finalMatchOutboxActiveDebt == null and .finalMatchOutboxTerminalDebt == null
+       then null else ((.finalMatchOutboxActiveDebt // 0 | tostring) + "/" +
+       (.finalMatchOutboxTerminalDebt // 0 | tostring)) end))
+    + row("Final Match cleanup active/terminal debt";
+      (if .finalMatchCleanupActiveDebt == null and .finalMatchCleanupTerminalDebt == null
+       then null else ((.finalMatchCleanupActiveDebt // 0 | tostring) + "/" +
+       (.finalMatchCleanupTerminalDebt // 0 | tostring)) end))
     + "\n## Correctness\n\n"
     + "| Gate | Result |\n| --- | ---: |\n"
     + row("Overall validity"; .valid)
-    + row("Sustained-capacity gate"; .validForSustainedCapacity)
+    + row("Workload correctness gate"; .validForSustainedCapacity)
     + row("Three-service trade IDs equal"; pick([.threeServiceTradeIdsEqual,
       .completedTradeIdSetsEqual, .tradeIdsEqual]))
     + row("Asset reconciliation"; .assetReconciliationPassed)

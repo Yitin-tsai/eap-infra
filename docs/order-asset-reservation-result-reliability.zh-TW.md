@@ -354,10 +354,11 @@ cd eap-order
 ./gradlew --no-daemon postgresIntegrationTest
 ```
 
-2026-09-03 全鏈長窗進一步證明這張 inbox 同時是 reliability 控制與效能容量的一部分：200 orders/s
-時最大 non-`APPLIED` backlog 為 791、穩態 slope `+0.0035/s`；300／400 則累積至少
-51K／53K，即使 Rabbit queue 為 0 且所有資料最後收斂，也必須拒絕為完整系統持續容量。
-詳見[最新全鏈報告](benchmarks/2026-09-03-current-version-full-chain.md)。
+2026-09-03 全鏈長窗證明這張 inbox 同時是 reliability 控制與效能容量的一部分：300／400
+曾在 Rabbit queue 為 0 時累積至少 51K／53K，即使最終收斂也不能算持續容量。
+2026-09-04 在 Wallet trade inbox 加入後，用聚合 Order inbox gate 重跑 200 orders/s：
+最大 backlog `291`、slope `+0.0079/s`、oldest age max `1s`、terminal debt `0`，且最終
+debt 歸零。詳見[最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。
 
 ## 面試時可以怎麼說
 

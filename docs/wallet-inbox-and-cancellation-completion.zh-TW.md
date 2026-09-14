@@ -1,8 +1,8 @@
 # Wallet Durable Inbox 與取消訂單最終確認
 
-> 更新日期：2026-09-01
+> 更新日期：2026-09-04
 >
-> 適用範圍：CDA `OrderSubmittedEvent`、`OrderCancellationResultEvent`、`OrderAssetReservationReleasedEvent`
+> 適用範圍：CDA `OrderSubmittedEvent`、`TradeExecutedEvent`、`OrderCancellationResultEvent`、`OrderAssetReservationReleasedEvent`
 >
 > 定位：本文件說明目前已實作的可靠性邊界、資料庫寫入、重試、錯誤分類、crash window 與尚未完成的 production gap。
 
@@ -10,7 +10,7 @@
 
 這次修改補上兩件事：
 
-1. Wallet 不再於 Rabbit listener 內直接做驗資或取消釋放。訊息會先寫入 Wallet-owned durable inbox，commit 成功後 listener 才正常返回並由 container ACK；後續由可 reclaim 的 lease worker 執行業務交易。
+1. Wallet 不再於 Rabbit listener 內直接做驗資、成交結算或取消釋放。三種訊息會先寫入 Wallet-owned durable inbox，commit 成功後 listener 才正常返回並由 container ACK；後續由可 reclaim 的 lease worker 執行業務交易。
 2. MatchEngine 的 `CANCELLED` 只確認「剩餘數量已由取消取得，不會再被撮合」。Order 先進入 `CANCELLING`；Wallet 真的釋放鎖定資產並透過 outbox 發出 `OrderAssetReservationReleasedEvent` 後，Order 才 append 完成事實並成為 `CANCELLED`。
 
 這不是 distributed transaction，也不是跨服務 exactly-once。它以各服務的 local transaction、outbox、durable inbox、穩定 identity 與冪等效果，讓 at-least-once delivery 在 duplicate、亂序與 worker crash 下仍可收斂。
@@ -47,7 +47,7 @@ Rabbit ACK 現在只證明 Wallet 已 durable intake，不代表資產已保留�
 
 | 欄位 | 用途 |
 | --- | --- |
-| `message_type`、`message_id` | 複合主鍵；目前支援 `ORDER_SUBMITTED/order_id` 與 `ORDER_CANCELLATION_RESULT/cancellation_id` |
+| `message_type`、`message_id` | 複合主鍵；支援 `ORDER_SUBMITTED/order_id`、`TRADE_EXECUTED/trade_id` 與 `ORDER_CANCELLATION_RESULT/cancellation_id`；identity 欄位為字串以保留原生 trade ID |
 | `payload`、`payload_hash`、`schema_version` | 保存原始工作與版本；判斷 same-ID/same-payload replay 或 identity conflict |
 | `status` | `PENDING`、`IN_PROGRESS`、`APPLIED`、`FAILED_RETRYABLE`、`FAILED_PERMANENT` |
 | `attempt_count`、`next_retry_at` | 有界技術 retry 與排程時間 |
@@ -120,6 +120,7 @@ PENDING / FAILED_RETRYABLE
 `WalletMessageProcessor.process` 是單一 transaction：
 
 - 驗資：business idempotency claim、Wallet 資產保留或拒絕、`OrderAssetReservationSucceededEvent/OrderFailedEvent` outbox、inbox `APPLIED` 一起 commit；
+- 成交：`trade_settlements.trade_id`、buyer／seller balance update 與 inbox `APPLIED` 一起 commit；
 - 取消：cancellation application、Wallet locked asset 釋放、publication guard、`OrderAssetReservationReleasedEvent` outbox、inbox `APPLIED` 一起 commit。
 
 若最後的 owner fencing 無法把 inbox 標成 `APPLIED`，整筆 transaction rollback。因此不會留下「資產已變更、outbox 已建立，但 inbox 仍可被另一個 worker 重做」的部分 commit。
@@ -137,7 +138,7 @@ PENDING / FAILED_RETRYABLE
 
 技術 retry 使用 exponential backoff 與 bounded jitter：預設 250 ms 起始、最高 30 秒，jitter 最多約為 capped delay 的四分之一。worker 不在 thread 內 `sleep`，而是保存 `next_retry_at` 後釋放資源。
 
-Wallet 現行兩種 message 沒有可證明會自行補齊的 prerequisite，因此 Wallet state machine 已移除 `PENDING_PREREQUISITE`。特別是 locked asset 不足不會因為等待成交而改善：settlement 只會消耗 locked asset，所以它直接成為永久一致性衝突。`PENDING_PREREQUISITE` 仍是 Order inbox 的合法狀態，因為 Order 確實可能先收到 trade、cancellation result 或 release event，再等待另一個 queue 的前置事實。
+Wallet 現行三種 message 沒有可證明會自行補齊的 prerequisite，因此 Wallet state machine 已移除 `PENDING_PREREQUISITE`。特別是 locked asset 不足不會因為等待成交而改善：settlement 只會消耗 locked asset，所以它直接成為永久一致性衝突。`PENDING_PREREQUISITE` 仍是 Order inbox 的合法狀態，因為 Order 確實可能先收到 trade、cancellation result 或 release event，再等待另一個 queue 的前置事實。
 
 ## 取消訂單為什麼拆成兩階段
 
@@ -218,6 +219,7 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 ### 已解決
 
 - Wallet 驗資與取消結果在業務處理前有 durable processing record。
+- Wallet 成交結算也在 broker ACK 前保存 durable processing record；結算效果與 inbox completion 原子提交。
 - listener ACK 不再等價於業務完成，但有可查詢的 inbox debt。
 - duplicate、same-ID conflict、worker crash、expired lease 與 lost-lease fencing 有測試。
 - Wallet 資產效果、business guard、outbox 與 inbox terminal state 使用 local transaction 原子提交。
@@ -232,19 +234,23 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 - **Wallet DB 在 inbox insert 前長時間不可用**：此時沒有本地資料可寫，仍靠 Spring listener 3 attempts 後進目前 DLQ。需要 delayed retry queue、consumer pause 或其他 transport recovery policy；durable inbox 無法解決「尚未進 inbox」的窗口。
 - **Saga timeout 與 age SLO**：Order 的合法 `PENDING_PREREQUISITE` 仍可持續等待，尚無自動 timeout detector 或 escalation workflow。
 - **DLQ recovery control plane**：還沒有完整的 inspect、原因修正、rate-limited replay、audit 與 re-verification 流程。
-- **Wallet trade consumer**：此次沒有把 `TradeExecutedEvent` 改成同一套 durable inbox；它仍依賴 local transaction、trade identity、短期 broker retry 與 DLQ。
+- **Wallet trade failure campaign**：`TradeExecutedEvent` 已納入同一套 durable inbox，但尚未完成真實 Rabbit delivery 下的 60 秒 DB outage、process kill 與恢復測試；目前證據是 PostgreSQL transaction／lease integration test。
 - **Metrics 成本**：目前 inbox status gauge 會查詢資料庫；可用於學習與開發驗證，未來需評估降低 scrape query amplification 並補 oldest-age alert。
 - **事件命名遷移**：後續已將語意不清的 `OrderConfirmedEvent` 改名為 `OrderAssetReservationSucceededEvent`；`OrderSubmittedEvent` 與 `OrderFailedEvent` 仍保留。新 release contract 使用明確的過去式事實名稱 `OrderAssetReservationReleasedEvent`。
 
 ## 驗收證據
 
-2026-09-01 已完成：
+截至 2026-09-04 已完成：
 
 - `eap-common`、`eap-wallet`、`eap-order` unit tests；
 - Wallet PostgreSQL integration suite：inbox duplicate/conflict、lease reclaim、reservation 與 `APPLIED` 原子性、lost-lease rollback、release publication exactly once、settlement/cancellation ordering；
+- Wallet trade-inbox integration：same-payload duplicate、same-ID conflict、settlement／balance／`APPLIED` atomic commit，以及 lost-lease full rollback；
 - locked asset 不足反例：一次處理後成為 `FAILED_PERMANENT/PERMANENT_ASSET_INVARIANT`，餘額不變，且 cancellation application、release publication 與 release outbox 都是 0；
 - Order PostgreSQL integration suite：`CANCELLING → CANCELLED`、release inbox duplicate/conflict/reclaim、lost-lease rollback；
 - 三服務 RabbitMQ 取消生命週期：open cancel、partial remainder cancel、match/cancel race。
+- 最新完整 HTTP 長窗：Wallet trade inbox 加入後接受 `192000/192000` 筆訂單，三服務
+  各 `96000` 筆 trade ID 一致；Wallet inbox max `389`、oldest age max `1s`、terminal
+  debt `0`，最終 Wallet inbox／outbox 與資產 debt 都歸零。
 
 本次三服務實測結果：
 
@@ -262,11 +268,11 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 本機可讀報告位於 `build/load-test-reports/http-cancellation-CANCELLATION_LIFECYCLE_20260901_WALLET_INBOX_R1-result-report.md`。`build/` 是可重建的測試輸出，不是版本控制下的文件來源；本頁才是此次設計與證據摘要。
 
 後續三服務 inbox 與 Order 雙狀態整合後的正常交易回歸，請以
-[2026-09-03 最新全鏈報告](benchmarks/2026-09-03-current-version-full-chain.md)為準；本頁的取消生命週期數據是 correctness evidence，不是目前 mixed-flow 容量。
+[2026-09-04 最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)為準；本頁的取消生命週期數據是 correctness evidence，不是目前 mixed-flow 容量。
 
 ## 面試版說法
 
-> 我把 Wallet consumer 從「listener 直接做業務，短期重試後進 DLQ」改成 durable inbox。Rabbit ACK 只代表訊息已在 Wallet 落盤；lease worker 以 `SKIP LOCKED`、owner fencing、backoff 與 jitter 重試。資產異動、business idempotency、outbox 與 inbox `APPLIED` 在同一筆 local transaction，所以 worker crash 不會留下半套效果。取消流程則拆成 MatchEngine 判定取消成功與 Wallet 確實釋放資產兩個事實，Order 中間是 `CANCELLING`，收到 Wallet 的 `OrderAssetReservationReleasedEvent` 才成為 `CANCELLED`。這提高 safety 與一般 crash recovery，但 inbox commit 前的 DB outage、Saga timeout 與 DLQ control plane 仍是我明確保留的 production gap。
+> 我把 Wallet consumer 從「listener 直接做業務，短期重試後進 DLQ」改成 durable inbox。Rabbit ACK 只代表訊息已在 Wallet 落盤；lease worker 以 `SKIP LOCKED`、owner fencing、backoff 與 jitter 重試。驗資、成交與取消的資產異動，各自和 business idempotency／outbox／inbox `APPLIED` 放在同一筆 local transaction，所以 worker crash 不會留下半套效果。取消流程則拆成 MatchEngine 判定取消成功與 Wallet 確實釋放資產兩個事實，Order 中間是 `CANCELLING`，收到 Wallet 的 `OrderAssetReservationReleasedEvent` 才成為 `CANCELLED`。這提高 safety 與一般 crash recovery，但 inbox commit 前的 DB outage、Saga timeout 與 DLQ control plane 仍是我明確保留的 production gap。
 
 ## 程式碼入口
 

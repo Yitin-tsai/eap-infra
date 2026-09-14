@@ -1,6 +1,6 @@
 # Match／Order Durable Inbox 全鏈回歸與 Order Retry 改善 - 2026-09-02
 
-> Historical checkpoint：這是短窗 staircase 與 Order trade-prerequisite 改善證據。Order reservation-result worker、雙狀態與 query projection 納入後的目前版本，請看 [2026-09-03 最新全鏈報告](2026-09-03-current-version-full-chain.md)；本頁的短窗 400 pass 不是目前長窗容量。
+> Historical checkpoint：這是短窗 staircase 與 Order trade-prerequisite 改善證據。目前版本請看 [2026-09-04 最新全鏈報告](2026-09-04-current-reliability-full-chain.md)；本頁的短窗 400 pass 不是目前長窗容量。
 
 ## Decision
 

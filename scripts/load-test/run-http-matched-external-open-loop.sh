@@ -38,6 +38,7 @@ RABBIT_USER="${RABBIT_USER:-admin}"
 RABBIT_PASSWORD="${RABBIT_PASSWORD:-admin123}"
 START_SERVICES="${START_SERVICES:-true}"
 STOP_SERVICES_AFTER_RUN="${STOP_SERVICES_AFTER_RUN:-${START_SERVICES}}"
+REMOVE_LOADTEST_DATA_AFTER_SUCCESS="${REMOVE_LOADTEST_DATA_AFTER_SUCCESS:-true}"
 ASSERT_LOADTEST_ENVIRONMENT="${ASSERT_LOADTEST_ENVIRONMENT:-true}"
 FLUSH_REDIS_ON_RESET=true
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
@@ -207,9 +208,7 @@ remove_local_raw_artifacts() {
 
   rm -f -- \
     "${RUN_REPORT_LOG}" \
-    "${RUN_SAMPLES_CSV}" \
     "${RUN_TARGETS}" \
-    "${RUN_MONITOR_CSV}" \
     "${RUN_MONITOR_LOG}" \
     "${RUN_MONITOR_READY}" \
     "${RUN_MONITOR_STOP}" \
@@ -223,6 +222,14 @@ remove_local_raw_artifacts() {
     "${RUN_CLASSPATH}"
   rm -rf -- "${RUN_DIAG_DIR}"
   echo "[INFO] removed disposable raw artifacts; set KEEP_RAW_LOADTEST_ARTIFACTS=true to retain them"
+}
+
+remove_loadtest_data_after_success() {
+  if [[ "${REMOVE_LOADTEST_DATA_AFTER_SUCCESS}" != "true" ]]; then
+    return 0
+  fi
+  echo "[INFO] removing successful-run load-test containers and volumes"
+  docker compose -f "${ROOT_DIR}/docker-compose.loadtest.yml" down -v
 }
 
 if (( TARGET_ORDER_TPS <= 0 || TARGET_ORDER_TPS % 2 != 0 )); then
@@ -240,6 +247,11 @@ if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]] \
 fi
 if [[ "${KEEP_RAW_LOADTEST_ARTIFACTS}" != "true" && "${KEEP_RAW_LOADTEST_ARTIFACTS}" != "false" ]]; then
   echo "[ERROR] KEEP_RAW_LOADTEST_ARTIFACTS must be true or false." >&2
+  exit 2
+fi
+if [[ "${REMOVE_LOADTEST_DATA_AFTER_SUCCESS}" != "true" \
+      && "${REMOVE_LOADTEST_DATA_AFTER_SUCCESS}" != "false" ]]; then
+  echo "[ERROR] REMOVE_LOADTEST_DATA_AFTER_SUCCESS must be true or false." >&2
   exit 2
 fi
 if [[ -z "${RESET_DATA_ON_PREPARE+x}" ]]; then
@@ -497,6 +509,13 @@ fi
 http_matched_stop_diagnostics
 http_matched_collect_after_run_diagnostics
 
+# The driver is part of the benchmark contract. Fold its exit status into the
+# process result before provenance is calculated so a failed k6 threshold can
+# never leave capacityClaimAllowed=true.
+if (( run_status == 0 && attack_status != 0 )); then
+  run_status="${attack_status}"
+fi
+
 persist_status=0
 HTTP_MATCHED_DEFER_REPORT_RENDER=true
 http_matched_persist_result "${run_status}" "external-http-matched-steady-state-chain" || persist_status=$?
@@ -579,9 +598,6 @@ if [[ -f "${RUN_REPORT_JSON}" ]]; then
   mv "${enriched_result}" "${RUN_REPORT_JSON}"
 fi
 http_matched_render_report "${RUN_REPORT_JSON}" || true
-if (( run_status == 0 && attack_status != 0 )); then
-  run_status="${attack_status}"
-fi
 if (( run_status == 0 && persist_status != 0 )); then
   run_status="${persist_status}"
 fi
@@ -590,4 +606,9 @@ if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
   echo "[INFO] k6 readable report=${RUN_K6_REPORT}"
 fi
 remove_local_raw_artifacts
+if (( run_status == 0 )); then
+  remove_loadtest_data_after_success
+else
+  echo "[WARN] benchmark failed; preserving load-test containers and volumes for diagnosis" >&2
+fi
 exit "${run_status}"

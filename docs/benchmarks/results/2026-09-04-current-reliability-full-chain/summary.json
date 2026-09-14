@@ -1,0 +1,158 @@
+{
+  "runId": "CURRENT_RELIABILITY_20260904_200TPS_15M_R1",
+  "evidenceMode": "diagnostic",
+  "sourceState": "dirty-worktree-stable-during-run",
+  "contract": "external-http-matched-steady-state-chain",
+  "benchmarkSchemaVersion": 3,
+  "driver": "k6",
+  "workloadSeed": 20260905,
+  "warmupSeconds": 60,
+  "measurementSeconds": 900,
+  "targetOrderTps": 200,
+  "acceptedOrders": 192000,
+  "steadyAcceptedOrderTps": 199.99,
+  "steadyCompletedTradeTps": 100.02,
+  "steadyCompletionTargetRatio": 1.0002,
+  "k6HttpLatencyMs": {
+    "average": 2.3665608593750114,
+    "p95": 4.716049999999992,
+    "p99": 32.88606999999999,
+    "maximum": 342.134
+  },
+  "rabbitBacklog": {
+    "maximum": 128,
+    "slopePerSecond": -0.0004
+  },
+  "orderInbox": {
+    "start": 28,
+    "end": 0,
+    "maximum": 291,
+    "slopePerSecond": 0.0079,
+    "oldestAgeMaximumSeconds": 1,
+    "terminalDebtMaximum": 0
+  },
+  "walletInbox": {
+    "start": 42,
+    "end": 3,
+    "maximum": 389,
+    "slopePerSecond": 0.0121,
+    "oldestAgeMaximumSeconds": 1,
+    "terminalDebtMaximum": 0
+  },
+  "matchInbox": {
+    "start": 0,
+    "end": 0,
+    "maximum": 95,
+    "slopePerSecond": 0.002,
+    "oldestAgeMaximumSeconds": 0,
+    "terminalDebtMaximum": 0
+  },
+  "convergedTradesPerService": 96000,
+  "tradeIdFingerprint": "04f66f196b169de0819e2f189fae037c6aabf764cad1655d59e7a3451c314d27",
+  "fullConvergenceSeconds": 967.462,
+  "fullLifecycleTradeTps": 99.23,
+  "threeServiceTradeIdsEqual": true,
+  "assetReconciliationPassed": true,
+  "assetReconciliation": {
+    "initialBuyer": {
+      "availableAmount": 5096000,
+      "lockedAmount": 0,
+      "availableCurrency": 509600000,
+      "lockedCurrency": 0
+    },
+    "initialSeller": {
+      "availableAmount": 5096000,
+      "lockedAmount": 0,
+      "availableCurrency": 509600000,
+      "lockedCurrency": 0
+    },
+    "finalBuyer": {
+      "availableAmount": 5192000,
+      "lockedAmount": 0,
+      "availableCurrency": 500000000,
+      "lockedCurrency": 0
+    },
+    "finalSeller": {
+      "availableAmount": 5000000,
+      "lockedAmount": 0,
+      "availableCurrency": 519200000,
+      "lockedCurrency": 0
+    }
+  },
+  "orderReadModelConverged": true,
+  "finalOrderProjectionLagEvents": 0,
+  "finalQueueBacklog": 0,
+  "finalDlqBacklog": 0,
+  "activeMatchReservations": 0,
+  "finalDurableDebt": {
+    "orderInboxActive": 0,
+    "orderInboxTerminal": 0,
+    "walletInboxActive": 0,
+    "walletInboxTerminal": 0,
+    "matchInboxActive": 0,
+    "matchInboxTerminal": 0,
+    "orderOutboxActive": 0,
+    "orderOutboxTerminal": 0,
+    "walletOutboxActive": 0,
+    "walletOutboxTerminal": 0,
+    "matchOutboxActive": 0,
+    "matchOutboxTerminal": 0,
+    "matchCleanupActive": 0,
+    "matchCleanupTerminal": 0
+  },
+  "requiredFieldsMissing": [],
+  "requiredFieldsInvalid": [],
+  "externalDriverExitStatus": 0,
+  "workloadCorrectnessPassed": true,
+  "validForSustainedCapacity": true,
+  "capacityClaimAllowed": false,
+  "publishedArtifacts": {
+    "monitor.csv": "sha256:2fe179b52ef671bdb28dd5493a9f5f0b66e4dd50e7dff3792e78f9fbd4d68648",
+    "samples.csv": "sha256:5bd2354e9e7bbf062f44a039e5a4c5e5e68f1809765058d05224fbbc374fea94"
+  },
+  "capacityEvidenceInvalidReasons": [
+    "diagnostic_evidence_mode",
+    "source_repository_dirty_or_missing"
+  ],
+  "sourceRepositories": [
+    {
+      "name": "eap-infra",
+      "baseCommit": "26dfa9068a3f06dddc3fae341b05dba516d9bb29",
+      "workingTreeSha256": "1ff1e36cff10a0908507b94038f4b2620a4ae3aa67eb805b7f5cd28381d7957f"
+    },
+    {
+      "name": "eap-common",
+      "baseCommit": "f3ebb7f84e73e5e61cb0f0936adbe10433be3976",
+      "workingTreeSha256": "074993e17b5d7cc0216e81da509187f5e90a336307e74877d87cb63486a3675c"
+    },
+    {
+      "name": "eap-order",
+      "baseCommit": "12cd15706a525a1b9c29046520f7782623cafaae",
+      "workingTreeSha256": "c5b0ba0923b22f186b6e242223319dc6dc593818467ecaed188d4f74989cebf8"
+    },
+    {
+      "name": "eap-wallet",
+      "baseCommit": "0fdcdcd1f513ff590387fbe88d5dde0857bb0f1b",
+      "workingTreeSha256": "291ea66307d59753fd7f715df338aa7a3794fdf9c08985628d9d5b53ea6b7531"
+    },
+    {
+      "name": "eap-matchEngine",
+      "baseCommit": "d42ef93d319b41f5102ab2231ab1861b5f342df6",
+      "workingTreeSha256": "5e3c150c61cbf8b3a899c8503978c19ede894742425e2039b6274c22c722129a"
+    }
+  ],
+  "harnessFingerprints": {
+    "composeSha256": "6a4b7a5bcac5db4f7593e50fcdcf2619d0fc14dacb1666b073ec84da5cbab034",
+    "runnerSha256": "2532efd6136f3faeea314b4231faf17bc2d41229cf5c9f8b5926645195f4ba64",
+    "librarySha256": "34b3a46557440040f2bbf703e9811037ff41428c93328408bf813f6c2daeba7d",
+    "k6BundleSha256": "71f5af0235483af46fc9c2c9a709e711de18dc5156237d3bba94fbbaf29ad3ed"
+  },
+  "claimLimitations": [
+    "not release pinned",
+    "single passing seed",
+    "co-located load generator",
+    "PostgreSQL synchronous_commit=off",
+    "boundary above 200 orders/s not remeasured",
+    "outbox and cleanup are final-convergence gates, not steady-window age/slope gates"
+  ]
+}

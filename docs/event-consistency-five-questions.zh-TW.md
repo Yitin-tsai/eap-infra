@@ -352,7 +352,7 @@ flowchart TD
 Wallet reservation 的具體改善計畫、依賴與 Definition of Done 已記錄在 [Wallet 驗資可靠性與 Saga 自動恢復 ticket](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md)。
 
 - Redis 全量資料遺失後，尚沒有由 PostgreSQL 自動重建完整 order book 並通過 readiness gate 的完整流程；現有 reconciler 主要修復局部 reservation crash window。
-- Wallet 的 reservation 與 cancellation-result consumer 已使用 service-owned durable inbox；`TradeExecutedEvent` settlement 仍使用獨立的本地交易、`trade_id` 冪等、短期 Rabbit retry 與 DLQ，尚未納入同一套 lease inbox。
+- Wallet 的 reservation、`TradeExecutedEvent` settlement 與 cancellation-result consumer 已使用 service-owned durable inbox；trade settlement、`trade_id` business guard 與 inbox `APPLIED` 在同一筆本地 transaction 收斂。尚未補齊的是 inbox insert 前長時間 DB outage 與 terminal recovery control plane。
 - shared DLQ 尚未形成帶分類、審核、payload conflict 檢查與受控 replay 的 recovery control plane。
 - Wallet 有預設關閉的 failed-outbox admin recovery；Order／Match 的 terminal outbox recovery 仍較依賴告警、runbook 與資料庫操作。
 - client 在「commit 後、HTTP response 前」斷線時仍有結果不確定性；完整解法需要 client-visible idempotency key 與第一次 response 保存。

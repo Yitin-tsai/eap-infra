@@ -179,7 +179,8 @@ sequenceDiagram
     M->>R: release remainder or complete reservation
     M->>MQ: relay TradeExecutedEvent
     MQ->>O: idempotently apply trade to both orders
-    MQ->>W: idempotently settle buyer and seller
+    MQ->>W: durably intake TradeExecutedEvent
+    W->>WDB: settle buyer and seller and mark inbox APPLIED
 ```
 
 ### 階段 0：Order 接受 HTTP 命令
@@ -258,9 +259,9 @@ Order 與 Wallet 各自消費同一個 trade fact：
 
 - Order 在本地 transaction 對 buyer／seller order 套用 matched quantity，並以 `trade_id` 的 application record 去重。若 reservation confirmation 尚未由 Order consumer 套用，但 submission head 已存在，可信任的 `TradeExecutedEvent` 本身足以推導 reservation 已成功，Order 會建立／提升 matching command state 後直接成交，不再把這種正常 fan-out 亂序送進 prerequisite retry。只有 submission head 尚未建立等真正缺少本地基礎資料時才保存為 `PENDING_PREREQUISITE`；其他暫時錯誤為 `FAILED_RETRYABLE`。若 crash 發生在 application commit 後、inbox 標記前，worker 會依完整 trade identity 將既有 application 收斂成 `APPLIED`。技術錯誤最多 20 次後轉為 permanent failure；業務矛盾或未知 batch failure 才逐筆隔離，避免一筆 poison event 卡住整批。
 - `PENDING_PREREQUISITE` 現在代表 submission／command base 尚未建立，不再代表單純等待 Order confirmation。2026-09-02 修改前的基準中，`28,000` 筆 trade 有 `25,746` 筆（`91.95%`）因正常跨 queue 亂序曾進 Order inbox、attempt 全部為 `2`；這是本次修正要移出 hot path 的歷史數據，不是新的穩態預期。
-- Wallet 在一筆 transaction 鎖定 buyer／seller wallet、插入唯一 `trade_settlements.trade_id`，再同時扣除 locked asset、交付 energy、支付賣方並退回買方 price improvement。要求兩個 wallet update 與一個 settlement 恰好成立；任何不一致都 rollback。duplicate `trade_id` 不會再次結算。
+- Wallet listener 先以 `TRADE_EXECUTED/trade_id` 將 payload、hash 與 retry state 寫進 `wallet_service.message_inbox`，commit 後才返回並由 container ACK。lease worker 再於一筆 transaction 鎖定 buyer／seller wallet、插入唯一 `trade_settlements.trade_id` 與 payload hash，同時扣除 locked asset、交付 energy、支付賣方、退回買方 price improvement，最後以 owner fence 將 inbox 標成 `APPLIED`。任一 wallet update 或 lease check 不符就全部 rollback；只有相同 `trade_id` 且 hash 相同才是可接受的 duplicate。
 
-Wallet 的 trade listener 沒有像 Order 一樣的 service-owned durable retry inbox；它依賴本地 transaction rollback、Rabbit listener retry、idempotent settlement 與耗盡後 DLQ。這是目前實作差異，不應把 Order inbox 的保證泛化給所有 consumer。
+Wallet trade 與 reservation／cancellation-result 共用 service-owned durable inbox、error classifier、20-attempt retry budget、backoff＋jitter 與 lease reclaim。這只保護 inbox 已 commit 後的處理；若 Wallet DB 在 intake 前長時間不可用，仍會落回短期 Rabbit retry／DLQ。完整細節見 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)。
 
 ## 取消訂單的完整生命週期
 
@@ -431,10 +432,11 @@ Match inbox 的 schema、crash window、operator retry 與限制另見 [Match �
 #### Durable trade commit 後
 
 1. `TradeExecuted` 已是 pivot，不允許因 Redis cleanup 失敗而刪除 trade。
-2. full fill 的 cleanup task 與 trade 同 transaction commit；worker 預設每 100 ms claim，使用 `SKIP LOCKED` 與 30 秒 processing timeout，最多 10 次，1 秒 exponential backoff、最高 300 秒，最後標 `FAILED`。
-3. partial fill 需取得 per-order lock，最多等 5 秒、lease 10 秒，再把精確 remainder 放回。若這一步失敗，reservation 仍在 Redis；generic listener retry 之外，orphan reconciler 也會查 durable trade，依 `trade.quantity` 釋放正確 remainder。
-4. orphan reconciler 沒有自己的 attempt row／terminal status；單筆失敗只記 metrics／log，下次 5 秒掃描仍會再試。invalid reservation 目前只記 error，不會自動修正或隔離。
-5. incoming order 已完成部分成交後中斷時，redelivery recovery 會從 durable trades 加總已成交量，再處理剩餘量，避免把原始 amount 全部重做。
+2. full fill 的 cleanup task 與 trade 同 transaction commit；worker 預設每 100 ms claim，使用 `SKIP LOCKED` 與 30 秒 processing timeout。Redis timeout、連線或 script 執行錯誤屬 technical failure，最多 10 次、1 秒 exponential backoff、最高 300 秒，耗盡後標 `FAILED`。
+3. cleanup Lua 回傳 `COMPLETED` 或 `ALREADY_COMPLETED` 才能把 task 標成完成。若 reservation 內的 `orderId` 不符，或已由較新的 `tradeId` 擁有，代表 identity／ownership invariant 衝突：Lua 不修改任何 Redis key，worker 立即保存 `FAILED`、attempt、order ID、expected trade ID 與 outcome，不能重試到新 reservation 消失後再把舊任務誤判成成功。
+4. partial fill 需取得 per-order lock，最多等 5 秒、lease 10 秒，再把精確 remainder 放回。若這一步失敗，reservation 仍在 Redis；generic listener retry 之外，orphan reconciler 也會查 durable trade，依 `trade.quantity` 釋放正確 remainder。
+5. orphan reconciler 沒有自己的 attempt row／terminal status；單筆失敗只記 metrics／log，下次 5 秒掃描仍會再試。invalid reservation 目前只記 error，不會自動修正或隔離。
+6. incoming order 已完成部分成交後中斷時，redelivery recovery 會從 durable trades 加總已成交量，再處理剩餘量，避免把原始 amount 全部重做。
 
 這一層的設計重點不是「Redis 操作都能 rollback」，而是 PostgreSQL trade 決定真相。commit 前可以恢復 reservation；commit 後只能 roll forward cleanup。`cleanup FAILED`、invalid reservation 或仍存在的 orphan 都必須算 correctness debt，不能因 trade 已發布就宣稱完成。
 
@@ -456,11 +458,13 @@ Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 �
 
 #### Wallet trade consumer
 
-- buyer／seller row lock、唯一 `trade_settlements.trade_id`、兩個 wallet update 在同一 transaction；任一 row-count 不符就全部 rollback。
-- duplicate `trade_id` 正常返回，因此 consumer commit 後、ACK 前 crash 所造成的 redelivery 不會再次結算。
-- 其他 exception 交給 Spring listener：最多 3 attempts，間隔約 1 秒、2 秒，耗盡後 DLQ。
-- Wallet 沒有 service-owned trade inbox。Rabbit ACK 後沒有額外 retry debt；而進 DLQ 後也沒有自動安全 replay control plane。因此 Wallet DB 長時間故障若超過 listener retry window，會比 Order 更快轉成人工 debt。
-- 缺 wallet、locked amount 不足或 identity conflict 雖屬永久資料矛盾，現況仍走通用 3 attempts 再 DLQ；後續需要依 error type 分類，而不是無條件重送。
+- listener 先寫 `TRADE_EXECUTED/trade_id` inbox，same payload duplicate 正常 ACK；same ID／different payload 保存為 `IDENTITY_CONFLICT`。
+- worker claim 後，buyer／seller row lock、唯一 `trade_settlements.trade_id`、兩個 wallet update 與 inbox `APPLIED` 在同一 transaction；任一 row-count 或 owner fence 不符就全部 rollback。
+- MatchEngine 在 Redis Lua 原子選擇候選單時跳過同一 user 的掛單；若只有自己的對手單就不產生 trade。Wallet 再以 buyer／seller 不得相同與雙方 limit price 做防禦性驗證。
+- 新 settlement 保存 inbox payload hash；只有相同 `trade_id` 且 hash 相同才算 business duplicate，舊資料沒有 hash 或 hash 不同都不會被靜默接受。
+- transient DB／unknown technical failure 進 durable `FAILED_RETRYABLE`，最多 20 attempts，250 ms 起始、最高 30 秒並有 jitter；expired lease 可由其他 instance reclaim。
+- 缺 wallet、locked asset 不足屬 `PERMANENT_ASSET_INVARIANT`；事件欄位不合法或 exact arithmetic overflow 屬永久 invalid event，不進無意義 retry。
+- 只有 inbox 自己尚未寫入且 Wallet DB 不可用時才依賴 Spring listener 3 attempts／DLQ；delayed transport retry／consumer pause 尚未完成。
 
 ### 取消分支 A：Order 接受取消命令與發布 request
 
@@ -506,7 +510,7 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 | HTTP client | rate limit window；backpressure 建議 5 秒後 | request 未 accepted，或 commit 結果不確定 | 需要穩定 idempotency key 與第一次 response contract |
 | Spring Rabbit simple listener | 3 attempts；1 秒起始、倍增、最高 10 秒；不預設 requeue | shared DLQ | 同一設定同時套 transient 與 permanent exception，分類仍粗 |
 | Order asset reservation result inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | confirmed／failed 共用 `order_id` terminal guard；intake DB outage 仍需 delayed retry／consumer pause |
-| Wallet message inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | 驗資／取消共用機制；locked asset 不足直接是 permanent invariant，intake DB outage 仍需 transport recovery |
+| Wallet message inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | 驗資／成交／取消共用機制；locked asset 不足直接是 permanent invariant，intake DB outage 仍需 transport recovery |
 | Order／Wallet／Match outbox | 最多 10 次；約 1 秒 exponential backoff，最高 300 秒 | `FAILED` | Order／Match recovery control plane 不完整；需 terminal alert |
 | Order trade inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，必須有 age SLO |
 | Order cancellation inbox | poll 500 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，必須有 age SLO |
@@ -515,7 +519,7 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 | Match orphan reservation scan | 每 5 秒；30 秒後才處理 | 沒有 terminal row | 失敗會反覆掃描；invalid reservation 只有 log／metric |
 | Match cancellation reconciler | poll 250 ms、lease 30 秒；250 ms 至 30 秒 backoff | 目前無上限 | 需區分正常等待、poison data 與基礎設施故障 |
 
-目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。但各 inbox commit 前的 DB outage、Saga timeout、Match cancellation 無上限、Wallet trade inbox，以及 terminal outbox／DLQ 的完整 recovery control plane 仍未完成。實作細節見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)，後續範圍追蹤在 [Order reliability ticket](features/order-asset-reservation-result-reliability.zh-TW.md) 與 [Wallet reliability ticket](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md)。
+目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。但各 inbox commit 前的 DB outage、Saga timeout、Match cancellation 無上限，以及 terminal outbox／DLQ 的完整 recovery control plane 仍未完成。實作細節見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在 [Order reliability ticket](features/order-asset-reservation-result-reliability.zh-TW.md) 與 [Wallet reliability ticket](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md)。
 
 ## Retry、ACK、DLQ 與恢復層次
 
@@ -542,7 +546,7 @@ graph TD
 | service-owned retry | 已 durable intake 的暫時衝突 | Wallet／Order reconciler 保存狀態，以 lease、backoff、jitter 重試 | inbox commit 前 DB outage；永久 schema／資料錯誤 |
 | Rabbit listener retry | consumer 暫時失敗 | 預設 3 次，之後 dead-letter | DLQ 自動判讀與安全 replay |
 | idempotency | duplicate publish／redelivery | order ID、event ID、trade ID、cancellation ID unique guards | 相同 ID 卻不同 payload；這會被當成 conflict |
-| durable inbox／reconciler | out-of-order 或長於 broker retry 的失敗 | Order reservation result、trade、cancellation result、Wallet release，以及 Wallet reservation／cancellation 有持久化狀態、lease、backoff | Wallet trade 與所有 listener 並未自動擁有同等 inbox 保證 |
+| durable inbox／reconciler | out-of-order 或長於 broker retry 的失敗 | Order reservation result、trade、cancellation result、Wallet release，以及 Wallet reservation／trade／cancellation 有持久化狀態、lease、backoff | TDA 與其他非核心 listener 並未自動擁有同等 inbox 保證 |
 | external verifier | 找出整體尚未收斂 | 比對 durable IDs、asset、queue 與 debt | 自動修復所有未知 bug |
 
 ACK 規則也需要精確表達：Order 的 confirmation／trade batch listener 明確 manual ACK；Wallet 與 MatchEngine 的主要 simple listener 在方法正常返回後由 container ACK。若必要的本地 transaction 尚未成功，不能先 ACK。反序列化失敗或 retry 耗盡的 poison message 會進綁定到 `order.dlx` 的 shared `order.dlq`。
@@ -613,7 +617,7 @@ graph LR
 - 沒有中央 Saga orchestrator 或單一 global saga status；任何服務都不能單獨宣稱三服務已完成。
 - 沒有跨服務 exactly-once；提供的是 at-least-once delivery 加上 effectively-once local state transition。
 - 沒有統一的 end-to-end timeout，自動找出每一張長時間卡住的 order 並決定補償。
-- shared DLQ 尚不是完整的分類、審核、replay control plane；Wallet reservation／cancellation-result 已有 service-owned inbox，但 `TradeExecutedEvent` settlement 尚未納入同一套 inbox。
+- shared DLQ 尚不是完整的分類、審核、replay control plane；Wallet reservation／trade／cancellation-result 已有 service-owned inbox，但 inbox insert 前的 DB outage 仍會落入 transport retry／DLQ 窗口。
 - Order／Match terminal outbox failure 的人工 recovery 介面不如 Wallet 完整。
 - Redis 全毀後由 PostgreSQL 重建完整 order book，仍是較大的 recovery architecture 題目；reservation reconciler 只處理局部中斷。
 
@@ -635,7 +639,7 @@ graph LR
 | Trade commit 後 Redis cleanup crash | durable trade 已存在 | cleanup task 或 orphan reconciler | cleanup `FAILED` debt，不可算測試通過 |
 | Match trade outbox publish | durable trade 已存在 | relay 最多 10 次 | `FAILED`；Order／Wallet 不會憑空知道 trade |
 | Order trade 比 reservation confirmation 早到 | submission head 已存在 | 由較強的 `TradeExecutedEvent` 推導 reservation success 並直接套用 | 只有 submission head 也缺失時才進 `PENDING_PREREQUISITE` 並告警 age |
-| Wallet settlement 中途失敗 | 無 partial settlement commit | transaction rollback、listener retry | DLQ |
+| Wallet settlement 中途失敗 | 訊息已在 durable inbox，無 partial settlement commit | transaction rollback、durable backoff／lease retry | 20 attempts 後 `FAILED_PERMANENT` |
 | publish 成功但 outbox 未標 SENT | consumer 可能已完成 | 重送同一 event | unique／identity guard 吸收 duplicate |
 | cancel 與 match 同時發生 | 一方已取得 Redis member | Redis Lua 決定；pending reconciler 查 durable trade | `NOT_OPEN` 或 permanent debt 需調查 |
 | cancellation result 早於 Order trade | Order remaining 尚過大 | cancellation inbox 持續等待 prerequisite | 長時間不收斂時成為可觀測 debt，不會錯誤取消已成交量 |
@@ -686,7 +690,7 @@ graph LR
 | Durable trade 與 outbox | [`JpaTradeExecutionRecorder`](../eap-matchEngine/src/main/java/com/eap/eap_matchengine/application/JpaTradeExecutionRecorder.java)、[`TradeOutboxRelay`](../eap-matchEngine/src/main/java/com/eap/eap_matchengine/application/TradeOutboxRelay.java) |
 | Redis crash-window recovery | [`ReservationCleanupWorker`](../eap-matchEngine/src/main/java/com/eap/eap_matchengine/application/ReservationCleanupWorker.java)、[`ReservationReconciler`](../eap-matchEngine/src/main/java/com/eap/eap_matchengine/application/ReservationReconciler.java) |
 | Order trade inbox | [`TradeExecutedListener`](../eap-order/src/main/java/com/eap/eap_order/application/TradeExecutedListener.java)、[`OrderTradeExecutedReconciler`](../eap-order/src/main/java/com/eap/eap_order/application/OrderTradeExecutedReconciler.java) |
-| Wallet settlement／listener retry | [`TradeExecutedListener`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/TradeExecutedListener.java)、[`WalletTradeSettlementAppender`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/WalletTradeSettlementAppender.java) |
+| Wallet trade durable intake／settlement | [`TradeExecutedListener`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/TradeExecutedListener.java)、[`WalletMessageInbox`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/WalletMessageInbox.java)、[`WalletMessageProcessor`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/WalletMessageProcessor.java)、[`WalletTradeSettlementAppender`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/WalletTradeSettlementAppender.java) |
 | 取消訂單競爭判定 | [`OrderCancellationCoordinator`](../eap-matchEngine/src/main/java/com/eap/eap_matchengine/application/OrderCancellationCoordinator.java)、[`OrderCancellationDecisionStore`](../eap-matchEngine/src/main/java/com/eap/eap_matchengine/application/OrderCancellationDecisionStore.java) |
 | Order cancellation inbox | [`OrderCancellationResultInbox`](../eap-order/src/main/java/com/eap/eap_order/application/OrderCancellationResultInbox.java)、[`OrderCancellationResultReconciler`](../eap-order/src/main/java/com/eap/eap_order/application/OrderCancellationResultReconciler.java) |
 | Wallet cancellation release／listener | [`OrderCancellationResultListener`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/OrderCancellationResultListener.java)、[`WalletOrderCancellationAppender`](../eap-wallet/src/main/java/com/eap/eap_wallet/application/WalletOrderCancellationAppender.java) |

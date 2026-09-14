@@ -17,7 +17,7 @@ All contracts below exercise the CDA order/trade path. TDA uses separate auction
 | `http-matched-trade-completion-chain` | implemented | `scripts/load-test/run-http-matched-trade-completion-10k.sh` | HTTP SELL admission followed by HTTP BUY matching, Match/Order/Wallet durable trade-ID equality, asset settlement, MatchEngine reservation cleanup, and final queue drain | isolated component ceilings; simultaneous mixed-side arrival patterns |
 | `http-matched-steady-state-chain` | implemented | `scripts/load-test/run-http-matched-steady-state.sh` | sustained balanced, seeded, mixed-side HTTP traffic; steady accepted-order and completed-trade rates; queue backlog level/slope; three-service durable convergence; asset settlement; and final drain | side-imbalanced, cancellation-heavy, or multi-price market behavior; multi-node failover |
 | `http-cancellation-lifecycle` | implemented | `scripts/load-test/run-http-cancellation-lifecycle.sh` | deterministic HTTP cancellation through real RabbitMQ; open-order cancellation; partial-fill remainder cancellation; Match decision, Redis visibility, Order state, Wallet cancellation application/assets, trade-ID equality, outbox debt, queue/DLQ drain | cancellation throughput, broad randomized races, multi-node failover |
-| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite checksummed open-loop schedule; k6 is the default local driver; RabbitMQ and Order reservation-result durable-inbox backlog are sampled independently | automatic CPU or host isolation; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
+| `external-http-matched-steady-state-chain` | implemented diagnostic | `scripts/load-test/run-http-matched-external-open-loop.sh` | the same balanced mixed HTTP business path and final correctness gates, driven by a finite checksummed open-loop schedule; k6 is the default local driver; RabbitMQ and Order／Wallet／Match durable-inbox backlog, oldest age, and terminal debt are sampled independently; outbox and cleanup debt are final gates | automatic CPU or host isolation; steady-window outbox/cleanup age and slope; automatic promotion of current-worktree diagnostics to release-pinned capacity evidence |
 | `http-matched-staircase-chain` | implemented | `scripts/load-test/run-http-matched-staircase.sh` | one uninterrupted balanced, seeded, mixed-side HTTP run with progressively higher total order rates, per-stage throughput/latency/backlog gates, automatic knee detection, and final full-chain convergence | a long-duration guarantee at the provisional knee; side-imbalanced flow; multi-host load generation |
 | `reservation-cleanup-isolated` | implemented diagnostic | `scripts/load-test/run-reservation-cleanup-ab.sh` | MatchEngine cleanup task claim, Redis reservation removal, completion update, and batch-size A/B using only Match PostgreSQL and Redis | HTTP admission, RabbitMQ scheduling, trade persistence, Order application, Wallet settlement, or full-chain capacity |
 | `match-processor-combined-isolated` | implemented diagnostic | `scripts/load-test/run-match-processor-probe.sh` | shuffled mixed `OrderAssetReservationSucceededEvent` processing through the idempotency guard, Redis Lua matching, transactionally persisted trade/outbox/cleanup facts, and a separately timed cleanup drain using only Match PostgreSQL and Redis | RabbitMQ listener delivery/acknowledgement, concurrent cleanup contention, Order, Wallet, HTTP, or full-chain capacity |
@@ -120,7 +120,9 @@ In addition to final correctness and drain gates, a sustained run is valid only 
 - measured completed-trade rate reaches at least `95%` of the target order rate divided by two;
 - aggregate queue backlog stays below the configured ceiling;
 - linear queue backlog growth stays below the configured messages/s ceiling;
-- Order reservation-result durable-inbox backlog stays below the same configured ceiling and does not grow meaningfully during the steady window;
+- Order, Wallet, and Match durable-inbox backlog stays below the configured ceiling and does not grow meaningfully during the steady window;
+- each service inbox remains below the derived oldest-unresolved-age budget and has no terminal or identity-conflict debt;
+- all three service inboxes/outboxes and Match cleanup have zero active and terminal debt at final convergence;
 - per-second RabbitMQ management samples are readable throughout the steady window.
 
 Registered load-test wallets are funded during setup according to the planned run length. Registration and funding are outside the measurement window; every measured order, reservation, match, trade application, and settlement still uses the real service path.
@@ -300,14 +302,14 @@ gates.
 ## Next Benchmark Work
 
 1. Keep `648 accepted orders/s` only as the two-seed historical boundary for its
-   release-pinned commits. The 2026-09-03 reliability worktree has a one-seed strict
-   diagnostic lower bound at 200 orders/s; 300/400 are rejected because Order
-   reservation-result durable debt grows even when RabbitMQ is empty.
-2. Order reservation-result durable debt now has an independent level and slope gate.
-   Continue extending the business monitor for Order submission-to-reservation, confirmation-to-Match,
-   Match trade-to-relay, downstream Order/Wallet application, and reservation
-   cleanup. RabbitMQ ready/unacked alone did not expose the 700 run's debt.
-3. Measure Order reservation-result worker timing, batch size, oldest age, scheduler,
+   release-pinned commits. The 2026-09-04 Wallet-trade-inbox worktree has a one-seed
+   strict diagnostic lower bound at 200 orders/s; the boundary above 200 has not been
+   rerun on this exact version.
+2. Order, Wallet, and Match inbox debt now have independent level, oldest-age, and
+   terminal-debt gates. Add equivalent steady-window age/slope visibility to outbox,
+   cleanup, cancellation, and projection work under `EAP-REL-103`; RabbitMQ
+   ready/unacked alone is insufficient.
+3. After the higher-priority Redis fail-closed and terminal-error work, measure Order reservation-result worker timing, batch size, oldest age, scheduler,
    PostgreSQL wait/WAL, and projection work before changing concurrency. Use a short
    250/300 same-seed A/B for an accepted optimization, then repeat multiple 15-minute
    seeds before promoting a new release-pinned boundary.

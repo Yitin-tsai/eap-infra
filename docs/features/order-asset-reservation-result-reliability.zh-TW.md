@@ -97,7 +97,7 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 - [ ] OAR-203：補 oldest inbox age、outbox terminal 與 stuck Saga alert。
 - [ ] OAR-204：建立受控 outbox／DLQ inspect、replay 與 audit。
 - [ ] OAR-301：Rabbit＋PostgreSQL consumer kill／DB outage failure-injection campaign。
-- [x] OAR-302：完成 current-worktree full-lifecycle correctness／throughput 回歸；最新版結果與 durable-debt gate 見 [2026-09-03 全鏈報告](../benchmarks/2026-09-03-current-version-full-chain.md)。
+- [x] OAR-302：完成 current-worktree full-lifecycle correctness／throughput 回歸；Wallet trade inbox 加入後的最新版結果與三服務 durable-debt gate 見 [2026-09-04 全鏈報告](../benchmarks/2026-09-04-current-reliability-full-chain.md)。
 
 ## Claim Boundary
 

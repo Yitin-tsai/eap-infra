@@ -6,7 +6,7 @@ EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向�
 
 專案主要回答三個工程問題：每一項業務事實應由哪個服務負責、交易如何在重試與局部失敗下維持正確，以及工程成果如何用持久化證據驗證。它不是單純的 CRUD 範例，也不是只為了展示壓測數字的專案。
 
-> **目前版本證據（2026-09-03）：** 加入 Order／Wallet／MatchEngine durable inbox 與 Order 雙狀態後，新版 k6 長窗在嚴格計算 RabbitMQ 與 service-owned inbox debt 的 gate 下，單一 seed 通過 `200 accepted orders/s`、`100 completed trades/s`；`192,000` 筆 HTTP 訂單收斂為三服務一致的 `96,000` 筆交易，資產、projection、queue、DLQ 與 reservation 全部正確。300 與 400 雖最終資料也收斂，但 Order reservation-result inbox 會累積到至少 5.1／5.3 萬筆，因此被拒絕為完整系統可持續容量。這是 dirty-worktree 同機診斷下界，不是 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-03-current-version-full-chain.md)。
+> **最近一版目前程式證據（2026-09-04）：** Wallet 成交結算與 Match admission 納入 durable inbox 後，schema v3 k6 長窗以單一 seed 通過 `199.99 accepted orders/s`、`100.02 completed trades/s`；`192000` 筆 HTTP 訂單收斂為三服務完全相同的 `96000` 筆交易，資產、CQRS、Redis、RabbitMQ、DLQ、inbox、outbox 與 cleanup 都通過。這是 dirty-worktree、同機、單一 seed 的診斷下界，不是 release-pinned 容量或 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)。
 >
 > **歷史證據邊界：** 舊 commits 曾由兩個 release-pinned seed 支持 `648 accepted orders/s` 的 15 分鐘同機壓力邊界，但不能沿用成目前可靠性版本的容量。失敗結果沒有否定 durable inbox 的正確性價值，而是量出它目前的處理成本與下一個瓶頸。
 
@@ -107,9 +107,9 @@ flowchart TD
 [文件地圖](docs/README.md)。
 
 - [效能報告](docs/performance-report.md)：目前宣稱、定義、限制與瓶頸歷程。
-- [最新版本全鏈報告](docs/benchmarks/2026-09-03-current-version-full-chain.md)：新版 400／300 拒絕、嚴格 200 通過與 inbox backlog 量測修正。
+- [最新版本全鏈報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)：嚴格 200 診斷通過、三服務 inbox age/debt 與 final outbox/cleanup gate。
 - [壓測分類](docs/benchmarks/load-test-taxonomy.md)：各種工作負載能證明及不能證明的內容。
-- [最新 canonical mixed 短窗邊界](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)：目前 CDA 短窗轉折區與限制。
+- [歷史 canonical mixed 短窗邊界](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)：較早 CDA 版本的短窗轉折區與限制，不是目前版本容量。
 - [624 持續測試證據](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md)：2 個有效的 15 分鐘 seed，支持前一級持續下界。
 - [648 持續壓力邊界](docs/benchmarks/2026-08-18-release-pinned-648-sustained-boundary.md)：2 個有效的 15 分鐘 seed，建立最高可重複點及其壓力限制。
 - [版本鎖定的 700 可追溯性驗證](docs/benchmarks/2026-08-21-release-pinned-700-provenance.md)：完整記錄來源與環境，並保留被拒絕的 700 orders/s 結果；648 邊界不變。

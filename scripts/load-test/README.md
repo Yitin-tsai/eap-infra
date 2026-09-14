@@ -57,13 +57,14 @@ DURATION_SECONDS=10 \
 K6_PRE_ALLOCATED_VUS=100 \
 RUN_ID=K6_SMOKE_100_R1 \
 bash scripts/load-test/run-http-matched-external-open-loop.sh
-
-docker compose -f docker-compose.loadtest.yml down
 ```
 
 The runner starts and stops the three application processes by default. The
 dedicated PostgreSQL, RabbitMQ, and Redis containers must already be healthy;
-the final `down` keeps their named volumes.
+after a successful run it also executes `docker compose down -v` so disposable
+load-test rows do not accumulate across campaigns. A failed run preserves the
+containers and volumes for diagnosis. Set `REMOVE_LOADTEST_DATA_AFTER_SUCCESS=false`
+only when a successful run still needs direct database inspection.
 
 k6 uses the `constant-arrival-rate` executor. `K6_PRE_ALLOCATED_VUS` must be
 large enough for the observed response latency; any `dropped_iterations` or
@@ -98,9 +99,10 @@ Diagnostic runs may use a dirty worktree, but their result JSON always sets
 Use `BENCHMARK_EVIDENCE_MODE=release-pinned` only for a capacity candidate. The
 runner fails before setup if any recorded source repository is dirty or missing,
 then verifies that the same commits remain checked out through the end of the run.
-The result records full commit hashes for infra, common, Order, Wallet, and
-MatchEngine; host and tool versions; execution placement; runner/config hashes;
-and the actual infrastructure container image IDs. A successful business gate is
+The result records full commit hashes plus tracked-diff/untracked-content worktree
+fingerprints for infra, common, Order, Wallet, and MatchEngine; host and tool
+versions; execution placement; runner/config hashes; and the actual infrastructure
+container image IDs. A successful business gate is
 eligible for a public capacity claim only when this provenance gate also passes and
 the run includes at least 60 seconds of warm-up plus 15 minutes of measurement.
 Short release-pinned smoke tests validate the harness but remain ineligible for a
@@ -114,11 +116,14 @@ It is useful for investigation and reruns, but a committed report must not depen
 that directory remaining on one machine.
 
 The external k6/Vegeta runner deletes request-level JSONL, generated targets,
-samples, diagnostics, monitor logs, and other temporary runtime files after the
+diagnostics, monitor logs, and other temporary runtime files after the
 final EAP result has been persisted. The JSONL files can be many times larger than
 the order count because the driver emits multiple metric records per request. The
 runner retains the compact result, readable reports, driver summary, manifest, and
-provenance. Set
+provenance. It also retains the compact one-row-per-interval samples and monitor CSV
+so reported backlog slopes and oldest-age values remain auditable without retaining
+the much larger request-level JSONL. Successful-run service data and named load-test
+volumes are removed by default. Set
 `KEEP_RAW_LOADTEST_ARTIFACTS=true` only for a run that needs request-level diagnosis.
 If a run fails before it can persist a result, the raw files are preserved.
 
@@ -142,13 +147,28 @@ For k6-backed runs, read artifacts in this order:
 2. `*-result.json`: machine-readable source for the final decision;
 3. `*-k6-report.md`: HTTP driver-only checks, offered load, and latency;
 4. `*-k6-summary.json`: aggregated driver data; `*-k6.jsonl` exists only when raw retention is enabled;
-5. `*-manifest.json`: workload identity; samples and diagnostics exist only when raw retention is enabled.
+5. `*-manifest.json`: workload identity. Compact samples/monitor CSV are retained by default;
+   request-level JSONL and deep diagnostics exist only when raw retention is enabled.
 
-For current external full-chain results, the latency/backlog section must contain both
-`steadyBacklog*` (RabbitMQ ready＋unacked) and
-`steadyOrderReservationInboxBacklog*` (Order service-owned non-`APPLIED` work).
-RabbitMQ at zero with a growing inbox is a failed whole-system sustained result even
-when all accepted orders eventually converge after traffic stops.
+For current external full-chain results, the latency/backlog section must contain
+`steadyBacklog*` (RabbitMQ ready＋unacked), the legacy comparable
+`steadyOrderReservationInboxBacklog*`, and service-owned `steadyOrderInbox*`,
+`steadyWalletInbox*`, and `steadyMatchInbox*` debt. Each service gate covers active
+backlog growth/maximum, oldest unresolved age, and permanent terminal rows. The
+terminal count also includes an identity conflict recorded on an already `APPLIED`
+row (`conflict_detected_at IS NOT NULL`), because preserving the applied status must
+not hide contradictory payloads from the business-complete decision. The
+oldest-age budget is derived from the configured backlog budget divided by offered
+order TPS (with a two-sample minimum). Final validation additionally requires all
+three inboxes, all three outboxes, and Match reservation-cleanup tasks to have zero
+active and terminal debt. RabbitMQ at zero with growing, old, or terminal durable
+work is therefore a failed whole-system result even when accepted orders eventually
+converge after traffic stops.
+
+The current schema-v3 sustained window samples service inbox debt. Outbox and Match
+reservation-cleanup debt are strict final-convergence gates, but their slope and
+oldest age are not yet sampled throughout the traffic window. Capacity reports must
+state that limitation until EAP-REL-103 aligns all durable-work SLOs and alerts.
 
 Primary workloads, focused probes, and experiment summaries automatically call
 `render-loadtest-report.sh`. To render an older JSON result without rerunning load:

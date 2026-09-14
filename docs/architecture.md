@@ -215,7 +215,7 @@ Redis resting-order reservations also carry the exact durable `tradeId` they are
 
 The remaining pressure appears only when HTTP admission, reservation, confirmation, matching, relays, settlement, three databases, RabbitMQ, JVMs, monitoring, and the load generator compete on the same host. The 648 long repeats reached Order command-pool pending peaks of `90` and `91`, Wallet pending peaks of `25`, and system CPU averages of roughly `85-88%`. Their full-lifecycle rates remained in the same `301-310 trades/s` range as 624 despite the higher accepted input. These are pressure signals rather than proof that a larger pool is the fix. A later low-external-observability repeat matched the accepted run through its first half but degraded late; because the generator's exact one-second durable-count monitor remained active and resource diagnostics were absent, it is inconclusive for attribution. A prepared-sync diagnostic moved deterministic schedule and JSON construction outside the traffic clock and calibrated at `1999.98 requests/s` against a no-op endpoint, but its full-chain 1200/2000 probes still missed offered-load gates. The external Vegeta driver subsequently removed the Java driver's scheduling ambiguity and passed a short equivalence sandwich at 648, but it did not create additional service capacity. A release-pinned 20-minute 700 run supplied all `882000` requests and converged exactly, yet completed only `240.01 same-window trades/s` and required about `844.93s` of post-input drain. RabbitMQ backlog alone did not expose this service-owned debt. The next decisive step is per-stage durable-debt measurement before another high-cost capacity repeat; a separate load-generator host remains necessary only when testing beyond the same-host boundary.
 
-The 2026-09-03 reliability revision adds Wallet, Order, and Match durable inboxes plus separate Order execution/reservation state, so the historical 648 number does not transfer. With an explicit Order reservation-result inbox level/slope gate, one k6 long-window seed passes at `200 orders/s` and `100 trades/s`. The 300 and 400 runs eventually converge correctly but accumulate at least 51K and 53K service-owned inbox rows, so both are rejected as whole-system sustained capacity. The current bottleneck is the sustained drain rate of Order's reservation-result worker and projector. See the [current-version campaign](benchmarks/2026-09-03-current-version-full-chain.md).
+The 2026-09 reliability revision adds service-owned inboxes plus separate Order execution/reservation state, so the historical 648 number does not transfer. The current Wallet-trade-inbox worktree passed one k6 long-window seed at `199.99 orders/s` and `100.02 trades/s`. The schema-v3 gate measured Order, Wallet, and Match inbox backlog, oldest age, and terminal debt independently; all final inbox, outbox, cleanup, projection, Redis, RabbitMQ, DLQ, trade-ID, and asset checks converged. The source was stable during the run but dirty, the load generator was co-located, and PostgreSQL used `synchronous_commit=off`, so this is a diagnostic lower bound rather than a release-pinned capacity claim. See the [current-version campaign](benchmarks/2026-09-04-current-reliability-full-chain.md).
 
 ## Why Not Split More Services Now
 
@@ -307,12 +307,12 @@ MatchEngine is the sole cancellation arbiter:
    Wallet apply the latter.
 
 Wallet treats MatchEngine's atomic cancellation result as the authoritative fact for
-the exact unmatched quantity. Order submissions and cancellation results are first
+the exact unmatched quantity. Order submissions, trade executions, and cancellation results are first
 stored in `wallet_service.message_inbox`; a listener ACK represents durable intake,
 then a leased worker classifies and retries processing. Wallet derives the asset delta,
-applies it once, and stores only a cancellation application keyed by both cancellation
-ID and order ID. Normal order reservation and trade settlement do not maintain a second
-order-state projection inside Wallet.
+applies it once, and stores narrow application facts keyed by order, trade, or cancellation
+identity. Trade settlement, both balance updates, and inbox `APPLIED` commit in one local
+transaction. Wallet does not maintain a second order-state projection.
 
 Because trade settlement consumes the matched quantity and cancellation releases the
 disjoint remainder, either delivery order converges to the same balances. Order stores
