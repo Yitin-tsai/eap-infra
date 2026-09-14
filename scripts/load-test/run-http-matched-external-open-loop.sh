@@ -25,6 +25,7 @@ RUN_ID="${RUN_ID:-${1:-GLT_$(date +%Y%m%d_%H%M%S)_EXTERNAL_OPEN_LOOP}}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 ORDER_URL="${ORDER_URL:-http://localhost:8080/eap-order}"
 WALLET_URL="${WALLET_URL:-http://localhost:8081/eap-wallet}"
+MATCH_URL="${MATCH_URL:-http://localhost:8082/match-engine}"
 ORDER_JDBC_URL="${ORDER_JDBC_URL:-jdbc:postgresql://localhost:15432/eap_order_db}"
 WALLET_JDBC_URL="${WALLET_JDBC_URL:-jdbc:postgresql://localhost:15433/eap_wallet_db}"
 MATCH_JDBC_URL="${MATCH_JDBC_URL:-jdbc:postgresql://localhost:15434/eap_match_db}"
@@ -90,6 +91,7 @@ RUN_K6_TIME="${RUN_PREFIX}-k6-time.txt"
 RUN_K6_CONSOLE="${RUN_PREFIX}-k6-console.log"
 RUN_REMOTE_METADATA="${RUN_PREFIX}-remote-driver-metadata.json"
 RUN_REMOTE_PREFLIGHT="${RUN_PREFIX}-remote-driver-preflight.txt"
+RUN_MATCH_ORDERBOOK_RUNTIME="${RUN_PREFIX}-match-orderbook-runtime.json"
 RUN_CLASSPATH="${RUN_PREFIX}-classpath.txt"
 DIAG_SAMPLER_PID=""
 MONITOR_PID=""
@@ -255,11 +257,11 @@ if [[ "${REMOVE_LOADTEST_DATA_AFTER_SUCCESS}" != "true" \
   exit 2
 fi
 if [[ -z "${RESET_DATA_ON_PREPARE+x}" ]]; then
-  if [[ "${START_SERVICES}" == "true" ]]; then
-    RESET_DATA_ON_PREPARE=false
-  else
-    RESET_DATA_ON_PREPARE=true
-  fi
+  RESET_DATA_ON_PREPARE=false
+fi
+if [[ "${RESET_DATA_ON_PREPARE}" != "false" ]]; then
+  echo "[ERROR] live-service reset is unsafe; use START_SERVICES=true so reset occurs before consumers start." >&2
+  exit 2
 fi
 case "${HTTP_LOAD_DRIVER}" in
   k6)
@@ -514,6 +516,30 @@ http_matched_collect_after_run_diagnostics
 # never leave capacityClaimAllowed=true.
 if (( run_status == 0 && attack_status != 0 )); then
   run_status="${attack_status}"
+fi
+
+# Queue/data convergence is not sufficient if MatchEngine has fenced an unknown
+# Redis generation. After the business pipeline is quiescent, use the explicit
+# non-destructive full-manifest diagnostic; ordinary status deliberately avoids
+# interpreting legal in-flight Redis shapes as corruption.
+match_runtime_status=0
+if ! curl -fsS "${MATCH_URL%/}/actuator/orderBookRuntimeManifest" > "${RUN_MATCH_ORDERBOOK_RUNTIME}"; then
+  match_runtime_status=1
+elif ! jq -e '.localReady == true
+    and .control.state == "READY"
+    and (.redisManifest | type == "object")
+    and (has("redisManifestError") | not)' \
+    "${RUN_MATCH_ORDERBOOK_RUNTIME}" >/dev/null; then
+  match_runtime_status=1
+fi
+if (( match_runtime_status != 0 )); then
+  echo "[ERROR] MatchEngine CDA order-book runtime was not READY after convergence." >&2
+  if [[ -s "${RUN_MATCH_ORDERBOOK_RUNTIME}" ]]; then
+    cat "${RUN_MATCH_ORDERBOOK_RUNTIME}" >&2
+  fi
+  if (( run_status == 0 )); then
+    run_status=3
+  fi
 fi
 
 persist_status=0

@@ -13,6 +13,20 @@ SIDE="${SIDE:-SELL}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-300}"
 RUN_ID="${RUN_ID:-GLT_$(date +%Y%m%d)_ORDER_ADMISSION_10K}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
+ORDER_URL="${ORDER_URL:-http://localhost:8080/eap-order}"
+WALLET_URL="${WALLET_URL:-http://localhost:8081/eap-wallet}"
+MATCH_ENGINE_URL="${MATCH_ENGINE_URL:-http://localhost:8082/match-engine}"
+ORDER_JDBC_URL="${ORDER_JDBC_URL:-jdbc:postgresql://localhost:15432/eap_order_db}"
+WALLET_JDBC_URL="${WALLET_JDBC_URL:-jdbc:postgresql://localhost:15433/eap_wallet_db}"
+MATCH_JDBC_URL="${MATCH_JDBC_URL:-jdbc:postgresql://localhost:15434/eap_match_db}"
+JDBC_USER="${JDBC_USER:-admin}"
+JDBC_PASSWORD="${JDBC_PASSWORD:-admin123}"
+REDIS_HOST="${REDIS_HOST:-localhost}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+RABBIT_MANAGEMENT_URL="${RABBIT_MANAGEMENT_URL:-http://localhost:15672}"
+RABBIT_VHOST="${RABBIT_VHOST:-/}"
+RABBIT_USER="${RABBIT_USER:-admin}"
+RABBIT_PASSWORD="${RABBIT_PASSWORD:-admin123}"
 START_SERVICES="${START_SERVICES:-true}"
 STOP_SERVICES_AFTER_RUN="${STOP_SERVICES_AFTER_RUN:-}"
 DIAGNOSTICS_LEVEL="${DIAGNOSTICS_LEVEL:-none}"
@@ -30,6 +44,8 @@ RUN_REPORT_JSON="${REPORT_DIR}/order-admission-${RUN_ID}-result.json"
 RUN_DIAG_DIR="${REPORT_DIR}/order-admission-${RUN_ID}-diagnostics"
 
 DIAG_SAMPLER_PID=""
+
+source "${ROOT_DIR}/scripts/load-test/http-matched-loadtest-lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -245,16 +261,11 @@ if [[ "${ASSERT_LOADTEST_ENVIRONMENT}" == "true" ]]; then
 fi
 
 if [[ "${START_SERVICES}" == "true" ]]; then
-  echo "[INFO] stopping stale loadtest services before queue purge"
-  bash "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh"
-
-  echo "[INFO] purging queues before service start"
-  RABBIT_CONTAINER="${LOADTEST_RABBIT_CONTAINER}" \
-    bash "${ROOT_DIR}/scripts/load-test/purge-eap-queues.sh"
-
-  LOADTEST_SERVICE_LAUNCH_MODE="${ORDER_ADMISSION_SERVICE_LAUNCH_MODE}" \
-    LOADTEST_SERVICE_JAVA_BIN="${ORDER_ADMISSION_SERVICE_JAVA_BIN}" \
-    bash "${ROOT_DIR}/scripts/load-test/start-loadtest-services.sh"
+  LOADTEST_SERVICE_LAUNCH_MODE="${ORDER_ADMISSION_SERVICE_LAUNCH_MODE}"
+  LOADTEST_SERVICE_JAVA_BIN="${ORDER_ADMISSION_SERVICE_JAVA_BIN}"
+  http_matched_start_services
+else
+  echo "[INFO] START_SERVICES=false: preserving caller-managed data and verified runtime generation"
 fi
 
 mkdir -p "${GRADLE_USER_HOME_DIR}" "${REPORT_DIR}"
@@ -263,7 +274,7 @@ echo "[INFO] Order admission chain benchmark"
 echo "[INFO] runId=${RUN_ID}"
 echo "[INFO] targetTps=${TARGET_TPS}, durationSeconds=${DURATION_SECONDS}, events=${EVENTS}, users=${USERS}, workers=${WORKERS}, maxInFlight=${MAX_IN_FLIGHT}, side=${SIDE}"
 echo "[INFO] serviceLaunchMode=${ORDER_ADMISSION_SERVICE_LAUNCH_MODE}, serviceJavaBin=${ORDER_ADMISSION_SERVICE_JAVA_BIN}"
-echo "[INFO] flushRedisOnReset=${FLUSH_REDIS_ON_RESET}"
+echo "[INFO] preResetFlushRedis=${FLUSH_REDIS_ON_RESET}, generatorResetData=false"
 echo "[INFO] diagnosticsLevel=${DIAGNOSTICS_LEVEL}"
 echo "[INFO] diagnosticSampleIntervalSeconds=${ORDER_ADMISSION_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS}"
 echo "[INFO] resetPgStatsBeforeRun=${RESET_PG_STATS_BEFORE_RUN}"
@@ -293,7 +304,21 @@ GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon orderHttpLoadTe
   --workers ${WORKERS} \
   --max-in-flight ${MAX_IN_FLIGHT} \
   --wait-timeout-seconds ${WAIT_TIMEOUT_SECONDS} \
-  --flush-redis-on-reset ${FLUSH_REDIS_ON_RESET} \
+  --reset-data false \
+  --order-url ${ORDER_URL} \
+  --wallet-url ${WALLET_URL} \
+  --match-engine-url ${MATCH_ENGINE_URL} \
+  --order-jdbc-url ${ORDER_JDBC_URL} \
+  --wallet-jdbc-url ${WALLET_JDBC_URL} \
+  --match-jdbc-url ${MATCH_JDBC_URL} \
+  --order-jdbc-user ${JDBC_USER} \
+  --wallet-jdbc-user ${JDBC_USER} \
+  --match-jdbc-user ${JDBC_USER} \
+  --redis-host ${REDIS_HOST} \
+  --redis-port ${REDIS_PORT} \
+  --rabbit-management-url ${RABBIT_MANAGEMENT_URL} \
+  --rabbit-management-user ${RABBIT_USER} \
+  --flush-redis-on-reset false \
   --order-admission-gate true" | tee "${RUN_REPORT_LOG}"
 run_status=${PIPESTATUS[0]}
 set -e

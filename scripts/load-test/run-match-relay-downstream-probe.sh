@@ -92,6 +92,22 @@ start_service() {
   fi
   java -jar "${jar}" --spring.profiles.active=loadtest "$@" >"${log_file}" 2>&1 &
   echo "$!" >"${pid_file}"
+  if [[ "${repo}" == "eap-matchEngine" ]]; then
+    local control_url="http://localhost:8082/match-engine/actuator/orderBookRuntime"
+    local deadline=$(( $(date +%s) + 120 ))
+    until curl -fsS "${control_url}" >/dev/null 2>&1; do
+      if [[ $(date +%s) -ge ${deadline} ]]; then
+        echo "[ERROR] MatchEngine runtime control endpoint did not start" >&2
+        tail -n 80 "${log_file}" >&2 || true
+        exit 1
+      fi
+      sleep 1
+    done
+    curl -fsS -X POST \
+      -H 'Content-Type: application/json' \
+      -d '{"action":"INITIALIZE_EMPTY","operator":"match-relay-probe","reason":"isolated probe runtime"}' \
+      "${control_url}" >/dev/null
+  fi
   wait_http "${repo}" "${health_url}" "${log_file}" "${pid_file}"
 }
 

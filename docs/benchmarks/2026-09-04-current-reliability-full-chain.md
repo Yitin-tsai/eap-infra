@@ -120,10 +120,11 @@ terminal／identity-conflict debt 必須同時通過：
 沒有觀察到 Wallet trade inbox 帶來巨大效能退化。** 不能說 200 是精確 ceiling，也
 不能沿用舊版 648 作為目前版本容量。
 
-依[工程 Backlog](../backlog.zh-TW.md)，下一步先做 `EAP-REL-101`：Redis 全量遺失後以
-order-book generation／readiness fail closed；之後再處理 Match terminal semantics、
-跨服務 durable-debt SLO、inbox commit 前長時間 DB outage、Saga timeout 與受控 DLQ
-recovery。
+後續進度（2026-09-14）：`EAP-REL-101` 已完成 order-book generation／`run_id`
+fail-closed gate 與受控 activation，且最新版短版全鏈 smoke 再次通過。依
+[工程 Backlog](../backlog.zh-TW.md)，下一步是 `EAP-REL-102` 的 Match terminal
+semantics；之後再處理跨服務 durable-debt SLO、inbox commit 前長時間 DB outage、
+Saga timeout 與受控 DLQ recovery。
 
 ## Artifacts
 

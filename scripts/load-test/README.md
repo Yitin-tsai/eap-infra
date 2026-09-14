@@ -25,7 +25,9 @@ The default capacity workflow is:
 4. require exact trade IDs, assets, order-book and reservation cleanup, queue/DLQ
    drain, Order read-model convergence, offered load, completion rate, bounded RabbitMQ
    backlog, and bounded Order reservation-result inbox backlog;
-5. repeat a different seed before promoting a sustained boundary.
+5. synchronously require MatchEngine order-book runtime `READY` and verify its Redis
+   manifest after business convergence, so a late Redis loss cannot produce PASS;
+6. repeat a different seed before promoting a sustained boundary.
 
 ## Test Types
 
@@ -61,10 +63,27 @@ bash scripts/load-test/run-http-matched-external-open-loop.sh
 
 The runner starts and stops the three application processes by default. The
 dedicated PostgreSQL, RabbitMQ, and Redis containers must already be healthy;
+the load-test launcher performs operator-only `INITIALIZE_EMPTY` after the isolated
+reset and refuses to start MatchEngine readiness on an unverified generation;
 after a successful run it also executes `docker compose down -v` so disposable
 load-test rows do not accumulate across campaigns. A failed run preserves the
 containers and volumes for diagnosis. Set `REMOVE_LOADTEST_DATA_AFTER_SUCCESS=false`
 only when a successful run still needs direct database inspection.
+
+Reset ownership is deliberately part of the service lifecycle. With
+`START_SERVICES=true`, the shared launcher stops old consumers, resets PostgreSQL and
+Redis, then starts MatchEngine and performs `INITIALIZE_EMPTY`; the traffic generator
+always receives `--reset-data false`. With `START_SERVICES=false`, the runner never
+resets a live shared runtime: the caller must provide an already isolated, verified
+`READY` generation. `RESET_DATA_ON_PREPARE=true` is rejected because clearing Redis
+after MatchEngine has started would invalidate the generation and could make a test
+run against a superficially healthy but fenced service.
+
+The focused `run-order-admission-chain-10k.sh` follows the same lifecycle. Its Java
+generator is traffic-only and rejects `--reset-data true`; it never deletes order-book
+keys. The harness owns stop → schema check → pre-start database/queue/Redis reset →
+service start → `INITIALIZE_EMPTY`. With `START_SERVICES=false`, it preserves the
+caller-managed runtime instead of attempting a live reset.
 
 k6 uses the `constant-arrival-rate` executor. `K6_PRE_ALLOCATED_VUS` must be
 large enough for the observed response latency; any `dropped_iterations` or

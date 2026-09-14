@@ -64,7 +64,8 @@ HTTP 下單
 - 這是單人、單機學習專案，沒有 production 多區部署、正式 SLO、容量規劃與長期 on-call 證據。
 - CDA 的證據最完整；TDA 仍有直接發布、重送冪等、失敗回授與整場收斂缺口，不能沿用 CDA TPS。
 - 驗證使用 domain `userId`，尚未建置完整 authentication、authorization、API gateway 與防濫用邊界。
-- Redis 全量遺失後的自動訂單簿重建與 readiness gate 尚未實作。
+- Redis 全量遺失後已會依 generation／`run_id` fail closed，並提供經 manifest 驗證的
+  operator activation；從 durable facts 自動產生完整 order book 的 rebuild worker 尚未實作。
 - 最新 200 orders/s 已同時量三服務 inbox apply backlog、oldest age 與 terminal debt且沒有累積；較早 300／400 指向 Order worker，但目前版本尚未重跑更高階梯，因此不能先斷言新瓶頸位置。
 
 這些限制不是要藏起來，而是面試時可用來展示：知道目前證據能支持什麼，也知道下一個工程投資應解決什麼。

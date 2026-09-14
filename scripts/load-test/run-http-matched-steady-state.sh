@@ -110,6 +110,7 @@ args="--run-id ${RUN_ID} \
 --rabbit-management-url ${RABBIT_MANAGEMENT_URL} \
 --rabbit-vhost ${RABBIT_VHOST} \
 --rabbit-user ${RABBIT_USER} \
+--reset-data false \
 --flush-redis-on-reset ${FLUSH_REDIS_ON_RESET}"
 if [[ -n "${MAX_BACKLOG_GROWTH_PER_SECOND}" ]]; then
   args="${args} --max-backlog-growth-per-second ${MAX_BACKLOG_GROWTH_PER_SECOND}"

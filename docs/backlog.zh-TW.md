@@ -1,6 +1,6 @@
 # EAP Engineering Backlog
 
-> 更新日期：2026-09-04
+> 更新日期：2026-09-14
 
 > 本頁是跨 Order、Wallet、MatchEngine 的唯一優先順序入口。各 feature ticket
 > 保存設計與驗收細節；若 ticket 內的排列與本頁不同，以本頁為準。
@@ -82,7 +82,7 @@ Wallet、Match inbox 的 oldest age max 為 `1/1/0s`、terminal debt max 都是 
 
 ## P1：CDA 故障存活與營運恢復
 
-### EAP-REL-101：Redis 全量遺失先 fail closed
+### EAP-REL-101：Redis 全量遺失先 fail closed（完成）
 
 **原因：** 個別 reservation 已有 recovery，但 Redis 整個 order book 遺失時，Match
 目前不能證明 runtime state 完整。最小安全措施不是立刻自動重建，而是禁止在未知
@@ -90,9 +90,30 @@ generation 上繼續 admission／matching。
 
 **完成條件：**
 
-- 保存並核對 order-book generation／readiness。
-- Redis restart 或 generation mismatch 後 Match readiness 失敗並停止新 admission。
-- 操作者完成重建與 durable-fact reconciliation 後才能重新開放。
+- [x] 保存並核對 order-book generation／readiness。
+- [x] Redis restart 或 generation mismatch 後 Match readiness 失敗並停止新 admission。
+- [x] 操作者完成重建與 durable-fact reconciliation 後才能重新開放。
+
+**驗證（2026-09-14）：** PostgreSQL control row 保存 `READY／RECOVERING`、epoch、
+generation、Redis `run_id`、CAS version 與 activation manifest；所有 CDA mutation Lua
+在原子寫入點同時核對 sentinel 與實際 `run_id`。真實 Redis SAVE＋restart 測試證明即使
+舊 sentinel 與資料被保存，舊 worker 仍不能寫入。completed-admission bitmap 另逐 bit
+核對 PostgreSQL `APPLIED` inbox，stray／missing marker 不得 reopen；full manifest 只在
+`RECOVERING` activation 擁有 promotion 權限。READY runtime 的普通 status 只查 generation
+identity，另提供非破壞性 manifest 診斷，避免把合法 in-flight shape 誤判後停撮。
+cancellation marker 亦不得與 visible order 共存，且
+marker／intent 必須核對 durable cancellation identity；recovery CAS 同時比對 version、
+epoch、generation 與 run-id，避免 reset 後 version ABA。activation 的 exclusive advisory
+lock 與 cancellation durable intake 的 shared advisory lock 形成共同 barrier，取消彼此
+仍可並行，但啟用不能漏看正提交中的 `PENDING` cancellation。Match unit suite、48 項
+PostgreSQL／Redis crash-recovery cases 加 1 項真實 restart fence 均通過；最新版 R7 全鏈 correctness smoke 接受 80/80
+筆 HTTP 訂單、三服務 40 筆 trade 完全一致、所有 debt 為 0，最終 runtime control 為
+`READY` 且 manifest 的 `completedAdmissionCount=80` 精確對應 durable inbox。相同 recovery
+token 的並發 activation 也只允許一個 winner。本項完成 fail-closed 與受控 activation
+contract，不包含 `EAP-MATCH-202` 的自動 full-book rebuild；R7 短測不作容量宣稱。
+`REL101_ORDER_ADMISSION_SAFE_RESET_R3` 另驗證 consumers 停止後才 reset、重啟並
+`INITIALIZE_EMPTY`；traffic-only generator 不清資料，20/20 inbox `APPLIED`、20/20
+訂單可見且 queue debt 為 0。
 
 ### EAP-REL-102：補齊 Match 剩餘 terminal error semantics
 
@@ -231,7 +252,8 @@ TDA、read replica 與進階 scaling 保持延後
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003 已完成。下一件事是 EAP-REL-101：** Redis 全量遺失或
-order-book generation 不明時，MatchEngine 必須 fail closed 並停止新 admission／matching，
-直到 durable facts 重建、核對與 generation 切換完成。DLQ control plane 暫停在
-**EAP-REL-106**，不是取消；200 orders/s 以上的邊界搜尋也先讓位給 P1 reliability。
+**EAP-REL-001／002／003／101 已完成。下一件事是 EAP-REL-102：** 補齊 Match
+cancellation／reservation／invalid detail／cleanup lease 的 terminal error semantics，
+讓 prerequisite waiting、可重試技術錯誤與需要人工介入的 invariant failure 不再混在
+無上限重試裡。DLQ control plane 暫停在 **EAP-REL-106**，不是取消；200 orders/s
+以上的邊界搜尋也先讓位給 P1 reliability。

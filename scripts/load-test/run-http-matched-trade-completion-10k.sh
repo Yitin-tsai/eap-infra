@@ -94,6 +94,7 @@ GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon httpMatchedTrad
   --rabbit-management-url ${RABBIT_MANAGEMENT_URL} \
   --rabbit-vhost ${RABBIT_VHOST} \
   --rabbit-user ${RABBIT_USER} \
+  --reset-data false \
   --flush-redis-on-reset ${FLUSH_REDIS_ON_RESET}" | tee "${RUN_REPORT_LOG}"
 run_status=${PIPESTATUS[0]}
 set -e

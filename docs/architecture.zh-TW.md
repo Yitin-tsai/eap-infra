@@ -254,7 +254,37 @@ backoff retry，避免舊任務在新 reservation 稍後消失後被錯誤洗成
 
 trade persistence 發生錯誤時，MatchEngine 的順序是：先讓同一筆 PostgreSQL transaction 中的 `trade_executions`、outbox 與 cleanup task 一起 rollback，再以 reservation 內相同的 `tradeId` 立即把 resting order 放回 Redis，最後把例外交給 durable admission inbox 分類。DB／Redis 暫時故障會 backoff retry；payload 或 constraint 類永久錯誤會留下 terminal record。若即時 release 本身也因 Redis 故障失敗，原始錯誤仍保留，reservation 則由 stale-reservation reconciler 依「DB 是否已有 durable trade」決定稍後 release 或 complete。因此 trade ID 產生器必須是單純、可重算且不拋錯的函式，不能在補償路徑再次阻斷修復。
 
-未來擴充點是在兩個 RabbitMQ listener 前加入 MatchEngine readiness gate，由它管理 `READY`／`RECOVERING` generation state，避免任何一種事件繞過 reconstruction。目前尚未實作自動 full-book rebuild，也不宣稱 Redis state 遺失後可以繼續撮合；系統刻意不在每張穩態訂單上增加 PostgreSQL lookup，因為那不是完整重建機制的替代品。
+MatchEngine 現在以 PostgreSQL control row 管理 `READY`／`RECOVERING`、單調遞增的
+fence epoch、generation UUID、Redis `run_id`、CAS version 與 verification manifest。
+每個 CDA mutation Lua 都在第一次寫入前同時核對 generation sentinel 和 Redis 實際
+`run_id`；因此 Redis 即使保留舊資料重啟，舊 worker 也不能趁 monitor 尚未刷新時寫入。
+generation 不可信時，admission worker、cancellation arbitration 與 Redis maintenance
+fail closed，但 Rabbit listener 仍可把訊息 durable intake 到 PostgreSQL inbox。
+
+重新開放必須由 operator 帶當次 epoch／generation／version token 與 rebuild manifest；
+MatchEngine 串行化 activation，逐筆核對 detail key、market、side、score、user index、
+pending cancellation、durable watermark 與 debt；其中 completed-admission bitmap 必須
+逐 bit 對回 PostgreSQL 中 `APPLIED` 的 admission inbox，不能用 Redis 自己證明 Redis。
+取消 intent／marker 也必須對回 durable cancellation identity，marker 不得與同一張
+visible order 共存；control transition CAS 則同時核對 version、epoch、generation 與
+Redis run-id，避免舊 process 以 reset 前的 control snapshot 降級新 generation。
+staged sentinel 後再驗一次，最後才以 PostgreSQL CAS 標成 `READY`。這些完整核對只在
+recovery control path 發生，不在正常撮合 hot path 增加 PostgreSQL lookup。目前仍未
+實作自動 full-book rebuild，也不宣稱 Redis state 遺失後能不中斷撮合；完整 rebuild
+input 保留在 `EAP-MATCH-202`。詳細規格見
+[MatchEngine Redis generation 與 fail-closed readiness](features/match-orderbook-generation-readiness.zh-TW.md)。
+
+activation 使用 PostgreSQL exclusive advisory lock；取消請求從 durable `PENDING` 寫入
+到 READY-generation Redis intent 建立則使用同一 lock key 的 shared 模式。因此多筆取消
+仍能並行，但 activation 必須等所有較早開始的取消 intake 完成，不能在 final manifest
+snapshot 與 `READY` CAS 之間漏掉取消事實。若取消先提交於 `RECOVERING`，缺少對應 intent
+會讓 activation fail closed；若 activation 先完成，取消會在新 generation 寫好 intent
+才離開 barrier。
+
+一般 runtime status 只核對 control、sentinel 與 `run_id`；完整 manifest 是另外的非破壞性
+診斷，而且只能在 queue／inbox／reservation 已收斂後解讀。正常撮合中的 reservation 或
+completed-bit-before-`APPLIED` 都是合法暫態，不能由一個 GET status 誤判後關閉 generation。
+只有 `RECOVERING` activation 的 quiescent full verification 能決定是否重新開放。
 
 ## 價格與時間優先
 
@@ -328,7 +358,8 @@ Wallet 真正釋放資產時，cancellation application、balance update、relea
 - Wallet 的 reservation／trade settlement／cancellation-result 都已使用同一套 durable inbox、lease worker 與本地 transaction；最新版 200 orders/s 長窗已驗證正流程沒有巨大退化，但 200 以上的精確邊界尚未重測。
 - 各 inbox 寫入前若服務資料庫長時間不可用，仍可能耗盡 broker retry 後進 DLQ；尚無一致的 delayed retry／consumer pause。
 - 尚未建立全域 Saga timeout detector，也沒有完整的 DLQ 分類、審核與安全 replay control plane。
-- Redis order book 尚無自動 full-book rebuild 與 `READY／RECOVERING` readiness gate，Redis generation 遺失時不能宣稱可不中斷繼續撮合。
+- Redis order book 已有 `READY／RECOVERING` generation gate 與受控 activation，但尚無
+  自動 full-book rebuild；Redis generation 遺失時會安全停撮，不能宣稱不中斷繼續撮合。
 - Order 已有 logical CQRS 與可重建 projection，但 user query 仍使用 primary database，尚未完成 read replica 或獨立 read-database isolation。
 
 詳細 happy path、retry、亂序與 crash window 請讀[訂單事件完整生命週期](order-event-lifecycle.zh-TW.md)；一致性設計的理由與保證邊界請讀[事件驅動一致性的五個核心問題](event-consistency-five-questions.zh-TW.md)。

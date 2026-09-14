@@ -91,6 +91,27 @@ start_service() {
 
   local health_url="http://localhost:${port}${health_path}"
   local deadline=$(( $(date +%s) + ${LOADTEST_SERVICE_START_TIMEOUT_SECONDS:-120} ))
+  if [[ "${repo}" == "eap-matchEngine" ]]; then
+    local control_url="http://localhost:${port}/match-engine/actuator/orderBookRuntime"
+    until curl -fsS "${control_url}" >/dev/null 2>&1; do
+      if [[ $(date +%s) -ge $deadline ]]; then
+        echo "[ERROR] ${repo} runtime control endpoint did not start: ${control_url}" >&2
+        tail -n 80 "${log_file}" >&2 || true
+        return 1
+      fi
+      if ! kill -0 "$(cat "${pid_file}")" >/dev/null 2>&1; then
+        echo "[ERROR] ${repo} exited before runtime initialization" >&2
+        tail -n 80 "${log_file}" >&2 || true
+        return 1
+      fi
+      sleep 1
+    done
+    echo "[INFO] initializing empty CDA order-book generation for load test"
+    curl -fsS -X POST \
+      -H 'Content-Type: application/json' \
+      -d '{"action":"INITIALIZE_EMPTY","operator":"load-test-harness","reason":"fresh isolated load-test environment"}' \
+      "${control_url}" >/dev/null
+  fi
   until curl -fsS "${health_url}" >/dev/null 2>&1; do
     if [[ $(date +%s) -ge $deadline ]]; then
       echo "[ERROR] ${repo} did not become ready: ${health_url}" >&2

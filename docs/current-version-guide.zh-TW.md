@@ -68,6 +68,7 @@ BUY／SELL workload 重跑目前程式：
 跨服務待辦已集中到[工程 Backlog](backlog.zh-TW.md)，並依交易正確性、故障存活、
 可驗證性、效能與延伸功能排序。Match reservation cleanup 假成功、Wallet trade
 durable inbox、Match admission inbox 與完整 schema v3 gate 都已通過 200 orders/s
-長窗；下一步是 `EAP-REL-101`，先讓 Redis 全量遺失／generation mismatch 時 fail
-closed。DLQ／terminal recovery control plane 保留在 CDA 高優先級，但排序在基本
-debt visibility 與 DB-outage 設計之後。
+長窗；`EAP-REL-101` 也已完成 Redis generation／`run_id` fail-closed gate、受控
+activation 與真實 restart fence 測試。下一步是 `EAP-REL-102`，先補齊 Match 剩餘
+terminal error semantics。DLQ／terminal recovery control plane 保留在 CDA 高優先級，
+但排序在基本 debt visibility 與 DB-outage 設計之後。
