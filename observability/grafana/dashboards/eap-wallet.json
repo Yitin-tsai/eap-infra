@@ -130,11 +130,11 @@
       "id": 4,
       "targets": [
         {
-          "expr": "eap_wallet_outbox_pending",
-          "legendFormat": "pending"
+          "expr": "eap_durable_debt_items{service=\"eap-wallet\",work=\"event_outbox\",class=\"total\"}",
+          "legendFormat": "total debt"
         }
       ],
-      "title": "Wallet Outbox Pending",
+      "title": "Wallet Outbox Durable Debt",
       "type": "timeseries"
     },
     {
@@ -219,11 +219,11 @@
       "id": 7,
       "targets": [
         {
-          "expr": "eap_wallet_outbox_oldest_pending_age_seconds",
-          "legendFormat": "oldest pending age"
+          "expr": "eap_durable_debt_oldest_age_seconds{service=\"eap-wallet\",work=\"event_outbox\"}",
+          "legendFormat": "oldest unresolved age"
         }
       ],
-      "title": "Outbox Oldest Pending Age",
+      "title": "Outbox Oldest Unresolved Age",
       "type": "timeseries"
     },
     {
@@ -370,11 +370,11 @@
       },
       "targets": [
         {
-          "expr": "eap_wallet_outbox_failed",
-          "legendFormat": "failed events"
+          "expr": "eap_durable_debt_items{service=\"eap-wallet\",work=\"event_outbox\",class=\"terminal\"}",
+          "legendFormat": "terminal debt"
         }
       ],
-      "title": "Outbox Permanently Failed",
+      "title": "Outbox Terminal Debt",
       "type": "stat"
     }
   ],

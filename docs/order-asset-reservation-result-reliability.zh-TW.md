@@ -279,15 +279,17 @@ Worker thread 不長時間 `sleep`。重試時間寫在 `next_retry_at`，schedu
 
 ## Observability 與人工 Recovery
 
-新增 metrics：
+目前統一使用 durable-debt metrics：
 
 ```text
-eap_order_asset_reservation_result_inbox_rows{status="PENDING"}
-eap_order_asset_reservation_result_inbox_rows{status="IN_PROGRESS"}
-eap_order_asset_reservation_result_inbox_rows{status="FAILED_RETRYABLE"}
-eap_order_asset_reservation_result_inbox_rows{status="FAILED_PERMANENT"}
-eap_order_asset_reservation_result_incident_rows{type="IDENTITY_CONFLICT"}
+eap_durable_debt_items{service="eap-order",work="asset_reservation_result_inbox",class="total"}
+eap_durable_debt_items{service="eap-order",work="asset_reservation_result_inbox",class="retry"}
+eap_durable_debt_items{service="eap-order",work="asset_reservation_result_inbox",class="terminal"}
+eap_durable_debt_oldest_age_seconds{service="eap-order",work="asset_reservation_result_inbox"}
 ```
+
+`APPLIED` 後才發現的 identity conflict 仍計入 `total` 與 `terminal`，不會因 status
+已完成而從監控消失。
 
 Actuator endpoint `orderAssetReservationResultInbox` 預設關閉。啟用後可查 status count，並對沒有 identity conflict 的 permanent technical debt 做明確 retry。
 

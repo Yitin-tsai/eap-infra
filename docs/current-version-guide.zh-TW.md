@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-09-14
+> 更新日期：2026-09-15
 
 > 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -11,8 +11,9 @@
 3. **Order 把兩種狀態拆開。** `status` 表示執行生命週期，`assetReservationStatus` 表示 Wallet reservation 進度。`TradeExecutedEvent` 若先到，可以證明 reservation 曾成功並直接推進成交，晚到的成功事件不能把 `MATCHED` 降回 `OPEN`。
 4. **取消訂單有真正的完成語意。** MatchEngine 取得未成交剩餘量後，Order 只進入 `CANCELLING`；Wallet 實際釋放資產並發布 `OrderAssetReservationReleasedEvent`，Order 才進入 `CANCELLED`。
 5. **CQRS projection 被納入使用者可見正確性。** Command-side 成交不等待 read model，但壓測最後必須驗證 `orders_current` 數量、reservation／execution 狀態與 checkpoint lag。
-6. **壓測不再只看 RabbitMQ。** schema v3 gate 會分別量 Order、Wallet、Match durable inbox 的 backlog、oldest age 與 terminal／identity-conflict debt；最終還會核對三服務 outbox 與 Match cleanup debt。最新版 200 orders/s 長窗已通過這套完整 gate。
+6. **壓測不再只看 RabbitMQ。** schema v4 從三服務的同一份 `DurableDebtSnapshot` 讀取 inbox、outbox、cleanup、cancellation、reconciliation 與 projection 的 total／retry／terminal／oldest age；Rabbit queue 歸零但任一 service-owned work 未完成，或 snapshot stale／不可讀，都會 fail closed。2026-09-04 的 200 orders/s 長窗仍是 schema v3 的歷史容量證據；schema v4 已通過短全鏈 correctness smoke，但尚未用來更新容量數字。
 7. **Match 本地 recovery 不再用無上限 retry 掩蓋 poison state。** Cancellation prerequisite 與 technical attempt 分開；reservation invalid payload／ownership conflict 有 durable terminal issue；cleanup lease 使用 owner＋claim token fencing。
+8. **Durable debt 有統一的可觀測契約。** 各服務每 5 秒用獨立 scheduler 查一次本地權威 table；Actuator 與 Prometheus 只讀記憶體 snapshot。觀測失敗會保留上次值，但同時標記失敗與 stale，不能把舊的 0 誤判成完成。
 
 ## 現行能力與誠實邊界
 
@@ -59,7 +60,8 @@ BUY／SELL workload 重跑目前程式：
 3. [Wallet 成交結算 durable inbox](wallet-trade-settlement-inbox.zh-TW.md)。
 4. [Match order-admission inbox](match-order-admission-inbox.zh-TW.md)。
 5. [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)。
-6. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
+6. [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)：理解 queue=0 為何不夠、每類 debt 如何分類，以及 schema v4 如何 fail closed。
+7. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
 
 ### 準備面試
 
@@ -72,7 +74,8 @@ BUY／SELL workload 重跑目前程式：
 durable inbox、Match admission inbox 與完整 schema v3 gate 都已通過 200 orders/s
 長窗；`EAP-REL-101` 也已完成 Redis generation／`run_id` fail-closed gate、受控
 activation 與真實 restart fence 測試。`EAP-REL-102` 也已補齊 Match cancellation、
-reservation issue 與 cleanup lease 的 terminal semantics。下一步是 `EAP-REL-103`，
-把跨服務 durable debt 的 count、oldest age、retry／terminal 指標與 business-complete
-gate 統一定義。DLQ／terminal recovery control plane 保留在 CDA 高優先級，但排序在
-基本 debt visibility 與 DB-outage 設計之後。
+reservation issue 與 cleanup lease 的 terminal semantics。`EAP-REL-103` 也已把跨服務
+durable debt 的 count、oldest age、retry／terminal、Prometheus 告警與 schema-v4
+business-complete gate 統一定義。下一步是 `EAP-REL-104` 的 inbox commit 前長時間 DB
+outage 設計；DLQ／terminal recovery control plane 保留在 CDA 高優先級，但排序在該
+DB-outage 邊界之後。

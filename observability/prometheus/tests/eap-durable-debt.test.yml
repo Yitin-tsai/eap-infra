@@ -1,0 +1,142 @@
+rule_files:
+  - ../rules/eap-durable-debt.yml
+
+evaluation_interval: 30s
+
+tests:
+  - name: missing-fixed-component-series-fails-closed
+    interval: 30s
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapDurableDebtSeriesIncomplete
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: eap-order
+            exp_annotations:
+              summary: eap-order durable-debt metric set is incomplete
+              description: At least one fixed work/class/age series is missing; contract parity cannot be proven.
+          - exp_labels:
+              severity: critical
+              service: eap-wallet
+            exp_annotations:
+              summary: eap-wallet durable-debt metric set is incomplete
+              description: At least one fixed work/class/age series is missing; contract parity cannot be proven.
+          - exp_labels:
+              severity: critical
+              service: eap-matchEngine
+            exp_annotations:
+              summary: eap-matchEngine durable-debt metric set is incomplete
+              description: At least one fixed work/class/age series is missing; contract parity cannot be proven.
+          - exp_labels:
+              severity: critical
+              service: rabbitmq
+            exp_annotations:
+              summary: rabbitmq durable-debt metric set is incomplete
+              description: At least one fixed work/class/age series is missing; contract parity cannot be proven.
+
+  - name: scrape-target-down-fails-closed
+    interval: 30s
+    input_series:
+      - series: up{job="eap-wallet",instance="wallet:8081"}
+        values: 0 0 0
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapDurableDebtScrapeTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: eap-wallet
+              instance: wallet:8081
+            exp_annotations:
+              summary: eap-wallet metrics target is down
+              description: Prometheus cannot scrape the service; durable debt is unknown and must not be treated as zero.
+
+  - name: missing-service-observation-fails-closed
+    interval: 30s
+    input_series:
+      - series: eap_durable_debt_observation_success{service="eap-order"}
+        values: 1 1 1
+      - series: eap_durable_debt_observation_success{service="eap-wallet"}
+        values: 1 1 1
+      - series: eap_durable_debt_observation_success{service="eap-matchEngine"}
+        values: 1 1 1
+      - series: eap_durable_debt_snapshot_age_seconds{service="eap-order"}
+        values: 0 0 0
+      - series: eap_durable_debt_snapshot_age_seconds{service="eap-wallet"}
+        values: 0 0 0
+      - series: eap_durable_debt_snapshot_age_seconds{service="eap-matchEngine"}
+        values: 0 0 0
+      - series: eap_durable_debt_contract_version{service="eap-order"}
+        values: 1 1 1
+      - series: eap_durable_debt_contract_version{service="eap-wallet"}
+        values: 1 1 1
+      - series: eap_durable_debt_contract_version{service="eap-matchEngine"}
+        values: 1 1 1
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapDurableDebtObservationMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: rabbitmq
+            exp_annotations:
+              summary: rabbitmq durable-debt observation is missing
+              description: The service, scrape target, or required Rabbit queue-age source is unavailable. Missing telemetry must not be treated as zero debt.
+
+  - name: terminal-debt-alerts
+    interval: 30s
+    input_series:
+      - series: eap_durable_debt_items{service="eap-wallet",work="trade_execution_inbox",class="terminal"}
+        values: 1 1 1
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapDurableDebtTerminal
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: eap-wallet
+              work: trade_execution_inbox
+              class: terminal
+            exp_annotations:
+              summary: eap-wallet has terminal durable work
+              description: trade_execution_inbox contains 1 terminal item(s); automatic retry must not hide this debt.
+
+  - name: nonempty-dlq-without-timestamp-alerts
+    interval: 30s
+    input_series:
+      - series: rabbitmq_queue_messages{job="rabbitmq",instance="rabbit",vhost="/",queue="order.dlq"}
+        values: 1 1 1
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapSharedDeadLetterQueueAgeMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: rabbitmq
+              job: rabbitmq
+              instance: rabbit
+              vhost: /
+              queue: order.dlq
+            exp_annotations:
+              summary: The oldest shared DLQ message age cannot be observed
+              description: order.dlq is non-empty but its head message has no usable AMQP timestamp. Inspect the publisher before replay.
+
+  - name: empty-dlq-has-zero-age-and-healthy-observation
+    interval: 30s
+    input_series:
+      - series: up{job="rabbitmq",instance="rabbit"}
+        values: 1 1
+      - series: rabbitmq_queue_messages{job="rabbitmq",instance="rabbit",vhost="/",queue="order.dlq"}
+        values: 0 0
+    promql_expr_test:
+      - expr: eap_durable_debt_observation_success{service="rabbitmq"}
+        eval_time: 30s
+        exp_samples:
+          - labels: eap_durable_debt_observation_success{service="rabbitmq",job="rabbitmq",instance="rabbit",vhost="/",queue="order.dlq"}
+            value: 1
+      - expr: eap_durable_debt_oldest_age_seconds{service="rabbitmq"}
+        eval_time: 30s
+        exp_samples:
+          - labels: eap_durable_debt_oldest_age_seconds{service="rabbitmq",work="shared_dead_letter_queue",job="rabbitmq",instance="rabbit",vhost="/",queue="order.dlq"}
+            value: 0

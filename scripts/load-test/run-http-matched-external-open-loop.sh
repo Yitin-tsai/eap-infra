@@ -231,7 +231,7 @@ remove_loadtest_data_after_success() {
     return 0
   fi
   echo "[INFO] removing successful-run load-test containers and volumes"
-  docker compose -f "${ROOT_DIR}/docker-compose.loadtest.yml" down -v
+  docker compose -p eap-loadtest -f "${ROOT_DIR}/docker-compose.loadtest.yml" down -v
 }
 
 if (( TARGET_ORDER_TPS <= 0 || TARGET_ORDER_TPS % 2 != 0 )); then
@@ -353,6 +353,7 @@ COMMON_ARGS="--run-id ${RUN_ID} \
 --external-results ${RUN_EXTERNAL_RESULTS} \
 --order-url ${ORDER_URL} \
 --wallet-url ${WALLET_URL} \
+--match-url ${MATCH_URL} \
 --order-jdbc-url ${ORDER_JDBC_URL} \
 --wallet-jdbc-url ${WALLET_JDBC_URL} \
 --match-jdbc-url ${MATCH_JDBC_URL} \

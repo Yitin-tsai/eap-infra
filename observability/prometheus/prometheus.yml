@@ -19,3 +19,17 @@ scrape_configs:
       - targets: ["host.docker.internal:8081"]
         labels:
           service: "eap-wallet"
+
+  - job_name: "eap-matchEngine"
+    metrics_path: "/match-engine/actuator/prometheus"
+    static_configs:
+      - targets: ["host.docker.internal:8082"]
+        labels:
+          service: "eap-matchEngine"
+
+  - job_name: "rabbitmq"
+    metrics_path: "/metrics/per-object"
+    static_configs:
+      - targets: ["host.docker.internal:15692"]
+        labels:
+          service: "rabbitmq"

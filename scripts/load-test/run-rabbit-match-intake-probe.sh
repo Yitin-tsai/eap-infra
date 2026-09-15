@@ -17,7 +17,7 @@ mkdir -p "${REPORT_DIR}" "${GRADLE_USER_HOME_DIR}"
 
 cleanup() {
   if [[ "${KEEP_INFRA}" != "true" ]]; then
-    docker compose -f "${COMPOSE_FILE}" stop match-postgres redis rabbitmq >/dev/null 2>&1 || true
+    docker compose -p eap-loadtest -f "${COMPOSE_FILE}" stop match-postgres redis rabbitmq >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT INT TERM
@@ -37,7 +37,7 @@ wait_for_healthy() {
 "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh" >/dev/null 2>&1 || true
 
 echo "[INFO] starting only RabbitMQ, MatchEngine PostgreSQL, and Redis"
-docker compose -f "${COMPOSE_FILE}" up -d rabbitmq match-postgres redis
+docker compose -p eap-loadtest -f "${COMPOSE_FILE}" up -d rabbitmq match-postgres redis
 wait_for_healthy eap-rabbitmq-loadtest
 wait_for_healthy eap-match-postgres-loadtest
 wait_for_healthy eap-redis-loadtest

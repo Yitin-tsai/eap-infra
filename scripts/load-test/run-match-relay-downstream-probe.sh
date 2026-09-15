@@ -44,7 +44,7 @@ cleanup() {
   stop_pid "${LOG_DIR}/eap-wallet.pid"
   stop_pid "${LOG_DIR}/eap-matchEngine.pid"
   if [[ "${KEEP_INFRA}" != "true" ]]; then
-    docker compose -f "${COMPOSE_FILE}" stop \
+    docker compose -p eap-loadtest -f "${COMPOSE_FILE}" stop \
       order-postgres wallet-postgres match-postgres rabbitmq redis >/dev/null 2>&1 || true
   fi
 }
@@ -137,7 +137,7 @@ run_generator() {
 "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh" >/dev/null 2>&1 || true
 
 echo "[INFO] starting RabbitMQ, Redis, and all three PostgreSQL instances"
-docker compose -f "${COMPOSE_FILE}" up -d \
+docker compose -p eap-loadtest -f "${COMPOSE_FILE}" up -d \
   rabbitmq redis order-postgres wallet-postgres match-postgres
 wait_for_healthy eap-rabbitmq-loadtest
 wait_for_healthy eap-redis-loadtest

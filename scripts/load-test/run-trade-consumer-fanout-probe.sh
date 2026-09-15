@@ -44,7 +44,7 @@ cleanup() {
   stop_pid "${LOG_DIR}/eap-order.pid"
   stop_pid "${LOG_DIR}/eap-wallet.pid"
   if [[ "${KEEP_INFRA}" != "true" ]]; then
-    docker compose -f "${COMPOSE_FILE}" stop order-postgres wallet-postgres rabbitmq >/dev/null 2>&1 || true
+    docker compose -p eap-loadtest -f "${COMPOSE_FILE}" stop order-postgres wallet-postgres rabbitmq >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT INT TERM
@@ -111,7 +111,7 @@ run_generator() {
 "${ROOT_DIR}/scripts/load-test/stop-loadtest-services.sh" >/dev/null 2>&1 || true
 
 echo "[INFO] starting only RabbitMQ and the Order/Wallet PostgreSQL instances"
-docker compose -f "${COMPOSE_FILE}" up -d rabbitmq order-postgres wallet-postgres
+docker compose -p eap-loadtest -f "${COMPOSE_FILE}" up -d rabbitmq order-postgres wallet-postgres
 wait_for_healthy eap-rabbitmq-loadtest
 wait_for_healthy eap-order-postgres-loadtest
 wait_for_healthy eap-wallet-postgres-loadtest

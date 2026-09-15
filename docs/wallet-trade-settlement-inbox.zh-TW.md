@@ -70,7 +70,14 @@ identity，`event_payload_hash IS NULL` 的 replay 也會進 terminal review；�
 
 ## 可觀測性與只讀檢視
 
-Wallet 每 5 秒用三個聚合查詢更新記憶體 metric snapshot；Prometheus scrape 不會為每個 status 重複掃描 inbox。`eap_wallet_inbox_messages{status=...}` 顯示 pending／processing／retryable／permanent 等狀態數量，`eap_wallet_inbox_identity_conflicts` 顯示 payload identity conflict，`eap_wallet_inbox_oldest_unresolved_age_seconds` 顯示最舊未套用工作年齡。Prometheus 對 permanent failure 與 unresolved age 超過 60 秒設有告警；DB 暫時不可用時保留最後一次 snapshot，而且每段 outage 只記一次 warning，避免監測本身造成 log storm。
+Wallet 每 5 秒用一次 owner-local 聚合查詢更新全服務的 durable-debt snapshot；
+Prometheus scrape 與 Actuator 只讀記憶體 cache，不會對每個 status 重複掃描 inbox。
+`eap_durable_debt_items{service="eap-wallet",work="trade_execution_inbox",class="total|retry|terminal"}`
+顯示未完成、可重試與 permanent／identity-conflict debt，
+`eap_durable_debt_oldest_age_seconds{service="eap-wallet",work="trade_execution_inbox"}`
+顯示最舊未解決年齡。初始 SLO 對 oldest age 超過 30 秒持續 2 分鐘告警；terminal
+debt 持續 30 秒即告警。DB 暫時不可用時保留最後一次 snapshot，同時把
+`observationSuccess=false` 與持續增加的 snapshot age 明確揭露，避免舊零值被當成完成。
 
 只有啟用 `local`、`test` 或 `loadtest` profile，並同時設定
 `eap.wallet.inbox-admin.enabled=true` 時，才可用

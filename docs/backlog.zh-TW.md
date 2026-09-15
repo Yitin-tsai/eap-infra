@@ -1,6 +1,6 @@
 # EAP Engineering Backlog
 
-> 更新日期：2026-09-14
+> 更新日期：2026-09-15
 
 > 本頁是跨 Order、Wallet、MatchEngine 的唯一優先順序入口。各 feature ticket
 > 保存設計與驗收細節；若 ticket 內的排列與本頁不同，以本頁為準。
@@ -146,13 +146,27 @@ DLQ replay UI、Saga timeout 或 Redis full-book rebuild。
 
 ### EAP-REL-103：建立跨服務 durable-debt SLO 與告警
 
+**狀態：已完成（2026-09-15）。**
+
 **範圍：** inbox、outbox、cleanup、cancellation、projection 與 Rabbit DLQ。
 
 **完成條件：**
 
-- 每類工作至少有 count、oldest age、retry／terminal count。
-- business-complete gate 與 Prometheus alert 使用相同定義。
-- Rabbit queue 歸零但 service-owned work 累積時仍會失敗並告警。
+- [x] 每類工作至少有 count、oldest age、retry／terminal count。
+- [x] business-complete gate 與 Prometheus alert 使用相同的 versioned snapshot 定義。
+- [x] Rabbit queue 歸零但 service-owned work 累積時仍會失敗並告警。
+- [x] snapshot refresh 使用獨立 scheduler；Prometheus scrape／Actuator request 不直接查 DB。
+- [x] DB observation failure、stale snapshot、target／metric 消失與契約漂移都 fail closed。
+
+**實作與驗證：** Order、Wallet、MatchEngine 各自從權威本地 table 每 5 秒建立一次
+`DurableDebtSnapshot` v1；固定 work allowlist 共同支援 Actuator endpoint、Micrometer 與
+schema-v4 full-chain gate。Order projection checkpoint 新增 durable failure metadata；
+unresolved partial index 限制 snapshot query 的歷史掃描。RabbitMQ Prometheus plugin
+提供 DLQ count／head timestamp，核心 publisher 寫入 AMQP timestamp；缺少 head age 本身
+也會告警。`promtool` config 與 rule tests、三服務 unit suites、provider／projection
+PostgreSQL/Redis integration tests，以及 100 orders／50 trades 全鏈 smoke 均通過；smoke
+只證明 wiring 與 correctness，不更新容量數字。完整定義見
+[Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)。
 
 ### EAP-REL-104：處理 inbox commit 前的長時間 DB outage
 
@@ -258,7 +272,7 @@ primary DB。等 query load、replication lag 與 read-your-write contract 明�
 REL-001 → REL-002 → REL-003
                      │
                      ├─ REL-101 → REL-102
-                     ├─ REL-103 → REL-104 → REL-106
+                     ├─ REL-103 ✓ → REL-104 → REL-106
                      └─ REL-105
 
 以上每一條都由 REL-107 failure injection 驗證
@@ -268,8 +282,7 @@ TDA、read replica 與進階 scaling 保持延後
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003／101／102 已完成。下一件事是 EAP-REL-103：** 建立跨服務
-durable-debt SLO 與告警，讓 inbox、outbox、cleanup、cancellation、projection 與 Rabbit
-DLQ 的 count、oldest age、retry／terminal 定義和 business-complete gate 對齊。DLQ
-control plane 暫停在 **EAP-REL-106**，不是取消；200 orders/s 以上的邊界搜尋也先讓位給
-P1 reliability。
+**EAP-REL-001／002／003／101／102／103 已完成。下一件事是 EAP-REL-104：**
+先做 ADR 並處理 inbox commit 前的長時間 DB outage，避免數秒 broker retry 耗盡後形成
+DLQ flood。DLQ control plane 保留在 **EAP-REL-106**，不是取消；200 orders/s 以上的
+邊界搜尋仍先讓位給 P1 reliability。

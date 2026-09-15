@@ -13,7 +13,7 @@ results.
 | Can an external open-loop driver reproduce it? | `run-http-matched-external-open-loop.sh` | k6 by default; same business gates; driver-placement diagnostic until promoted |
 | Where is the first unsustainable rate? | `run-http-matched-staircase.sh` | Full-chain knee search, not a soak guarantee |
 | What is the sequential full-HTTP upper bound? | `run-http-matched-trade-completion-10k.sh` | SELL then BUY; not mixed-flow capacity |
-| Does cancellation converge across all three services? | `run-http-cancellation-lifecycle.sh` | Open, partial-fill, and bounded match/cancel race correctness; not capacity evidence |
+| Does cancellation converge across all three services? | `run-http-cancellation-lifecycle.sh` | Open, partial-fill, and bounded match/cancel race correctness plus schema-v4 durable-debt, projection, reservation, Queue/DLQ gates; not capacity evidence |
 | Is the Order-to-orderbook front half the bottleneck? | `run-order-admission-chain-10k.sh` | No trade execution or settlement |
 | Is the seeded Match-to-settlement back half the bottleneck? | `run-matched-trade-completion-10k.sh` | No Order HTTP or initial Wallet reservation |
 
@@ -51,7 +51,7 @@ and verifier. A k6 summary alone is not EAP correctness evidence.
 Run a short local harness smoke:
 
 ```bash
-docker compose -f docker-compose.loadtest.yml up -d --wait --wait-timeout 120
+docker compose -p eap-loadtest -f docker-compose.loadtest.yml up -d --wait --wait-timeout 120
 
 TARGET_ORDER_TPS=100 \
 WARMUP_SECONDS=2 \
@@ -69,6 +69,11 @@ after a successful run it also executes `docker compose down -v` so disposable
 load-test rows do not accumulate across campaigns. A failed run preserves the
 containers and volumes for diagnosis. Set `REMOVE_LOADTEST_DATA_AFTER_SUCCESS=false`
 only when a successful run still needs direct database inspection.
+
+`docker-compose.loadtest.yml` 固定宣告 Compose project 為 `eap-loadtest`，而且每個
+public script 的 `up`／`stop`／`down -v` 都明確傳入 `-p eap-loadtest`。CLI 參數的
+優先序高於 shell 的 `COMPOSE_PROJECT_NAME`，所以 cleanup 不會因呼叫端環境變數或
+執行目錄不同而指向一般開發 project。
 
 Reset ownership is deliberately part of the service lifecycle. With
 `START_SERVICES=true`, the shared launcher stops old consumers, resets PostgreSQL and
@@ -184,10 +189,28 @@ active and terminal debt. RabbitMQ at zero with growing, old, or terminal durabl
 work is therefore a failed whole-system result even when accepted orders eventually
 converge after traffic stops.
 
-The current schema-v3 sustained window samples service inbox debt. Outbox and Match
-reservation-cleanup debt are strict final-convergence gates, but their slope and
-oldest age are not yet sampled throughout the traffic window. Capacity reports must
-state that limitation until EAP-REL-103 aligns all durable-work SLOs and alerts.
+Schema v4 obtains debt from each service's versioned `/actuator/durableDebt` snapshot.
+The same owner-local snapshot feeds Micrometer, every steady/staircase sample, and the final full-chain gate, covering
+inbox, outbox, cleanup, cancellation, reconciliation, and Order projection work. A
+snapshot is invalid when its query failed, it is older than 15 seconds, its service or
+contract version is wrong, or its fixed work set is incomplete. RabbitMQ at zero can
+therefore never hide non-zero or unknown service-owned debt. Every fixed work is checked
+during traffic for growth, maximum count, oldest age, terminal debt, and observation
+health, so a component that drains only after traffic stops cannot produce a sustained
+PASS. Legacy aggregate inbox fields remain for comparison with schema-v3 reports;
+the complete machine-readable windows are `steadyDurableDebtComponents` and
+`finalDurableDebtComponents`.
+
+Snapshot refreshes run once per service every five seconds on dedicated observability
+schedulers. Prometheus and Actuator read the cached snapshot rather than issuing DB
+queries during a scrape. The core publishers set an AMQP timestamp so RabbitMQ can
+export a non-destructive DLQ head age; missing queue, target, timestamp, or metric
+series is an alert, not an empty result.
+
+After changing schema-v4 result fields or report rendering, run
+`bash scripts/load-test/tests/schema-v4-result-contracts.sh`. It verifies that valid
+sequential/staircase artifacts render as PASS and missing or wrong-typed durable-debt
+fields render as REJECT without starting the services.
 
 Primary workloads, focused probes, and experiment summaries automatically call
 `render-loadtest-report.sh`. To render an older JSON result without rerunning load:

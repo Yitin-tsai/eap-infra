@@ -36,7 +36,8 @@ jq -r \
     if $value == null then "" else "| " + $label + " | " + ($value | show) + " |\n" end;
   def required_v3_fields_missing:
     if (.benchmarkSchemaVersion // 0) >= 3
-        and .benchmarkContract == "external-http-matched-steady-state-chain" then
+        and (.benchmarkContract == "external-http-matched-steady-state-chain"
+          or .benchmarkContract == "http-matched-steady-state-chain") then
       . as $result
       | [
           "validForSustainedCapacity", "threeServiceTradeIdsEqual",
@@ -54,16 +55,21 @@ jq -r \
           "finalWalletOutboxActiveDebt", "finalWalletOutboxTerminalDebt",
           "finalMatchOutboxActiveDebt", "finalMatchOutboxTerminalDebt",
           "finalMatchCleanupActiveDebt", "finalMatchCleanupTerminalDebt"
-        ] | map(select($result[.] == null))
+        ] + (if ($result.benchmarkSchemaVersion // 0) >= 4 then [
+          "steadyDurableDebtObservationsHealthy", "steadyDurableDebtComponents",
+          "finalDurableDebtObservationsHealthy", "finalDurableDebtComponents"
+        ] else [] end) | map(select($result[.] == null))
     elif (.requiredFieldsMissing | type) == "array" then .requiredFieldsMissing
     else [] end;
   def required_v3_fields_invalid:
     if (.benchmarkSchemaVersion // 0) >= 3
-        and .benchmarkContract == "external-http-matched-steady-state-chain" then
+        and (.benchmarkContract == "external-http-matched-steady-state-chain"
+          or .benchmarkContract == "http-matched-steady-state-chain") then
       . as $result
       | (([
           "validForSustainedCapacity", "threeServiceTradeIdsEqual",
-          "assetReconciliationPassed", "orderReadModelConverged"
+          "assetReconciliationPassed", "orderReadModelConverged",
+          "steadyDurableDebtObservationsHealthy", "finalDurableDebtObservationsHealthy"
         ] | map(select($result[.] != null and ($result[.] | type) != "boolean")))
         + ([
           "finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
@@ -80,27 +86,183 @@ jq -r \
           "finalWalletOutboxTerminalDebt", "finalMatchOutboxActiveDebt",
           "finalMatchOutboxTerminalDebt", "finalMatchCleanupActiveDebt",
           "finalMatchCleanupTerminalDebt"
-        ] | map(select($result[.] != null and ($result[.] | type) != "number"))))
+        ] | map(select($result[.] != null and ($result[.] | type) != "number")))
+        + (if ($result.benchmarkSchemaVersion // 0) >= 4 then
+            ([
+              {name:"steadyDurableDebtComponents", value:$result.steadyDurableDebtComponents},
+              {name:"finalDurableDebtComponents", value:$result.finalDurableDebtComponents}
+            ] | map(select(.value != null and (.value | type) != "object") | .name))
+          else [] end))
       | unique
     elif (.requiredFieldsInvalid | type) == "array" then .requiredFieldsInvalid
     else [] end;
+  def required_v4_staircase_fields_missing:
+    if (.benchmarkSchemaVersion // 0) >= 4
+        and .benchmarkContract == "http-matched-staircase-chain" then
+      . as $result
+      | ([
+          "validForCapacitySearch", "threeServiceTradeIdsEqual",
+          "assetReconciliationPassed", "orderReadModelConverged",
+          "finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
+          "finalOrderProjectionLagEvents", "finalDurableDebtObservationsHealthy",
+          "finalDurableDebtComponents", "stages"
+        ] | map(select($result[.] == null)))
+      + (if ($result.stages | type) == "array" then
+          [$result.stages | to_entries[]
+            | if .value.durableDebtObservationsHealthy == null
+              then "stages[\(.key)].durableDebtObservationsHealthy" else empty end,
+              if .value.durableDebtComponents == null
+              then "stages[\(.key)].durableDebtComponents" else empty end]
+        else [] end)
+    else [] end;
+  def required_v4_staircase_fields_invalid:
+    if (.benchmarkSchemaVersion // 0) >= 4
+        and .benchmarkContract == "http-matched-staircase-chain" then
+      . as $result
+      | ((["validForCapacitySearch", "threeServiceTradeIdsEqual",
+           "assetReconciliationPassed", "orderReadModelConverged",
+           "finalDurableDebtObservationsHealthy"]
+          | map(select($result[.] != null and ($result[.] | type) != "boolean")))
+        + (["finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
+            "finalOrderProjectionLagEvents"]
+          | map(select($result[.] != null and ($result[.] | type) != "number")))
+        + (["finalDurableDebtComponents"]
+          | map(select($result[.] != null and ($result[.] | type) != "object")))
+        + (if $result.stages != null and ($result.stages | type) != "array"
+            then ["stages"] else [] end)
+        + (if ($result.stages | type) == "array" then
+            [$result.stages | to_entries[]
+              | if .value.durableDebtObservationsHealthy != null
+                  and (.value.durableDebtObservationsHealthy | type) != "boolean"
+                then "stages[\(.key)].durableDebtObservationsHealthy" else empty end,
+                if .value.durableDebtComponents != null
+                  and (.value.durableDebtComponents | type) != "object"
+                then "stages[\(.key)].durableDebtComponents" else empty end]
+          else [] end)) | unique
+    else [] end;
+  def required_v4_sequential_fields_missing:
+    if (.benchmarkSchemaVersion // 0) >= 4
+        and .benchmarkContract == "http-matched-trade-completion-chain" then
+      . as $result
+      | [
+          "validForCapacityComparison", "threeServiceTradeIdsEqual",
+          "assetReconciliationPassed", "finalQueueBacklog", "finalDlqBacklog",
+          "activeMatchReservations", "matchTradeRows", "orderTradeRows",
+          "walletTradeRows", "finalDurableDebtObservationsHealthy",
+          "finalDurableDebtComponents"
+        ] | map(select($result[.] == null))
+    else [] end;
+  def required_v4_sequential_fields_invalid:
+    if (.benchmarkSchemaVersion // 0) >= 4
+        and .benchmarkContract == "http-matched-trade-completion-chain" then
+      . as $result
+      | ((["validForCapacityComparison", "threeServiceTradeIdsEqual",
+           "assetReconciliationPassed", "finalDurableDebtObservationsHealthy"]
+          | map(select($result[.] != null and ($result[.] | type) != "boolean")))
+        + (["finalQueueBacklog", "finalDlqBacklog", "activeMatchReservations",
+            "matchTradeRows", "orderTradeRows", "walletTradeRows"]
+          | map(select($result[.] != null and ($result[.] | type) != "number")))
+        + (["finalDurableDebtComponents"]
+          | map(select($result[.] != null and ($result[.] | type) != "object")))) | unique
+    else [] end;
+  def non_negative_integer:
+    type == "number" and . >= 0 and . == floor;
+  def valid_debt:
+    type == "object"
+    and (.totalCount | non_negative_integer)
+    and (.retryCount | non_negative_integer)
+    and (.terminalCount | non_negative_integer)
+    and (.oldestUnresolvedAgeSeconds | non_negative_integer)
+    and .retryCount <= .totalCount
+    and .terminalCount <= .totalCount
+    and (.totalCount > 0 or .oldestUnresolvedAgeSeconds == 0);
+  def exact_work($names):
+    type == "object"
+    and (keys | sort) == ($names | sort)
+    and all(.[]; valid_debt);
+  def valid_cancellation_components:
+    type == "object"
+    and (keys | sort) == (["eap-order", "eap-wallet", "eap-matchEngine"] | sort)
+    and (.["eap-order"] | exact_work([
+      "asset_reservation_result_inbox", "trade_execution_inbox",
+      "cancellation_result_inbox", "asset_reservation_released_inbox",
+      "event_outbox", "orders_current_projection"
+    ]))
+    and (.["eap-wallet"] | exact_work([
+      "order_submission_inbox", "cancellation_result_inbox",
+      "trade_execution_inbox", "event_outbox"
+    ]))
+    and (.["eap-matchEngine"] | exact_work([
+      "order_admission_inbox", "trade_outbox", "reservation_cleanup",
+      "order_cancellation", "reservation_reconciliation"
+    ]))
+    and all(.[][]; .totalCount == 0);
+  def required_v4_cancellation_fields_missing:
+    if (.benchmarkSchemaVersion // 0) >= 4
+        and .benchmarkContract == "http-cancellation-lifecycle" then
+      . as $result
+      | [
+          "valid", "threeServiceTradeIdsEqual", "assetReconciliationPassed",
+          "orderReadModelConverged", "raceMutualExclusionValid",
+          "finalQueueBacklog", "finalDlqBacklog", "queueMetricsReadFailures",
+          "activeMatchReservations", "finalDurableDebtObservationsHealthy",
+          "finalDurableDebtComponents"
+        ] | map(select($result[.] == null))
+    else [] end;
+  def required_v4_cancellation_fields_invalid:
+    if (.benchmarkSchemaVersion // 0) >= 4
+        and .benchmarkContract == "http-cancellation-lifecycle" then
+      . as $result
+      | (([
+          "valid", "threeServiceTradeIdsEqual", "assetReconciliationPassed",
+          "orderReadModelConverged", "raceMutualExclusionValid",
+          "finalDurableDebtObservationsHealthy"
+        ] | map(select($result[.] != null and ($result[.] | type) != "boolean")))
+        + ([
+          "finalQueueBacklog", "finalDlqBacklog", "queueMetricsReadFailures",
+          "activeMatchReservations"
+        ] | map(select($result[.] != null and (($result[.] | non_negative_integer) | not))))
+        + ([
+          "finalQueueBacklog", "finalDlqBacklog", "queueMetricsReadFailures",
+          "activeMatchReservations"
+        ] | map(select(($result[.] | type) == "number" and $result[.] != 0)))
+        + (if $result.finalDurableDebtComponents != null
+              and (($result.finalDurableDebtComponents | valid_cancellation_components) | not)
+            then ["finalDurableDebtComponents"] else [] end)) | unique
+    else [] end;
+  def required_fields_missing:
+    required_v3_fields_missing + required_v4_staircase_fields_missing
+      + required_v4_sequential_fields_missing
+      + required_v4_cancellation_fields_missing;
+  def required_fields_invalid:
+    required_v3_fields_invalid + required_v4_staircase_fields_invalid
+      + required_v4_sequential_fields_invalid
+      + required_v4_cancellation_fields_invalid;
   def known_failure:
-    ((required_v3_fields_missing + required_v3_fields_invalid) | length) > 0
+    ((required_fields_missing + required_fields_invalid) | length) > 0
     or ((.externalDriverExitStatus // 0) != 0)
     or any([
       .validForSustainedCapacity,
+      .validForCapacitySearch,
+      .validForCapacityComparison,
       .valid,
       .threeServiceTradeIdsEqual,
       .completedTradeIdSetsEqual,
       .tradeIdsEqual,
       .assetReconciliationPassed,
       .orderReadModelConverged
+      ,.steadyDurableDebtObservationsHealthy
+      ,.finalDurableDebtObservationsHealthy
     ][]; . == false);
   def decision:
     if known_failure then "REJECT — a measured gate failed"
     elif .capacityClaimAllowed == true then "PASS — capacity evidence eligible"
     elif .validForSustainedCapacity == true
       then "PASS — workload correctness only; capacity evidence ineligible"
+    elif .validForCapacitySearch == true
+      then "PASS — staircase search gates passed; capacity evidence ineligible"
+    elif .validForCapacityComparison == true
+      then "PASS — full-chain comparison gates passed; capacity evidence ineligible"
     elif .valid == true then "PASS — correctness evidence"
     elif .correctness == "PASS" or .correctnessGate == "PASS"
       then "PASS — isolated diagnostic"
@@ -113,8 +275,8 @@ jq -r \
       .provenanceInvalidReasons,
       (if (.capacityEvidence | type) == "object"
         then .capacityEvidence.invalidReasons else null end)]) // [])
-      + (required_v3_fields_missing | map("missing_required_field:" + .))
-      + (required_v3_fields_invalid | map("invalid_required_field:" + .))
+      + (required_fields_missing | map("missing_required_field:" + .))
+      + (required_fields_invalid | map("invalid_required_field:" + .))
       + [if (.externalDriverExitStatus // 0) != 0
           then "external_driver_failed" else empty end]) | unique;
   def limitation:
@@ -220,6 +382,10 @@ jq -r \
       (if .finalMatchCleanupActiveDebt == null and .finalMatchCleanupTerminalDebt == null
        then null else ((.finalMatchCleanupActiveDebt // 0 | tostring) + "/" +
        (.finalMatchCleanupTerminalDebt // 0 | tostring)) end))
+    + row("Steady durable-debt observations healthy"; .steadyDurableDebtObservationsHealthy)
+    + row("Steady durable-debt components"; .steadyDurableDebtComponents)
+    + row("Final durable-debt observations healthy"; .finalDurableDebtObservationsHealthy)
+    + row("Final durable-debt components"; .finalDurableDebtComponents)
     + "\n## Correctness\n\n"
     + "| Gate | Result |\n| --- | ---: |\n"
     + row("Overall validity"; .valid)

@@ -11,8 +11,8 @@ service-owned durable inboxes; Order also exposes separate execution and
 asset-reservation state. Historical capacity remains valid only for its recorded commits.
 
 A current-worktree k6 run used the same seed as the preceding baseline, a `60s` warm-up
-plus `900s` measurement window, shuffled balanced HTTP BUY/SELL traffic, and schema-v3
-three-service verification:
+plus `900s` measurement window, shuffled balanced HTTP BUY/SELL traffic, and the
+then-current schema-v3 three-service verification:
 
 | Target | HTTP accepted | Steady accepted | Steady completed | k6 p95／p99 | Decision |
 | ---: | ---: | ---: | ---: | ---: | --- |
@@ -35,12 +35,17 @@ lower bound (`capacityClaimAllowed=false`), not a public capacity claim. The bou
 above 200 has not been rerun. See the
 [2026-09-04 campaign report](benchmarks/2026-09-04-current-reliability-full-chain.md).
 
-The schema-v3 runner now gates Order, Wallet, and Match inbox backlog, oldest age, and
-terminal/identity-conflict debt independently from RabbitMQ. It also checks all three
-outboxes and Match cleanup at final convergence, fails closed on missing or wrongly typed
-required result fields, folds external-driver failure into the result before provenance,
-and fingerprints dirty working-tree content at start and end. Outbox and cleanup do not
-yet have steady-window age/slope gates; that remains `EAP-REL-103` scope.
+This remains historical schema-v3 capacity evidence. The current schema-v4 runner also
+reads the versioned owner-local `DurableDebtSnapshot` from Order, Wallet, and Match,
+fails closed when a snapshot is stale or unavailable, and requires every inbox, outbox,
+cleanup, cancellation, reconciliation, and projection component to converge to zero.
+Prometheus uses the same component semantics for continuous count, oldest-age, retry,
+terminal, and observation-health alerts. A short schema-v4 full-chain smoke passed these
+correctness gates; it is not a new capacity measurement and does not replace the table
+above. The cancellation correctness runner now applies the same schema-v4 final gate;
+`REL103_CANCELLATION_SCHEMA_V4_R1` converged its open, partial-fill, and bounded race
+scenarios with zero final Queue/DLQ, active-reservation, projection, and 15-component
+durable debt. It is likewise correctness evidence only.
 
 ### Historical Cancellation-Revision Diagnostic - 2026-08-24
 
@@ -1406,7 +1411,7 @@ Before pushing for higher completed TPS, the next public-quality benchmark shoul
 
 1. Do not retry the historical 648 target. The Wallet trade-inbox path has re-established the same-seed 200 orders/s baseline with three-service inbox gates; finish the higher-priority Redis fail-closed and terminal-error work before searching above 200.
 2. Keep macOS sleep disabled and reject any run with HTTP count mismatch, broker alarm, cross-JVM starvation warning, or lost diagnostic samples.
-3. Require zero reused orders, exact three-service trade IDs, exact assets, and empty inbox/outbox/cleanup/queue/DLQ debt in every accepted run; missing or wrongly typed schema-v3 fields must fail closed.
+3. Require zero reused orders, exact three-service trade IDs, exact assets, fresh successful schema-v4 snapshots, and empty inbox/outbox/cleanup/cancellation/reconciliation/projection/queue/DLQ debt in every accepted run; missing or wrongly typed fields must fail closed.
 4. Capture Order command-pool wait, HTTP latency, queue slope, PostgreSQL/WAL, and system/process CPU without changing pool or listener concurrency in the same experiment.
 5. Repeat the same canonical contract from a separate load-generator CPU domain or host before attributing the same-host boundary to application code.
 6. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.

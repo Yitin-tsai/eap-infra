@@ -511,15 +511,15 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 | Spring Rabbit simple listener | 3 attempts；1 秒起始、倍增、最高 10 秒；不預設 requeue | shared DLQ | 同一設定同時套 transient 與 permanent exception，分類仍粗 |
 | Order asset reservation result inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | confirmed／failed 共用 `order_id` terminal guard；intake DB outage 仍需 delayed retry／consumer pause |
 | Wallet message inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | 驗資／成交／取消共用機制；locked asset 不足直接是 permanent invariant，intake DB outage 仍需 transport recovery |
-| Order／Wallet／Match outbox | 最多 10 次；約 1 秒 exponential backoff，最高 300 秒 | `FAILED` | Order／Match recovery control plane 不完整；需 terminal alert |
-| Order trade inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，必須有 age SLO |
-| Order cancellation inbox | poll 500 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，必須有 age SLO |
-| Order asset-release inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts | `FAILED_PERMANENT` | release 早於 cancellation accepted 時 prerequisite 無上限 |
+| Order／Wallet／Match outbox | 最多 10 次；約 1 秒 exponential backoff，最高 300 秒 | `FAILED` | terminal debt 已告警；安全 recovery control plane 仍待 REL-106 |
+| Order trade inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，以 durable-debt oldest-age SLO 偵測 stuck |
+| Order cancellation inbox | poll 500 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，以 durable-debt oldest-age SLO 偵測 stuck |
+| Order asset-release inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts | `FAILED_PERMANENT` | release 早於 cancellation accepted 時，以 oldest-age／retry debt 觀測 |
 | Match cleanup task | poll 100 ms、lease 30 秒＋owner/token fence；10 technical attempts；1 秒至 300 秒 | `FAILED` | 必須納入 business-complete gate；安全人工恢復介面仍待 REL-106 |
 | Match orphan reservation scan | 每 5 秒；30 秒後才處理；一般 action failure 最多 10 次 | `reservation_reconciliation_issues.TERMINAL` | durable payload／ownership／last error 已保存；修復與 re-drive control plane 尚待 REL-106 |
-| Match cancellation reconciler | poll 250 ms、lease 30 秒；20 technical attempts；250 ms 至 30 秒 backoff；prerequisite 獨立計時 | `FAILED_TERMINAL` | prerequisite 仍需 REL-103 oldest-age SLO；人工恢復介面待 REL-106 |
+| Match cancellation reconciler | poll 250 ms、lease 30 秒；20 technical attempts；250 ms 至 30 秒 backoff；prerequisite 獨立計時 | `FAILED_TERMINAL` | prerequisite 已納入 oldest-age SLO；人工恢復介面待 REL-106 |
 
-目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，但各 inbox commit 前的 DB outage、Saga timeout、跨服務 durable-debt SLO，以及 terminal outbox／DLQ 的完整 recovery control plane仍未完成。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
+目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，跨服務 durable debt 也已有共同 count／age／retry／terminal 契約、告警與 schema-v4 completion gate；但各 inbox commit 前的長時間 DB outage、Saga timeout，以及 terminal outbox／DLQ 的完整 recovery control plane仍未完成。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)，可觀測性見 [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
 
 ## Retry、ACK、DLQ 與恢復層次
 

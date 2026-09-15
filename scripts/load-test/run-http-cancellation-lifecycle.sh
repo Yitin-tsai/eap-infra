@@ -41,13 +41,14 @@ RUN_REPORT_JSON="${REPORT_DIR}/http-cancellation-${RUN_ID}-result.json"
 cleanup() {
   http_matched_cleanup
   if [[ "${STOP_INFRA_AFTER_RUN}" == "true" ]]; then
-    docker compose -f "${ROOT_DIR}/docker-compose.loadtest.yml" down >/dev/null 2>&1 || true
+    docker compose -p eap-loadtest -f "${ROOT_DIR}/docker-compose.loadtest.yml" \
+      down -v --remove-orphans >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 mkdir -p "${GRADLE_USER_HOME_DIR}" "${REPORT_DIR}"
-docker compose -f "${ROOT_DIR}/docker-compose.loadtest.yml" up -d --wait --wait-timeout 120
+docker compose -p eap-loadtest -f "${ROOT_DIR}/docker-compose.loadtest.yml" up -d --wait --wait-timeout 120
 http_matched_assert_environment
 http_matched_start_services
 http_matched_export_generator_environment
@@ -62,6 +63,8 @@ args="--run-id ${RUN_ID} \
 --jdbc-user ${JDBC_USER} \
 --rabbit-management-url ${RABBIT_MANAGEMENT_URL} \
 --rabbit-user ${RABBIT_USER} \
+--redis-host ${REDIS_HOST} \
+--redis-port ${REDIS_PORT} \
 --timeout-seconds ${TIMEOUT_SECONDS} \
 --race-iterations ${RACE_ITERATIONS}"
 
@@ -81,4 +84,5 @@ if ! http_matched_extract_last_json_object "${RUN_REPORT_LOG}" "${RUN_REPORT_JSO
 fi
 echo "[INFO] cancellation lifecycle result=${RUN_REPORT_JSON}"
 http_matched_render_report "${RUN_REPORT_JSON}" || true
+http_matched_validate_cancellation_result_schema "${RUN_REPORT_JSON}"
 exit "${run_status}"

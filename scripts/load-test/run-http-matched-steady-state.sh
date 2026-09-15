@@ -28,6 +28,7 @@ RUN_ID="${RUN_ID:-${1:-GLT_$(date +%Y%m%d_%H%M%S)_HTTP_MATCHED_STEADY_30M}}"
 MARKET_ID="${MARKET_ID:-ENERGY-SPOT}"
 ORDER_URL="${ORDER_URL:-http://localhost:8080/eap-order}"
 WALLET_URL="${WALLET_URL:-http://localhost:8081/eap-wallet}"
+MATCH_URL="${MATCH_URL:-http://localhost:8082/match-engine}"
 ORDER_JDBC_URL="${ORDER_JDBC_URL:-jdbc:postgresql://localhost:15432/eap_order_db}"
 WALLET_JDBC_URL="${WALLET_JDBC_URL:-jdbc:postgresql://localhost:15433/eap_wallet_db}"
 MATCH_JDBC_URL="${MATCH_JDBC_URL:-jdbc:postgresql://localhost:15434/eap_match_db}"
@@ -101,6 +102,7 @@ args="--run-id ${RUN_ID} \
 --sample-output ${RUN_SAMPLES_CSV} \
 --order-url ${ORDER_URL} \
 --wallet-url ${WALLET_URL} \
+--match-url ${MATCH_URL} \
 --order-jdbc-url ${ORDER_JDBC_URL} \
 --wallet-jdbc-url ${WALLET_JDBC_URL} \
 --match-jdbc-url ${MATCH_JDBC_URL} \

@@ -160,7 +160,9 @@ MatchEngine 只發布 `TradeExecuted` 時，尚不能把交易計為 business-co
 2. Order 已持久化相對應的 command-side trade application。
 3. Wallet 已持久化 settlement，而且資產結果核對正確。
 4. MatchEngine、Order、Wallet 擁有完全相同的 durable `trade_id` 集合。
-5. RabbitMQ ready／unacked、DLQ 與量測範圍內的 durable debt 都已排空。
+5. RabbitMQ ready／unacked 與 DLQ 都已排空。
+6. Order、Wallet、MatchEngine 的 versioned durable-debt snapshot 成功且新鮮，所有
+   inbox、outbox、cleanup、cancellation、reconciliation 與 projection debt 都已排空。
 
 Order projection lag 不會改寫已成立的 command-side 成交事實，因為 projection 是可重建的 read model；但對「完整系統可持續容量」而言，使用者查詢狀態與 durable inbox 也不能長期落後。因此壓測會把交易完成 gate 與 read-model／inbox 收斂 gate 分開呈現，最後兩者都必須通過才可宣稱整條服務穩態跟得上。
 
@@ -191,10 +193,12 @@ graph TD
 | 下游套用延遲 | service-owned retry／inbox state、DLQ 可觀測性與外部 durable-fact reconciliation |
 | Redis reservation cleanup 中斷 | durable cleanup task 與 reservation reconciler |
 | inbox commit 前資料庫不可用 | listener 不 ACK，交由短期 broker retry／DLQ；尚未具備所有服務一致的 delayed retry／consumer pause |
+| Rabbit queue 已空但本地工作未完成 | 三服務 `DurableDebtSnapshot` v1、schema-v4 fail-closed completion gate 與 Prometheus alerts |
+| debt snapshot query 失敗或服務消失 | 保留上次值並標記 observation failure／staleness；endpoint、metrics 與 load gate 不把未知當成零 |
 
 ## 擴充與效能邊界
 
-架構文件不保存某次壓測的 TPS 排行。容量必須綁定 source revision、workload、執行環境與 business-complete gate；同一個元件的 isolated throughput 也不能等同完整交易容量。[2026-09-04 全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)已在 Wallet trade inbox 加入後，以 schema v3 同時 gate 三服務 inbox backlog／oldest age／terminal debt 及完整 business-complete 條件，單一 seed 通過 200 orders/s 長窗。由於來源未提交、driver 同機且 PostgreSQL `synchronous_commit=off`，它仍只是目前 worktree 的診斷下界，不是正式容量上限。
+架構文件不保存某次壓測的 TPS 排行。容量必須綁定 source revision、workload、執行環境與 business-complete gate；同一個元件的 isolated throughput 也不能等同完整交易容量。[2026-09-04 全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)是 schema v3 的歷史證據：單一 seed 在完整 trade／asset／read-model 與當時的 debt gate 下通過 200 orders/s 長窗。現行 runner 已升為 schema v4，最後直接讀三服務共同的 versioned durable-debt 契約；2026-09-15 短 smoke 已驗證 wiring 與 fail-closed correctness，但不能取代新的長窗容量實驗。前一版來源未提交、driver 同機且 PostgreSQL `synchronous_commit=off`，因此仍只是診斷下界，不是正式容量上限。
 
 完整 CDA 路徑的成本來自多個本地一致性邊界疊加，而不是只有 RabbitMQ 或 Redis：
 
@@ -219,6 +223,12 @@ graph TD
 ```
 
 RabbitMQ queue 清空不代表服務已追上。Listener 可以先把訊息提交到 service-owned inbox 後 ACK，工作再由本地 worker 套用；因此 queue depth、inbox level／oldest age／slope、outbox debt、projection lag 都是不同的排隊點。最新版 200 orders/s 長窗的 Order／Wallet／Match inbox oldest age max 為 `1/1/0s`，沒有持續累積；較早 300／400 實驗仍顯示 Order reservation-result worker 是提高邊界前的首要量測對象，但尚未用目前版本重跑到足以重新定位瓶頸。
+
+REL-103 把這些排隊點統一成 `totalCount`、`retryCount`、`terminalCount` 與
+`oldestUnresolvedAgeSeconds`。每個服務每 5 秒在獨立 observability scheduler 上執行一次
+本地聚合 query，結果放進記憶體 cache；Prometheus scrape、Actuator endpoint 與 load
+gate 不再各自維護 status mapping，也不在 scrape callback 查 DB。詳細契約、work 清單與
+告警閾值見 [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)。
 
 ### 水平擴充單位
 

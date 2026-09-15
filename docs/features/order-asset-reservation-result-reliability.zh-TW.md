@@ -66,8 +66,8 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 
 ### Recovery and observability
 
-- `eap_order_asset_reservation_result_inbox_rows{status=...}` 暴露 actionable debt。
-- `eap_order_asset_reservation_result_incident_rows{type="IDENTITY_CONFLICT"}` 暴露矛盾結果。
+- `eap_durable_debt_items{service="eap-order",work="asset_reservation_result_inbox",class="total|retry|terminal"}` 暴露 actionable debt 與 identity conflict。
+- `eap_durable_debt_oldest_age_seconds{service="eap-order",work="asset_reservation_result_inbox"}` 暴露最舊未解決年齡。
 - Actuator endpoint `orderAssetReservationResultInbox` 預設關閉；啟用後可查 status count。
 - Admin retry 只接受沒有 identity conflict 的 `FAILED_PERMANENT`；矛盾業務事實不可一鍵 replay。
 

@@ -1,0 +1,208 @@
+groups:
+  - name: eap-rabbit-durable-debt-v1
+    rules:
+      - record: eap_durable_debt_items
+        expr: rabbitmq_queue_messages{queue="order.dlq"}
+        labels:
+          service: rabbitmq
+          work: shared_dead_letter_queue
+          class: total
+
+      - record: eap_durable_debt_items
+        expr: rabbitmq_queue_messages{queue="order.dlq"} * 0
+        labels:
+          service: rabbitmq
+          work: shared_dead_letter_queue
+          class: retry
+
+      - record: eap_durable_debt_items
+        expr: rabbitmq_queue_messages{queue="order.dlq"}
+        labels:
+          service: rabbitmq
+          work: shared_dead_letter_queue
+          class: terminal
+
+      - record: eap_durable_debt_oldest_age_seconds
+        expr: >-
+          clamp_min(time() - rabbitmq_queue_head_message_timestamp{queue="order.dlq"}, 0)
+          or on(instance, job, vhost, queue)
+          (rabbitmq_queue_messages{queue="order.dlq"} == 0) * 0
+        labels:
+          service: rabbitmq
+          work: shared_dead_letter_queue
+
+      - record: eap_durable_debt_observation_success
+        expr: >-
+          (((rabbitmq_queue_messages{queue="order.dlq"} == 0) * 0 + 1)
+          or on(instance, job, vhost, queue)
+          ((rabbitmq_queue_head_message_timestamp{queue="order.dlq"} > 0) * 0 + 1))
+          and on(instance, job) (up{job="rabbitmq"} == 1)
+        labels:
+          service: rabbitmq
+
+      - record: eap_durable_debt_snapshot_age_seconds
+        expr: clamp_min(time() - timestamp(rabbitmq_queue_messages{queue="order.dlq"}), 0)
+        labels:
+          service: rabbitmq
+
+      - record: eap_durable_debt_contract_version
+        expr: up{job="rabbitmq"} * 0 + 1
+        labels:
+          service: rabbitmq
+
+  - name: eap-durable-debt-v1
+    rules:
+      - alert: EapDurableDebtTerminal
+        expr: eap_durable_debt_items{class="terminal"} > 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} has terminal durable work"
+          description: "{{ $labels.work }} contains {{ $value }} terminal item(s); automatic retry must not hide this debt."
+
+      - alert: EapDurableDebtOldestTooOld
+        expr: eap_durable_debt_oldest_age_seconds > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} durable work is not converging"
+          description: "The oldest unresolved {{ $labels.work }} item is {{ $value | humanizeDuration }} old."
+
+      - alert: EapDurableDebtBacklogAboveDiagnosticLimit
+        expr: eap_durable_debt_items{class="total"} > 6000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} durable backlog exceeds the diagnostic limit"
+          description: "{{ $labels.work }} contains {{ $value }} unresolved item(s)."
+
+      - alert: EapDurableDebtBacklogGrowing
+        expr: >-
+          deriv(eap_durable_debt_items{class="total"}[5m]) > 2
+          and delta(eap_durable_debt_items{class="total"}[5m]) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} durable backlog is continuously growing"
+          description: "{{ $labels.work }} has grown by more than two items per second over five minutes."
+
+      - alert: EapDurableDebtObservationFailed
+        expr: eap_durable_debt_observation_success == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} durable-debt observation failed"
+          description: "The last refresh failed. Cached zeroes or old values must not be treated as business completion."
+
+      - alert: EapDurableDebtObservationMissing
+        expr: >-
+          absent(eap_durable_debt_observation_success{service="eap-order"})
+          or absent(eap_durable_debt_observation_success{service="eap-wallet"})
+          or absent(eap_durable_debt_observation_success{service="eap-matchEngine"})
+          or absent(eap_durable_debt_observation_success{service="rabbitmq"})
+          or absent(eap_durable_debt_snapshot_age_seconds{service="eap-order"})
+          or absent(eap_durable_debt_snapshot_age_seconds{service="eap-wallet"})
+          or absent(eap_durable_debt_snapshot_age_seconds{service="eap-matchEngine"})
+          or absent(eap_durable_debt_snapshot_age_seconds{service="rabbitmq"})
+          or absent(eap_durable_debt_contract_version{service="eap-order"})
+          or absent(eap_durable_debt_contract_version{service="eap-wallet"})
+          or absent(eap_durable_debt_contract_version{service="eap-matchEngine"})
+          or absent(eap_durable_debt_contract_version{service="rabbitmq"})
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} durable-debt observation is missing"
+          description: "The service, scrape target, or required Rabbit queue-age source is unavailable. Missing telemetry must not be treated as zero debt."
+
+      - alert: EapDurableDebtSeriesIncomplete
+        expr: >-
+          absent(eap_durable_debt_items{service="eap-order"})
+          or absent(eap_durable_debt_items{service="eap-wallet"})
+          or absent(eap_durable_debt_items{service="eap-matchEngine"})
+          or absent(eap_durable_debt_items{service="rabbitmq"})
+          or absent(eap_durable_debt_oldest_age_seconds{service="eap-order"})
+          or absent(eap_durable_debt_oldest_age_seconds{service="eap-wallet"})
+          or absent(eap_durable_debt_oldest_age_seconds{service="eap-matchEngine"})
+          or absent(eap_durable_debt_oldest_age_seconds{service="rabbitmq"})
+          or (count by (service) (eap_durable_debt_items{service="eap-order"}) != 18)
+          or (count by (service) (eap_durable_debt_items{service="eap-wallet"}) != 12)
+          or (count by (service) (eap_durable_debt_items{service="eap-matchEngine"}) != 15)
+          or (count by (service) (eap_durable_debt_items{service="rabbitmq"}) != 3)
+          or (count by (service) (eap_durable_debt_oldest_age_seconds{service="eap-order"}) != 6)
+          or (count by (service) (eap_durable_debt_oldest_age_seconds{service="eap-wallet"}) != 4)
+          or (count by (service) (eap_durable_debt_oldest_age_seconds{service="eap-matchEngine"}) != 5)
+          or (count by (service) (eap_durable_debt_oldest_age_seconds{service="rabbitmq"}) != 1)
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} durable-debt metric set is incomplete"
+          description: "At least one fixed work/class/age series is missing; contract parity cannot be proven."
+
+      - alert: EapDurableDebtScrapeTargetDown
+        expr: up{job=~"eap-order|eap-wallet|eap-matchEngine|rabbitmq"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} metrics target is down"
+          description: "Prometheus cannot scrape the service; durable debt is unknown and must not be treated as zero."
+
+      - alert: EapDurableDebtSnapshotStale
+        expr: eap_durable_debt_snapshot_age_seconds > 15
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} durable-debt snapshot is stale"
+          description: "The last successful durable-debt snapshot is {{ $value | humanizeDuration }} old."
+
+      - alert: EapDurableDebtContractMismatch
+        expr: eap_durable_debt_contract_version != 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} exports an unsupported durable-debt contract"
+          description: "Expected contract version 1, observed {{ $value }}."
+
+  - name: eap-rabbit-dlq
+    rules:
+      - alert: EapSharedDeadLetterQueueNotEmpty
+        expr: rabbitmq_queue_messages{queue="order.dlq"} > 0
+        for: 30s
+        labels:
+          severity: critical
+          service: rabbitmq
+        annotations:
+          summary: "The shared EAP dead-letter queue is not empty"
+          description: "order.dlq contains {{ $value }} terminal transport message(s). Inspect before controlled replay."
+
+      - alert: EapSharedDeadLetterQueueMetricMissing
+        expr: absent(rabbitmq_queue_messages{queue="order.dlq"})
+        for: 30s
+        labels:
+          severity: critical
+          service: rabbitmq
+        annotations:
+          summary: "The shared EAP dead-letter queue cannot be observed"
+          description: "RabbitMQ is not exporting order.dlq. A missing queue or telemetry failure must not be treated as an empty DLQ."
+
+      - alert: EapSharedDeadLetterQueueAgeMissing
+        expr: >-
+          rabbitmq_queue_messages{queue="order.dlq"} > 0
+          unless on(instance, job, vhost, queue)
+          rabbitmq_queue_head_message_timestamp{queue="order.dlq"} > 0
+        for: 30s
+        labels:
+          severity: critical
+          service: rabbitmq
+        annotations:
+          summary: "The oldest shared DLQ message age cannot be observed"
+          description: "order.dlq is non-empty but its head message has no usable AMQP timestamp. Inspect the publisher before replay."

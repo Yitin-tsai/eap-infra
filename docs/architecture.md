@@ -154,7 +154,8 @@ A trade is not counted as business-complete when the MatchEngine only emits `Tra
 2. Order persisted the corresponding command-side trade application.
 3. Wallet persisted the corresponding settlement and the resulting assets reconcile.
 4. MatchEngine, Order, and Wallet contain the same durable `trade_id` set.
-5. RabbitMQ ready and unacked messages, the DLQ, and measured durable debt drained to zero.
+5. RabbitMQ ready and unacked messages and the DLQ drained to zero.
+6. Versioned Order, Wallet, and MatchEngine durable-debt snapshots are fresh and successful, and every measured inbox, outbox, cleanup, cancellation, reconciliation, and projection work item has drained to zero.
 
 Order projection lag cannot rewrite an already durable command-side trade because the projection is rebuildable. It still matters to whole-system sustained capacity: user-visible state and durable inbox work must not fall progressively behind. The benchmark therefore reports the trade-completion gate separately from read-model and inbox convergence, and requires both before claiming that the complete service chain is sustainable.
 
@@ -185,6 +186,8 @@ graph TD
 | downstream application is delayed | service-owned retry/inbox state, DLQ alerts, and external durable-fact reconciliation |
 | Redis reservation cleanup is interrupted | durable cleanup task with owner/token lease fencing plus a durable reservation-issue record |
 | benchmark observer effect | light/deep diagnostics levels and queue-first sampling |
+| RabbitMQ is empty while service-owned work remains | service-owned `DurableDebtSnapshot` v1, schema-v4 fail-closed completion gates, and Prometheus alerts |
+| a debt snapshot query or service disappears | retain last values but expose failed/stale observation; endpoints, alerts, and the load gate treat unknown telemetry as failure |
 
 ## Current Scaling Boundary
 
@@ -215,7 +218,7 @@ Redis resting-order reservations also carry the exact durable `tradeId` they are
 
 The remaining pressure appears only when HTTP admission, reservation, confirmation, matching, relays, settlement, three databases, RabbitMQ, JVMs, monitoring, and the load generator compete on the same host. The 648 long repeats reached Order command-pool pending peaks of `90` and `91`, Wallet pending peaks of `25`, and system CPU averages of roughly `85-88%`. Their full-lifecycle rates remained in the same `301-310 trades/s` range as 624 despite the higher accepted input. These are pressure signals rather than proof that a larger pool is the fix. A later low-external-observability repeat matched the accepted run through its first half but degraded late; because the generator's exact one-second durable-count monitor remained active and resource diagnostics were absent, it is inconclusive for attribution. A prepared-sync diagnostic moved deterministic schedule and JSON construction outside the traffic clock and calibrated at `1999.98 requests/s` against a no-op endpoint, but its full-chain 1200/2000 probes still missed offered-load gates. The external Vegeta driver subsequently removed the Java driver's scheduling ambiguity and passed a short equivalence sandwich at 648, but it did not create additional service capacity. A release-pinned 20-minute 700 run supplied all `882000` requests and converged exactly, yet completed only `240.01 same-window trades/s` and required about `844.93s` of post-input drain. RabbitMQ backlog alone did not expose this service-owned debt. The next decisive step is per-stage durable-debt measurement before another high-cost capacity repeat; a separate load-generator host remains necessary only when testing beyond the same-host boundary.
 
-The 2026-09 reliability revision adds service-owned inboxes plus separate Order execution/reservation state, so the historical 648 number does not transfer. The current Wallet-trade-inbox worktree passed one k6 long-window seed at `199.99 orders/s` and `100.02 trades/s`. The schema-v3 gate measured Order, Wallet, and Match inbox backlog, oldest age, and terminal debt independently; all final inbox, outbox, cleanup, projection, Redis, RabbitMQ, DLQ, trade-ID, and asset checks converged. The source was stable during the run but dirty, the load generator was co-located, and PostgreSQL used `synchronous_commit=off`, so this is a diagnostic lower bound rather than a release-pinned capacity claim. See the [current-version campaign](benchmarks/2026-09-04-current-reliability-full-chain.md).
+The 2026-09 reliability revision adds service-owned inboxes plus separate Order execution/reservation state, so the historical 648 number does not transfer. The Wallet-trade-inbox worktree passed one k6 long-window seed at `199.99 orders/s` and `100.02 trades/s` under the then-current schema-v3 gate. The runner now uses schema v4 and reads the same versioned service-owned durable-debt contract used by Actuator and Micrometer; unavailable, stale, incomplete, or non-zero snapshots fail closed even when RabbitMQ is empty. A short 2026-09-15 smoke verified this wiring but does not update the capacity claim. The earlier long-window source was stable during the run but dirty, the load generator was co-located, and PostgreSQL used `synchronous_commit=off`, so it remains a diagnostic lower bound rather than a release-pinned capacity claim. See the [current-version campaign](benchmarks/2026-09-04-current-reliability-full-chain.md) and the [durable-debt contract](durable-debt-slo.zh-TW.md).
 
 ## Why Not Split More Services Now
 

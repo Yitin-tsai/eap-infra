@@ -29,7 +29,8 @@ REL-101 先解決「Redis generation 不可信時停止撮合」。REL-102 再�
 
 「prerequisite 無上限」不等於可以無聲等待。它不應被 technical retry 上限誤殺，但要以
 `first_prerequisite_at`、`prerequisite_wait_count`、`next_retry_at` 與週期告警呈現
-liveness debt。跨服務的 oldest-age SLO 仍由下一張 `EAP-REL-103` 統一。
+liveness debt。跨服務的 oldest-age、retry 與 terminal SLO 已由 `EAP-REL-103`
+透過共用 `DurableDebtSnapshot` 契約統一。
 
 ## Cancellation reconciliation
 
@@ -175,8 +176,9 @@ ORDER BY updated_at DESC;
 | Redis runtime generation 改變 | REL-101 runtime gate／Lua sentinel fence 先停止 mutation；不把它耗盡成 poison |
 
 本 ticket 不解決 inbox commit 前的長時間 DB outage、全域 Saga timeout、DLQ safe replay
-或 Redis full-book rebuild。下一步依 backlog 是 `EAP-REL-103`：把這些新舊 durable debt
-統一成 count、oldest age、retry／terminal SLO 與 business-complete gate。
+或 Redis full-book rebuild。`EAP-REL-103` 已把這些新舊 durable debt 統一成 count、
+oldest age、retry／terminal SLO 與 business-complete gate；下一步依 backlog 是
+`EAP-REL-104` 的 intake DB-outage recovery 設計。
 
 ## 驗證
 
