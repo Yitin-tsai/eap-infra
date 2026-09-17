@@ -1,6 +1,6 @@
 # EAP Engineering Backlog
 
-> 更新日期：2026-09-15
+> 更新日期：2026-09-17
 
 > 本頁是跨 Order、Wallet、MatchEngine 的唯一優先順序入口。各 feature ticket
 > 保存設計與驗收細節；若 ticket 內的排列與本頁不同，以本頁為準。
@@ -170,14 +170,23 @@ PostgreSQL/Redis integration tests，以及 100 orders／50 trades 全鏈 smoke 
 
 ### EAP-REL-104：處理 inbox commit 前的長時間 DB outage
 
+**狀態：已完成（2026-09-17）。**
+
 **原因：** 現行 Spring listener 約數秒內重試三次，DB outage 稍長就會形成 DLQ
 flood；durable inbox 無法保護尚未成功落盤的訊息。
 
 **完成條件：**
 
-- 先完成 ADR，比較 delayed retry queue 與 consumer pause／circuit breaker。
-- schema／poison error 直接 quarantine；DB／network transient error 延遲重試。
-- 60 秒 DB outage 恢復後能自動 drain，不 hot-loop、不遺失，也不大量灌入 DLQ。
+- [x] 完成 ADR，比較 delayed retry queue 與 consumer pause／circuit breaker。
+- [x] schema／poison error 直接 quarantine；DB connectivity failure 保留在 source queue 並暫停 consumer。
+- [x] Order、Wallet、MatchEngine 各自通過 60 秒 DB outage，自動 drain、零遺失且 transient DLQ delta 為 0。
+
+**實作與驗證：** 每個服務擁有自己的 CDA DB circuit 與穩定 listener ID；短期 retry
+耗盡且確認為 JDBC／SQL connectivity failure 時 requeue 未 ACK delivery、停止本服務 CDA
+consumer，再以 single-flight backoff＋jitter probe 與連續兩次成功判定恢復。Poison
+message 的真實 RabbitMQ 測試確認會進 DLQ、不開 DB circuit。完整決策與證據見
+[ADR-004](adr/ADR-004-cda-inbox-precommit-db-outage-recovery.zh-TW.md)與
+[2026-09-17 REL-104 故障恢復報告](benchmarks/2026-09-17-rel104-db-outage-recovery.md)。
 
 ### EAP-REL-105：Order Saga timeout detector（warning-only）
 
@@ -272,8 +281,8 @@ primary DB。等 query load、replication lag 與 read-your-write contract 明�
 REL-001 → REL-002 → REL-003
                      │
                      ├─ REL-101 → REL-102
-                     ├─ REL-103 ✓ → REL-104 → REL-106
-                     └─ REL-105
+                     ├─ REL-103 ✓ → REL-104 ✓ → REL-105 → REL-106
+                     └─ REL-107（持續擴充 failure campaign）
 
 以上每一條都由 REL-107 failure injection 驗證
 完成後才進 PLAT-201／MATCH-202／PERF-203
@@ -282,7 +291,7 @@ TDA、read replica 與進階 scaling 保持延後
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003／101／102／103 已完成。下一件事是 EAP-REL-104：**
-先做 ADR 並處理 inbox commit 前的長時間 DB outage，避免數秒 broker retry 耗盡後形成
-DLQ flood。DLQ control plane 保留在 **EAP-REL-106**，不是取消；200 orders/s 以上的
-邊界搜尋仍先讓位給 P1 reliability。
+**EAP-REL-001／002／003／101／102／103／104 已完成。下一件事是 EAP-REL-105：**
+先以 warning-only detector 找出 queue／inbox 看似乾淨、但 Saga 長時間沒有前進的訂單，
+不自動取消或異動資產。之後才做 **EAP-REL-106** 的受控 DLQ／terminal recovery；
+200 orders/s 以上的邊界搜尋仍先讓位給 P1 reliability。

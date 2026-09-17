@@ -233,11 +233,20 @@ Use a focused probe only after a specific bottleneck hypothesis exists.
 | Match processor without RabbitMQ | `run-match-processor-probe.sh` |
 | RabbitMQ into Match | `run-rabbit-match-intake-probe.sh` |
 | Trade fanout into Order and Wallet | `run-trade-consumer-fanout-probe.sh` |
+| Order／Wallet 60-second DB outage recovery | `DB_OUTAGE_SECONDS=60 run-trade-consumer-fanout-probe.sh` |
+| Match admission 60-second DB outage recovery | `run-rel104-match-db-outage-recovery.sh` |
 | Match outbox relay into downstream services | `run-match-relay-downstream-probe.sh` |
 | RabbitMQ publisher confirms only | `run-rabbitmq-publish-only-10k.sh` |
 
 An isolated probe may reject a candidate cheaply. It cannot establish complete
 business TPS or adopt a service setting by itself.
+
+REL-104 failure-injection runs are correctness and liveness evidence, not capacity
+benchmarks. They require a real outage of at least 60 seconds, a circuit-open count
+greater than zero, final circuit state closed, exact durable effects, source-queue
+drain, and zero transient-outage DLQ delta. `publish-only-retain` is reserved for the
+Match recovery harness; unlike the diagnostic `publish-only` phase, it deliberately
+does not purge the source queue after publisher confirms.
 
 ## Experiment Orchestrators
 

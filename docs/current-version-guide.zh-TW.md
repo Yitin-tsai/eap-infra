@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-09-15
+> 更新日期：2026-09-17
 
 > 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -14,13 +14,14 @@
 6. **壓測不再只看 RabbitMQ。** schema v4 從三服務的同一份 `DurableDebtSnapshot` 讀取 inbox、outbox、cleanup、cancellation、reconciliation 與 projection 的 total／retry／terminal／oldest age；Rabbit queue 歸零但任一 service-owned work 未完成，或 snapshot stale／不可讀，都會 fail closed。2026-09-04 的 200 orders/s 長窗仍是 schema v3 的歷史容量證據；schema v4 已通過短全鏈 correctness smoke，但尚未用來更新容量數字。
 7. **Match 本地 recovery 不再用無上限 retry 掩蓋 poison state。** Cancellation prerequisite 與 technical attempt 分開；reservation invalid payload／ownership conflict 有 durable terminal issue；cleanup lease 使用 owner＋claim token fencing。
 8. **Durable debt 有統一的可觀測契約。** 各服務每 5 秒用獨立 scheduler 查一次本地權威 table；Actuator 與 Prometheus 只讀記憶體 snapshot。觀測失敗會保留上次值，但同時標記失敗與 stale，不能把舊的 0 誤判成完成。
+9. **Inbox commit 前的 DB outage 不再把合法事件灌進 DLQ。** Order、Wallet、MatchEngine 的 CDA consumer 會把 connectivity failure 與 poison 分開；DB outage 經短期 retry 後開啟 service-local circuit、停止自己的 listener，讓未 ACK 訊息留在 durable source queue，再用單一 backoff＋jitter probe 確認 DB 恢復並分批啟動 listener。
 
 ## 現行能力與誠實邊界
 
 | 面向 | 現在可以說 | 仍不能說 |
 | --- | --- | --- |
 | 一致性 | local transaction＋outbox＋at-least-once＋idempotency＋durable inbox，使 duplicate、worker crash 與部分亂序可恢復 | exactly-once messaging、跨服務 ACID transaction |
-| Saga | CDA choreography 的主要步驟、取消 remainder compensation 與多段 retry state 已實作 | 所有 DB outage、timeout、DLQ／terminal outbox 都會自動修復 |
+| Saga | CDA choreography 的主要步驟、取消 remainder compensation、多段 retry state，以及 CDA consumer inbox commit 前 DB outage 自動恢復已實作 | Saga timeout、DLQ／terminal debt 都會自動判斷與修復 |
 | CQRS | Order event store 是事實來源；`orders_current` 可重建並為查詢塑形；API 回傳 execution／reservation 雙狀態 | 強 read-your-write、獨立 read replica 已完成 |
 | 撮合 | Redis Lua 維持單一 market 內的撮合／取消互斥，PostgreSQL 保存成交與 recovery task | Redis 全量遺失可自動重建並無縫開放 |
 | 效能 | 新版 Wallet trade inbox 加入後，以 dirty-worktree 單一 seed 在完整 gate 下通過 `200 orders/s`、`100.02 trades/s` 長窗，且沒有觀察到相對同 seed baseline 的巨大退化 | 把單次本機結果當成精確 ceiling、release-pinned capacity 或 production SLA；200 以上尚未重測 |
@@ -61,7 +62,9 @@ BUY／SELL workload 重跑目前程式：
 4. [Match order-admission inbox](match-order-admission-inbox.zh-TW.md)。
 5. [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)。
 6. [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)：理解 queue=0 為何不夠、每類 debt 如何分類，以及 schema v4 如何 fail closed。
-7. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
+7. [ADR-004：inbox commit 前 DB outage recovery](adr/ADR-004-cda-inbox-precommit-db-outage-recovery.zh-TW.md)：理解為何保留 source queue、何時開 circuit，以及為何本次不做 delayed retry queue。
+8. [REL-104 故障恢復報告](benchmarks/2026-09-17-rel104-db-outage-recovery.md)：看 60 秒 outage、consumer pause、probe、DLQ 與 durable debt 的正式證據。
+9. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
 
 ### 準備面試
 
@@ -76,6 +79,7 @@ durable inbox、Match admission inbox 與完整 schema v3 gate 都已通過 200 
 activation 與真實 restart fence 測試。`EAP-REL-102` 也已補齊 Match cancellation、
 reservation issue 與 cleanup lease 的 terminal semantics。`EAP-REL-103` 也已把跨服務
 durable debt 的 count、oldest age、retry／terminal、Prometheus 告警與 schema-v4
-business-complete gate 統一定義。下一步是 `EAP-REL-104` 的 inbox commit 前長時間 DB
-outage 設計；DLQ／terminal recovery control plane 保留在 CDA 高優先級，但排序在該
-DB-outage 邊界之後。
+business-complete gate 統一定義。`EAP-REL-104` 也已完成 CDA inbox commit 前的長時間
+DB outage 自動恢復，三個服務各自通過 60 秒 PostgreSQL outage。下一步是
+`EAP-REL-105` 的 warning-only Order Saga timeout detector；DLQ／terminal recovery
+control plane 保留在 `EAP-REL-106`。
