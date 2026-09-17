@@ -1,0 +1,75 @@
+groups:
+  - name: eap-order-saga-timeout-v1
+    rules:
+      - alert: EapOrderSagaTimedOut
+        expr: eap_order_saga_timeout_candidates{service="eap-order"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order Saga is not making business progress"
+          description: "{{ $value }} Order Saga(s) remain in {{ $labels.state }} beyond the configured deadline. Inspect the read-only candidate endpoint before recovery."
+
+      - alert: EapOrderSagaTimeoutObservationFailed
+        expr: eap_order_saga_timeout_observation_success{service="eap-order"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Order Saga timeout observation failed"
+          description: "The latest database scan failed. Cached candidate values must not be interpreted as current business state."
+
+      - alert: EapOrderSagaTimeoutObservationMissing
+        expr: absent(eap_order_saga_timeout_observation_success{service="eap-order"})
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Order Saga timeout observation is missing"
+          description: "The Order service or its timeout telemetry is unavailable; missing telemetry must not be treated as zero stuck Sagas."
+
+      - alert: EapOrderSagaTimeoutSnapshotStale
+        expr: eap_order_saga_timeout_snapshot_age_seconds{service="eap-order"} > 15
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Order Saga timeout snapshot is stale"
+          description: "The last successful timeout scan is {{ $value | humanizeDuration }} old."
+
+      - alert: EapOrderSagaTimeoutSeriesIncomplete
+        expr: count(eap_order_saga_timeout_candidates{service="eap-order"}) != 2
+        for: 30s
+        labels:
+          severity: critical
+          service: eap-order
+        annotations:
+          summary: "Order Saga timeout state metrics are incomplete"
+          description: "Expected exactly PENDING_ASSET_CHECK and CANCELLING candidate series."
+
+      - alert: EapOrderSagaTimeoutSnapshotTruncated
+        expr: eap_order_saga_timeout_snapshot_truncated{service="eap-order"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order Saga timeout candidate details are truncated"
+          description: "Exact counts remain available, but the diagnostic endpoint has more candidates than its bounded detail limit."
+
+      - alert: EapOrderSagaProgressTimestampInFuture
+        expr: eap_order_saga_timeout_future_progress_timestamps{service="eap-order"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order Saga progress timestamp is ahead of database time"
+          description: "{{ $value }} watched Order Saga row(s) have future timestamps and are intentionally excluded from timeout classification."
+
+      - alert: EapOrderSagaTimeoutContractMismatch
+        expr: eap_order_saga_timeout_contract_version{service="eap-order"} != 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Unsupported Order Saga timeout contract"
+          description: "Expected contract version 1, observed {{ $value }}."

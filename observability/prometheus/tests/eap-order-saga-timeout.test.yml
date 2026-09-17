@@ -1,0 +1,83 @@
+rule_files:
+  - ../rules/eap-order-saga-timeout.yml
+
+evaluation_interval: 30s
+
+tests:
+  - name: aged-pending-saga-warns-after-sustained-window
+    interval: 30s
+    input_series:
+      - series: eap_order_saga_timeout_candidates{service="eap-order",state="PENDING_ASSET_CHECK"}
+        values: 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EapOrderSagaTimedOut
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: eap-order
+              state: PENDING_ASSET_CHECK
+            exp_annotations:
+              summary: Order Saga is not making business progress
+              description: 1 Order Saga(s) remain in PENDING_ASSET_CHECK beyond the configured deadline. Inspect the read-only candidate endpoint before recovery.
+
+  - name: failed-observation-fails-closed
+    interval: 30s
+    input_series:
+      - series: eap_order_saga_timeout_observation_success{service="eap-order"}
+        values: 0 0 0
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapOrderSagaTimeoutObservationFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: eap-order
+            exp_annotations:
+              summary: Order Saga timeout observation failed
+              description: The latest database scan failed. Cached candidate values must not be interpreted as current business state.
+
+  - name: stale-snapshot-fails-closed
+    interval: 30s
+    input_series:
+      - series: eap_order_saga_timeout_snapshot_age_seconds{service="eap-order"}
+        values: 16 46 76
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapOrderSagaTimeoutSnapshotStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: eap-order
+            exp_annotations:
+              summary: Order Saga timeout snapshot is stale
+              description: The last successful timeout scan is 1m 16s old.
+
+  - name: missing-observation-fails-closed
+    interval: 30s
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: EapOrderSagaTimeoutObservationMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: eap-order
+            exp_annotations:
+              summary: Order Saga timeout observation is missing
+              description: The Order service or its timeout telemetry is unavailable; missing telemetry must not be treated as zero stuck Sagas.
+
+  - name: future-timestamp-warns-without-becoming-a-timeout
+    interval: 30s
+    input_series:
+      - series: eap_order_saga_timeout_future_progress_timestamps{service="eap-order"}
+        values: 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EapOrderSagaProgressTimestampInFuture
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: eap-order
+            exp_annotations:
+              summary: Order Saga progress timestamp is ahead of database time
+              description: 1 watched Order Saga row(s) have future timestamps and are intentionally excluded from timeout classification.

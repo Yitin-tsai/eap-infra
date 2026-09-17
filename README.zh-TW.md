@@ -146,11 +146,12 @@ Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測�
 4. [CDA 訂單事件完整生命週期](docs/order-event-lifecycle.zh-TW.md)：從下單、驗資、撮合、結算到取消訂單，包含 retry、outbox／inbox、DLQ、Saga 與非 happy path。
 5. [事件驅動一致性的五個核心問題](docs/event-consistency-five-questions.zh-TW.md)：詳細回答 distributed transaction、Outbox、at-least-once、business complete 與 Saga compensation 的邊界。
 6. [Wallet Inbox 與取消最終確認](docs/wallet-inbox-and-cancellation-completion.zh-TW.md)：本次 durable intake、錯誤分類、lease retry、資料表與 `CANCELLING → CANCELLED` 的實作證據。
-7. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
-8. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
-9. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
-10. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
-11. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
-12. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
+7. [Order Saga Timeout Detector](docs/order-saga-timeout-detector.zh-TW.md)：queue／inbox 無 backlog 時如何依業務狀態找出卡住候選，以及為何 timeout 只告警、不自動取消或解鎖。
+8. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
+9. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
+10. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
+11. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
+12. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
+13. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
 
 `docs/archive/performance/` 下的凍結實驗歷史會保留供追溯，但不屬於一般讀者的專案介紹路徑。

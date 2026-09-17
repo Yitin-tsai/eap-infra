@@ -83,7 +83,7 @@ stateDiagram-v2
 
 | 發生位置／錯誤 | 現行處理 | 為什麼 |
 | --- | --- | --- |
-| Match DB 在 inbox commit 前失敗 | listener 拋錯，不 ACK；交給 Spring Rabbit retry，耗盡後 DLQ | 服務尚未取得 durable ownership，不能假裝接收成功 |
+| Match DB 在 inbox commit 前發生 connectivity failure | listener 不 ACK；短期 retry 後開 service-local circuit、暫停 Match CDA consumers，probe 恢復後 resume | 服務尚未取得 durable ownership，不能假裝接收成功；poison／schema error 仍進 DLQ |
 | 完全相同 order 與 payload 重送 | 回 `DUPLICATE` 並 ACK | at-least-once 的正常結果，不重做撮合 |
 | 同 order 或同 market sequence 出現不同 payload | 保存 conflict；未套用資料標 `FAILED_PERMANENT` | 自動猜哪個 payload 正確會破壞交易 identity |
 | PostgreSQL／Redis 暫時故障 | `FAILED_RETRYABLE`，exponential backoff 加 jitter | 暫時技術錯誤值得自動恢復，但不能 hot loop |
@@ -104,8 +104,9 @@ Rabbit retry 的 ownership 在 broker，適合「listener 尚未 durable 接收�
 thread，耗盡幾次 retry 後只剩 DLQ，而且 Rabbit row 無法保存 prerequisite、attempt、lease 與業務
 identity conflict。
 
-Durable inbox 把 ACK 的定義改成「服務已保存責任」。DLQ 仍然存在，但只守 inbox commit 前的
-intake window 與 poison JSON；inbox commit 後的恢復由 Match 自己管理。
+Durable inbox 把 ACK 的定義改成「服務已保存責任」。inbox commit 後的恢復由 Match 自己
+管理；後續 REL-104 又把 intake 前的 DB connectivity outage 留在 source queue 並暫停
+consumer。DLQ 仍保留給 poison／schema error 與無法分類的 transport failure。
 
 ## 與既有冪等及 crash recovery 的分工
 
@@ -127,8 +128,8 @@ Actuator endpoint `matchOrderAdmissionInbox` 預設關閉。設定
 
 目前仍有以下限制：
 
-- inbox commit 前若資料庫長時間不可用，訊息仍可能進 DLQ；還需要 broker delayed retry、consumer
-  pause 與受控 DLQ replay runbook。
+- inbox commit 前若資料庫長時間 connectivity outage，REL-104 已以 consumer pause 與
+  backoff probe 自動恢復；受控 DLQ replay runbook／control plane 仍未完成。
 - lease 沒有 heartbeat。單筆 admission 若超過 30 秒可能被 reclaim；effect safety 依賴既有 Redis
   idempotency guard。
 - terminal debt 已可查與有限重開，但不是完整的 operator UI、審批與 audit control plane。

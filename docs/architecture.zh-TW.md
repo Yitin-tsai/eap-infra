@@ -192,9 +192,10 @@ graph TD
 | projection 落後 | checkpointed projector 與 lag metrics |
 | 下游套用延遲 | service-owned retry／inbox state、DLQ 可觀測性與外部 durable-fact reconciliation |
 | Redis reservation cleanup 中斷 | durable cleanup task 與 reservation reconciler |
-| inbox commit 前資料庫不可用 | listener 不 ACK，交由短期 broker retry／DLQ；尚未具備所有服務一致的 delayed retry／consumer pause |
+| CDA inbox commit 前資料庫不可用 | connectivity failure 不 ACK；service-local circuit 暫停 consumer，backoff＋jitter probe 恢復後 resume；poison 仍進 DLQ |
 | Rabbit queue 已空但本地工作未完成 | 三服務 `DurableDebtSnapshot` v1、schema-v4 fail-closed completion gate 與 Prometheus alerts |
 | debt snapshot query 失敗或服務消失 | 保留上次值並標記 observation failure／staleness；endpoint、metrics 與 load gate 不把未知當成零 |
+| queue／inbox 無 debt 但 Order 生命週期卡住 | warning-only timeout detector 掃描 `PENDING_ASSET_CHECK`／`CANCELLING`；只告警與列出候選，不自動產生業務結果 |
 
 ## 擴充與效能邊界
 
@@ -378,8 +379,8 @@ Wallet 真正釋放資產時，cancellation application、balance update、relea
 
 - TDA 尚未具備 CDA 等級的 outbox、consumer idempotency、rejection event 與完整收斂驗證，兩條流程的保證不能混用。
 - Wallet 的 reservation／trade settlement／cancellation-result 都已使用同一套 durable inbox、lease worker 與本地 transaction；最新版 200 orders/s 長窗已驗證正流程沒有巨大退化，但 200 以上的精確邊界尚未重測。
-- 各 inbox 寫入前若服務資料庫長時間不可用，仍可能耗盡 broker retry 後進 DLQ；尚無一致的 delayed retry／consumer pause。
-- 尚未建立全域 Saga timeout detector，也沒有完整的 DLQ 分類、審核與安全 replay control plane。
+- CDA inbox 寫入前的長時間 DB connectivity failure 已用 service-local circuit、consumer pause 與 backoff probe 保留在 source queue；poison／schema error 仍會進 DLQ。
+- Order 已有 warning-only Saga timeout detector 找出長期停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的候選；仍沒有跨三服務自動決定補償的 global Saga control plane，也沒有完整的 DLQ 分類、審核與安全 replay control plane。
 - Redis order book 已有 `READY／RECOVERING` generation gate 與受控 activation，但尚無
   自動 full-book rebuild；Redis generation 遺失時會安全停撮，不能宣稱不中斷繼續撮合。
 - Order 已有 logical CQRS 與可重建 projection，但 user query 仍使用 primary database，尚未完成 read replica 或獨立 read-database isolation。

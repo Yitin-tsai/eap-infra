@@ -83,8 +83,8 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 
 ## Remaining Gaps
 
-1. **Inbox commit 前 Order DB outage**：目前仍由 Spring Rabbit 3 attempts／DLQ 接住；需實作 consumer pause 或 Rabbit delayed retry，避免 60 秒 outage 變成大量 DLQ debt。
-2. **Order Saga timeout detector**：尚未掃描長時間 `PENDING_ASSET_CHECK`、outbox `FAILED` 與 inbox debt。
+1. **Inbox commit 前 Order DB outage（後續已完成）**：REL-104 已採 consumer pause／service-local circuit，60 秒 outage 恢復且 transient DLQ delta 為 0。
+2. **Order Saga timeout detector（後續已完成）**：REL-105 已掃描長時間 `PENDING_ASSET_CHECK`／`CANCELLING`，只告警、不自動改變業務狀態。
 3. **Outbox terminal recovery**：Order outbox 十次失敗後仍缺少完整 inspect／rate-limited replay／audit。
 4. **Trade identity conflict**：既有 trade inbox 仍需補 same-ID/different-payload guard。
 5. **Cancellation classification**：既有 cancellation inbox 仍需一致的 transient／permanent taxonomy 與 jitter。
@@ -92,9 +92,9 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 
 ## Next Tasks
 
-- [ ] OAR-201：實作 intake DB outage 的 consumer pause 或 delayed retry queue。
-- [ ] OAR-202：新增 `PENDING_ASSET_CHECK` warning detector，不自動改變訂單狀態。
-- [ ] OAR-203：補 oldest inbox age、outbox terminal 與 stuck Saga alert。
+- [x] OAR-201：實作 intake DB outage 的 consumer pause 或 delayed retry queue。
+- [x] OAR-202：新增 `PENDING_ASSET_CHECK` warning detector，不自動改變訂單狀態。
+- [x] OAR-203：補 oldest inbox age、outbox terminal 與 stuck Saga alert。
 - [ ] OAR-204：建立受控 outbox／DLQ inspect、replay 與 audit。
 - [ ] OAR-301：Rabbit＋PostgreSQL consumer kill／DB outage failure-injection campaign。
 - [x] OAR-302：完成 current-worktree full-lifecycle correctness／throughput 回歸；Wallet trade inbox 加入後的最新版結果與三服務 durable-debt gate 見 [2026-09-04 全鏈報告](../benchmarks/2026-09-04-current-reliability-full-chain.md)。
@@ -103,11 +103,11 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 
 目前可以說：
 
-> Order 對 Wallet 驗資成功與拒絕建立統一 durable processing record，以 local transaction、business identity、lease worker、backoff／jitter 和 conflict quarantine 處理 duplicate 與 worker crash；但 inbox commit 前的長時間 DB outage、Saga timeout 與 terminal control plane 仍是明確後續工作。
+> Order 對 Wallet 驗資成功與拒絕建立統一 durable processing record，以 local transaction、business identity、lease worker、backoff／jitter 和 conflict quarantine 處理 duplicate 與 worker crash；後續再以 consumer circuit 處理 inbox commit 前 DB outage，並用 warning-only detector 找出卡住 Saga。terminal recovery control plane 仍是明確後續工作。
 
 目前不能說：
 
 - 所有 Order consumer 都已有相同錯誤分類。
-- 任何長時間 DB outage 都不需人工介入。
+- 所有類型、所有服務與任意長度的 DB outage 都不需人工介入。
 - Saga timeout 已能自動補償或取消訂單。
 - 已達 exactly-once messaging。

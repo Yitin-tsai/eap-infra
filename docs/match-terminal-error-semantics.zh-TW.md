@@ -175,7 +175,7 @@ ORDER BY updated_at DESC;
 | cleanup lease 到期，舊 worker 最後才回來寫 DB | owner＋token 不符，更新 0 row 並 fail closed |
 | Redis runtime generation 改變 | REL-101 runtime gate／Lua sentinel fence 先停止 mutation；不把它耗盡成 poison |
 
-本 ticket 不解決 inbox commit 前的長時間 DB outage、全域 Saga timeout、DLQ safe replay
+本 ticket 本身不解決 inbox commit 前的長時間 DB outage、全域 Saga timeout、DLQ safe replay
 或 Redis full-book rebuild。`EAP-REL-103` 已把這些新舊 durable debt 統一成 count、
 oldest age、retry／terminal SLO 與 business-complete gate；下一步依 backlog 是
 `EAP-REL-104` 的 intake DB-outage recovery 設計。

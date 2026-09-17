@@ -204,7 +204,7 @@ start／end／max／slope、retry／terminal max 與 oldest-age max，
 ## 目前仍未解決的事
 
 - CDA inbox commit 前的 DB connectivity outage 已由 EAP-REL-104 處理：合法 delivery 不 ACK、不轉送 retry queue，而是留在 durable source queue；service-local circuit 暫停 consumer，DB 恢復後自動 resume。這不涵蓋 TDA consumer，也不代替 Saga timeout 或 terminal recovery。
-- 訂單可能沒有任何明顯 queue debt、卻長時間卡在 Saga state；由 EAP-REL-105 做 warning-only timeout detector。
+- 訂單可能沒有任何明顯 queue debt、卻長時間卡在 Saga state；EAP-REL-105 已提供 [warning-only timeout detector](order-saga-timeout-detector.zh-TW.md)。
 - Terminal debt 現在可見，但還沒有統一的 inspect／dry-run／rate-limited replay／audit control plane；由 EAP-REL-106 處理。
 - Failure injection 尚未把所有 DB outage、consumer crash、duplicate、late event 與 redrive preflight 做成一套 campaign；由 EAP-REL-107 驗證。
 - RabbitMQ 目前使用 shared DLQ，無法直接以 queue 名稱定位 consumer。

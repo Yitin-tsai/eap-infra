@@ -4,7 +4,7 @@
 >
 > 適用範圍：CDA `TradeExecutedEvent → Wallet settlement`
 >
-> 定位：說明 Wallet 如何先接管成交訊息，再以可恢復的本地 transaction 結算 buyer／seller 資產；不代表已完成 inbox insert 前 DB outage、Saga timeout 或 DLQ control plane。
+> 定位：說明 Wallet 如何先接管成交訊息，再以可恢復的本地 transaction 結算 buyer／seller 資產；inbox insert 前 DB outage 與 Order warning-only timeout detection 已由後續 REL-104／105 補上，但仍不代表已有自動補償或 DLQ control plane。
 
 ## 先說結論
 
@@ -218,7 +218,7 @@ Rabbit／service process failure-injection，也不是 release-pinned capacity �
 
 目前仍未完成：
 
-- inbox insert 前 Wallet DB 長時間 outage 的 delayed transport retry／consumer pause；
+- inbox insert 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 service-local circuit／consumer pause 處理；poison message 仍走 DLQ；
 - oldest-age 與 permanent-debt metric／基本告警已存在，200 orders/s 長窗未觸發；正式 SLO 仍需多 seed、故障注入與 production-like 環境校準；
 - terminal inbox 可以只讀檢視，尚未具備跨 DLQ／inbox 的 classify、rate-limited replay
   與 audit control plane；
@@ -227,4 +227,4 @@ Rabbit／service process failure-injection，也不是 release-pinned capacity �
 
 ## 面試版說法
 
-> Wallet 原本直接在 Rabbit listener 裡結算成交，DB 故障超過幾次 retry 就只剩 DLQ。我把 TradeExecuted 納入 Wallet-owned durable inbox：listener 在 inbox commit 後才返回，lease worker 再把 trade settlement、buyer／seller balance 與 inbox APPLIED 放進同一筆 transaction。相同 trade ID 由 inbox hash 與 settlement primary key兩層去重；worker 失去 lease 時整筆 rollback，crash 後由新 worker 接手。它補的是 ACK 後 liveness 與 effectively-once local effect，但 inbox insert 前 DB outage 和 terminal recovery control plane 仍是下一階段。
+> Wallet 原本直接在 Rabbit listener 裡結算成交，DB 故障超過幾次 retry 就只剩 DLQ。我把 TradeExecuted 納入 Wallet-owned durable inbox：listener 在 inbox commit 後才返回，lease worker 再把 trade settlement、buyer／seller balance 與 inbox APPLIED 放進同一筆 transaction。相同 trade ID 由 inbox hash 與 settlement primary key 兩層去重；worker 失去 lease 時整筆 rollback，crash 後由新 worker接手。REL-104 再把 inbox insert 前的 connectivity outage 改為 pause consumer、保留未 ACK delivery 並自動恢復；terminal recovery control plane 仍是下一階段。

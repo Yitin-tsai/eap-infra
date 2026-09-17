@@ -190,14 +190,25 @@ message 的真實 RabbitMQ 測試確認會進 DLQ、不開 DB circuit。完整�
 
 ### EAP-REL-105：Order Saga timeout detector（warning-only）
 
+**狀態：已完成（2026-09-17）。**
+
 **原因：** queue 或 inbox 都可能沒有明顯 backlog，但訂單仍長時間停在
 `PENDING_ASSET_CHECK`、`CANCELLING` 或其他非終止狀態。
 
 **完成條件：**
 
-- 依 lifecycle state 與 last-progress time 找出 stuck Saga。
-- 產生 metric、告警與可查詢診斷資料。
-- 第一版不得自動取消、解鎖資產或捏造業務結果。
+- [x] 依 lifecycle state 與 last-progress time 找出 stuck Saga。
+- [x] 產生 metric、告警與可查詢診斷資料。
+- [x] 第一版不得自動取消、解鎖資產或捏造業務結果。
+
+**實作與驗證：** Order 每 5 秒以 read-only `REPEATABLE_READ` snapshot 檢查
+`PENDING_ASSET_CHECK`（預設 5 分鐘）與 `CANCELLING`（預設 10 分鐘）。有效狀態以
+matching state 優先、stream head fallback，最後進度時間則使用 event append 同步推進的
+stream-head timestamp；因此不會把 trade hot path 已推進的訂單誤報，也不會被技術性
+matching-state upsert 洗掉卡住時間。Actuator 提供最多 100 筆最舊候選，metrics 保留精確
+count／oldest age；refresh failure 保留 last-good values 並 fail closed。PostgreSQL 狀態矩陣、
+future timestamp、bounded snapshot、partial-index plan 與 `promtool` alert tests 均通過。
+完整設計見 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)。
 
 ### EAP-REL-106：最小 Failure Recovery Control Plane
 
@@ -281,7 +292,7 @@ primary DB。等 query load、replication lag 與 read-your-write contract 明�
 REL-001 → REL-002 → REL-003
                      │
                      ├─ REL-101 → REL-102
-                     ├─ REL-103 ✓ → REL-104 ✓ → REL-105 → REL-106
+                     ├─ REL-103 ✓ → REL-104 ✓ → REL-105 ✓ → REL-106
                      └─ REL-107（持續擴充 failure campaign）
 
 以上每一條都由 REL-107 failure injection 驗證
@@ -291,7 +302,6 @@ TDA、read replica 與進階 scaling 保持延後
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003／101／102／103／104 已完成。下一件事是 EAP-REL-105：**
-先以 warning-only detector 找出 queue／inbox 看似乾淨、但 Saga 長時間沒有前進的訂單，
-不自動取消或異動資產。之後才做 **EAP-REL-106** 的受控 DLQ／terminal recovery；
+**EAP-REL-001／002／003／101／102／103／104／105 已完成。下一件事是 EAP-REL-106：**
+以受保護、可判斷、可安全 replay 且可稽核的 control plane 處理 DLQ／terminal debt；
 200 orders/s 以上的邊界搜尋仍先讓位給 P1 reliability。

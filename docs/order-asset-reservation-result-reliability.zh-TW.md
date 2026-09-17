@@ -313,15 +313,11 @@ Identity conflict 不允許一鍵 retry，因為 operator 必須先決定哪個�
 
 ### Inbox commit 前的 DB outage
 
-如果 Order DB 完全不可用，listener 連 inbox 都寫不進去。此時訊息仍由 Rabbit 持有，但目前 Spring listener 約三次後會進 DLQ。
-
-Durable inbox 只能保護「已成功進 inbox」之後的生命週期，不能解決 inbox 自己不可用的窗口。下一步需選擇 pause consumer container，或使用 Rabbit delayed retry queue，避免 immediate requeue 與快速 DLQ。
+如果 Order DB 完全不可用，listener 連 inbox 都寫不進去。Durable inbox 只能保護已成功落盤後的生命週期；REL-104 因此另用 service-local DB circuit，在短期 connectivity retry 耗盡後保留未 ACK delivery、暫停 CDA consumers，再由 backoff＋jitter probe 確認 DB 恢復並 resume。poison／schema error 不開 circuit，仍交給 DLQ。
 
 ### Saga timeout
 
-Order 還沒有定期找出長時間 `PENDING_ASSET_CHECK` 的 detector。Inbox 增加了診斷事實，但 detector 與 status protocol 尚未完成。
-
-第一版 detector 應只告警，不直接把訂單改成 failed，更不能直接要求 Wallet 解鎖；confirmation 可能已經送到 MatchEngine 並成交。
+REL-105 已定期找出長時間 `PENDING_ASSET_CHECK` 與 `CANCELLING` 的候選，並提供 Actuator、metric 與告警。第一版刻意只告警，不直接把訂單改成 failed，更不能直接要求 Wallet 解鎖；confirmation 可能已經送到 MatchEngine 並成交。完整設計見 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)。
 
 ### 其他 consumer
 

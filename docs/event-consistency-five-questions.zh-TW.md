@@ -355,7 +355,7 @@ Wallet reservation 的具體改善計畫、依賴與 Definition of Done 已記�
   通過 manifest 驗證的 operator activation 才能重新開放；尚未完成的是由 durable facts
   自動產生完整 order book 的 rebuild worker。現有 reservation reconciler 仍只修復局部
   reservation crash window。
-- Wallet 的 reservation、`TradeExecutedEvent` settlement 與 cancellation-result consumer 已使用 service-owned durable inbox；trade settlement、`trade_id` business guard 與 inbox `APPLIED` 在同一筆本地 transaction 收斂。尚未補齊的是 inbox insert 前長時間 DB outage 與 terminal recovery control plane。
+- Wallet 的 reservation、`TradeExecutedEvent` settlement 與 cancellation-result consumer 已使用 service-owned durable inbox；trade settlement、`trade_id` business guard 與 inbox `APPLIED` 在同一筆本地 transaction 收斂。CDA inbox insert 前的長時間 DB connectivity outage 已由 service-local consumer circuit 補上；尚未完成的是 terminal recovery control plane。
 - shared DLQ 尚未形成帶分類、審核、payload conflict 檢查與受控 replay 的 recovery control plane。
 - Wallet 有預設關閉的 failed-outbox admin recovery；Order／Match 的 terminal outbox recovery 仍較依賴告警、runbook 與資料庫操作。
 - client 在「commit 後、HTTP response 前」斷線時仍有結果不確定性；完整解法需要 client-visible idempotency key 與第一次 response 保存。
