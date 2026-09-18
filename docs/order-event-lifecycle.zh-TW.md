@@ -519,7 +519,7 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 | Match orphan reservation scan | 每 5 秒；30 秒後才處理；一般 action failure 最多 10 次 | `reservation_reconciliation_issues.TERMINAL` | transient terminal 可回原 reconciler；ownership／invariant 不可 replay |
 | Match cancellation reconciler | poll 250 ms、lease 30 秒；20 technical attempts；250 ms 至 30 秒 backoff；prerequisite 獨立計時 | `FAILED_TERMINAL` | technical exhausted 可單筆重開；prerequisite／permanent 僅 park／resolve |
 
-目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，跨服務 durable debt 也已有共同 count／age／retry／terminal 契約、告警與 schema-v4 completion gate；CDA inbox commit 前的 DB connectivity outage 也能 pause consumer 後自動恢復。Order warning-only timeout detector 已讓長期停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的 Saga 可見；REL-106 再補上受保護的單筆 inspect／dry-run／owner-side replay／park／resolve 與兩端 action audit。它仍不自動補償，shared DLQ 也只先 quarantine，不宣稱能安全 redrive。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)，recovery 操作見 [Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)，可觀測性見 [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)與 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
+目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，跨服務 durable debt 也已有共同 count／age／retry／terminal 契約、告警與 schema-v4 completion gate；CDA inbox commit 前的 DB connectivity outage 也能 pause consumer 後自動恢復。Order warning-only timeout detector 已讓長期停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的 Saga 可見；REL-106 再補上受保護的單筆 inspect／dry-run／owner-side replay／park／resolve 與兩端 action audit。REL-107 目前為 Wallet／Order `TradeExecutedEvent` 增加 exact owner route、business-state preflight 與 direct-queue broker replay；它仍不自動補償，也不把兩條切片誇大成全域 DLQ recovery。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)，recovery 操作見 [Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)，可觀測性見 [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)與 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
 
 ## Retry、ACK、DLQ 與恢復層次
 
@@ -585,7 +585,7 @@ row 保持 `PENDING`；relay poll 後重試。服務重啟不會遺失它。
 3. 修正 code／configuration 後，以有 idempotency key 的受控 replay 或 backfill 建立事件。
 4. 再次核對下游 durable facts、資產、queue、DLQ 與 retry debt。
 
-REL-106 已為 Order／Wallet／Match 的 technical terminal inbox／outbox 與 Match cleanup 提供受保護的 inspect、dry-run、fingerprint 驗證、rate limit、owner-side replay 與 action audit。它不允許中央服務直接改 owner schema，也不會把 permanent invariant、identity conflict 或 shared DLQ 強制改回 `PENDING`；這些 case 只能 park／resolve，避免用無限 retry 掩蓋 poison event。
+REL-106 已為 Order／Wallet／Match 的 technical terminal inbox／outbox 與 Match cleanup 提供受保護的 inspect、dry-run、fingerprint 驗證、rate limit、owner-side replay 與 action audit。它不允許中央服務直接改 owner schema，也不會把 permanent invariant 或 identity conflict 強制改回 `PENDING`。REL-107 只讓 allowlisted transient Wallet trade dead letter 在 owner preflight 後 direct replay；其他 shared-DLQ case 仍只能 park／resolve，避免用無限 retry 掩蓋 poison event。
 
 ## Saga Pattern：目前真正實作的是什麼
 
@@ -617,16 +617,17 @@ graph LR
 - 沒有中央 Saga orchestrator 或單一 global saga status；任何服務都不能單獨宣稱三服務已完成。
 - 沒有跨服務 exactly-once；提供的是 at-least-once delivery 加上 effectively-once local state transition。
 - Order 已能找出長時間停在驗資或取消中的候選，但沒有跨服務 end-to-end timeout authority，也不會僅憑時間自動決定補償。
-- shared DLQ 已能 persist-before-ACK quarantine、分類與審核，但因 owner／business preflight
-  不可證明，本版刻意不提供 broker redrive；各服務 inbox insert 前的 dependency-wide DB
-  outage 則由 REL-104 保留未 ACK delivery 並暫停 consumer。
+- shared DLQ 已能 persist-before-ACK quarantine、分類與審核；Wallet trade 已用
+  `x-death.queue`、exact topology allowlist 與 durable-inbox preflight 開放 conditional replay，
+  其餘 route 因 owner／business preflight 尚未證明而維持 fail closed。各服務 inbox insert
+  前的 dependency-wide DB outage 則由 REL-104 保留未 ACK delivery 並暫停 consumer。
 - Order／Wallet／Match terminal inbox、outbox 與 Match cleanup 已對齊共同 recovery contract；
   permanent／schema／identity／invariant／unknown 類型仍刻意不可 replay。
 - Redis 全毀後由 PostgreSQL 重建完整 order book，仍是較大的 recovery architecture 題目；reservation reconciler 只處理局部中斷。
 
 因此面試時不應說「我用了 Saga，所以跨服務一致性已解決」。更精確的說法是：
 
-> 我把下單、資產保留、撮合、成交套用與取消訂單切成各服務擁有的本地交易，再以事實事件接續。Outbox 解決 commit 後可靠發布，冪等與 inbox 解決重送及亂序，補償流程處理未成交資產與 Redis reservation；最後用跨服務 durable fact verifier 定義是否收斂。它是 choreography Saga；Order timeout detector 能找出長期未前進的候選，但不把 timeout 當成業務事實。Terminal failure 現在可經受保護、可 dry-run、可稽核的單筆 control plane 交回 owner worker；shared DLQ 因 owner 不明只先 quarantine，不假裝能安全重播。
+> 我把下單、資產保留、撮合、成交套用與取消訂單切成各服務擁有的本地交易，再以事實事件接續。Outbox 解決 commit 後可靠發布，冪等與 inbox 解決重送及亂序，補償流程處理未成交資產與 Redis reservation；最後用跨服務 durable fact verifier 定義是否收斂。它是 choreography Saga；Order timeout detector 能找出長期未前進的候選，但不把 timeout 當成業務事實。Terminal failure 現在可經受保護、可 dry-run、可稽核的單筆 control plane 交回 owner worker；shared DLQ 只有 Wallet／Order trade 能以 broker route 證據與 owner preflight 安全重播，其他 route 不猜測。
 
 ## 失敗情境矩陣
 
@@ -671,7 +672,7 @@ graph LR
 
 主管若追問「這算 Saga 嗎」：
 
-> 算 choreography Saga，但我不把 Saga 當成魔法。它沒有中央 orchestrator，也沒有跨服務 exactly-once。補償不是回滾已成交交易，而是對尚未成交的 reservation 做可稽核釋放；Order warning-only timeout detection 只表示需要調查，REL-106 則讓 technical terminal work 能被安全地交回 owner worker。Shared DLQ 因 owner 與業務狀態不明仍禁止 redrive，這是刻意保留的安全邊界。
+> 算 choreography Saga，但我不把 Saga 當成魔法。它沒有中央 orchestrator，也沒有跨服務 exactly-once。補償不是回滾已成交交易，而是對尚未成交的 reservation 做可稽核釋放；Order warning-only timeout detection 只表示需要調查，REL-106 則讓 technical terminal work 能被安全地交回 owner worker。Shared DLQ 也不是全域重送按鈕：目前只有 Wallet／Order trade 具備 exact owner route 與各自的業務狀態預檢，其他 route 仍禁止 redrive。
 
 主管若追問「event 真的解耦嗎」：
 

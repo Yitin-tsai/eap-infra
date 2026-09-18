@@ -30,7 +30,7 @@
 
 - inbox commit 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 consumer pause／service-local circuit 完成；poison 仍進 DLQ。
 - Order warning-only Saga timeout detector 與 oldest-age alert 已由 REL-105／REL-103 完成；自動 prerequisite recovery／補償未完成。
-- REL-106 已完成 terminal inbox／outbox 的 inspect、classify、dry-run、rate-limited owner-side replay 與 action audit；shared DLQ 因 owner／business preflight 不明，只提供 persist-before-ACK quarantine 與 park／resolve，不做 broker redrive。
+- REL-106 已完成 terminal inbox／outbox 的 inspect、classify、dry-run、rate-limited owner-side replay 與 action audit；REL-107 只為 Wallet trade 補上 owner-aware conditional DLQ replay，reservation／cancellation route 仍只提供 persist-before-ACK quarantine 與 park／resolve。
 - 60 秒 DB outage、consumer process kill、duplicate／late event 的真實 Rabbit failure-injection campaign；目前只有 PostgreSQL transaction／lease integration evidence。
 
 詳細實作與驗收數據見 [Wallet Inbox 與取消訂單最終確認](../wallet-inbox-and-cancellation-completion.zh-TW.md)。以下 Current Baseline 保留的是改造前問題背景；Target／task list 同時記錄已完成與剩餘工作。
@@ -76,7 +76,7 @@ EAP 已具備 choreography-based Saga 的結構：
 
 - 尚未納入 durable inbox 的 consumer，以及跨服務一致的 oldest-age／retry-debt 告警。
 - 跨三服務、能安全決定處置的 end-to-end Saga deadline authority；Order detector 目前只列候選。
-- shared DLQ 的 owner-aware business preflight 與安全 broker redrive；現行 control plane 刻意只 quarantine／park／resolve。
+- shared DLQ 其餘 route 的 owner-aware business preflight；Wallet trade 已有安全切片，但不能外推到 reservation／cancellation。
 - Wallet DB outage、consumer crash、late event 的系統性 failure-injection 證據。
 
 因此後續文件與面試的精確說法應是：
@@ -266,7 +266,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 - [x] 定義 lease duration、fencing、backoff／jitter 與 age alerts。
 - [x] 確認 reservation、trade settlement、cancellation result、business idempotency／outbox 與 inbox terminal state 的單一 transaction。
 - [x] 定義第一版 Saga warning threshold；自動 expiry 留在未核准範圍。
-- [x] 定義 recovery ownership、replay authorization 與 audit；shared DLQ 因 owner 不明而禁止 redrive。
+- [x] 定義 recovery ownership、replay authorization 與 audit；Wallet trade 已補 exact owner route，其他 shared-DLQ route 仍禁止 redrive。
 
 ### Recommended Task Split
 
@@ -321,7 +321,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 | WRR-106 | 建立 inbox metrics／age alert／admin inspect | Implementation | pending／processing／retryable／permanent count、oldest age、attempt／error 可觀測；已完成 | WRR-104 |
 | WRR-201 | Order Saga timeout detector 第一版 | Implementation | 偵測過久 `PENDING_ASSET_CHECK`／`CANCELLING`；metric／alert；不自動釋放資產；已完成 | WRR-000 |
 | WRR-202 | 定義 reservation status／expiry protocol | Architect／Product | Wallet／Order／Match authority、late event、terminal guard、compensation 明確 | WRR-201；第二階段 |
-| WRR-301 | 最小 terminal recovery／DLQ quarantine control plane | Implementation | terminal debt 可 list／inspect／classify／dry-run／rate-limited owner-side replay／audit；shared DLQ 只 quarantine／park／resolve；已由 REL-106 完成 | WRR-000、WRR-103 |
+| WRR-301 | 最小 terminal recovery／DLQ quarantine control plane | Implementation | terminal debt 可 list／inspect／classify／dry-run／rate-limited owner-side replay／audit；Wallet trade conditional DLQ replay 由 REL-107 擴充 | WRR-000、WRR-103 |
 | WRR-401 | DB outage／consumer crash／worker lease failure tests | QA | 60 秒 outage 自動恢復；沒有 duplicate reservation／untracked debt | WRR-102～106 |
 | WRR-402 | Duplicate／identity conflict／late event／outbox ambiguity tests | QA | 所有列出的 business invariants 通過 | WRR-105、WRR-201 |
 | WRR-403 | Retry-storm 與 2,000 offered TPS 回歸 | Performance／QA | 報告 ACK、completion、drain、DB pool、oldest age、DLQ；不過度宣稱 | WRR-401、WRR-402 |
@@ -340,7 +340,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 - [x] inbox status count、identity conflict 與 oldest unresolved age 已有低成本快照 metrics；Prometheus 對 permanent failure 與 age 提供告警；conditional read-only admin endpoint 可依 status／message type 檢視 attempt、lease 與 error，且不回傳 payload。
 - [x] Order timeout detector 能找出 stuck Saga，但未核准前不自動改變資產。
 - [x] Terminal inbox／outbox replay 有 ownership、rate limit、fingerprint conflict check 與 audit。
-- [ ] Shared DLQ 尚無可信 owner／business preflight，因此 broker redrive 刻意關閉；未來需 per-consumer DLQ 或可信 owner metadata。
+- [ ] Shared DLQ 目前只有 Wallet／Order trade 具可信 owner／business preflight；其餘 route 未來需逐條定義或遷移 per-consumer DLQ。
 - [ ] 效能與正確性報告分開 ACK intake、Wallet completion 與 full-lifecycle completion。
 - [x] 文件只宣稱實際完成的 Saga 能力與已知缺口。
 
@@ -350,4 +350,4 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 > 將 Wallet 驗資、成交與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。後續以 consumer circuit 補上 intake DB outage、以 Order warning-only timeout detector 找出卡住 Saga，並建立受保護的 terminal recovery control plane；shared DLQ redrive 與完整 process-kill campaign 仍是 production gap。
 
-可以引用已完成 campaign 的「三服務 60 秒 DB outage 可自動恢復、transient DLQ delta 為 0」，但必須附上測試範圍與日期；不得宣稱「完整 DLQ 自動恢復」，因為 shared DLQ redrive 仍刻意關閉，process-kill campaign 也仍待 REL-107。
+可以引用已完成 campaign 的「三服務 60 秒 DB outage 可自動恢復、transient DLQ delta 為 0」，但必須附上測試範圍與日期；MCP replay confirm→central audit 的真實 process crash 也已通過。仍不得宣稱「完整 DLQ 自動恢復」，因為只有 Wallet／Order trade 開放 conditional replay，其他 route 仍待逐一補上 owner preflight。

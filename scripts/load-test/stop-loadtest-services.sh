@@ -22,7 +22,7 @@ is_safe_loadtest_process() {
   esac
 
   case "${args}" in
-    *eap-wallet*|*eap-order*|*eap-matchEngine*|*gradlew*bootRun*|*GradleDaemon*|*org.gradle*)
+    *eap-wallet*|*eap-order*|*eap-matchEngine*|*eap-mcp*|*gradlew*bootRun*|*GradleDaemon*|*org.gradle*)
       return 0
       ;;
     *)
@@ -31,19 +31,23 @@ is_safe_loadtest_process() {
   esac
 }
 
-for repo in eap-wallet eap-order eap-matchEngine; do
+for repo in eap-wallet eap-order eap-matchEngine eap-mcp; do
   pid_file="${LOG_DIR}/${repo}.pid"
   if [[ -f "$pid_file" ]]; then
     pid="$(cat "$pid_file")"
     if ps -p "$pid" >/dev/null 2>&1; then
-      echo "[INFO] stopping ${repo} pid=${pid}"
-      kill "$pid" || true
+      if is_safe_loadtest_process "$pid"; then
+        echo "[INFO] stopping ${repo} pid=${pid}"
+        kill "$pid" || true
+      else
+        echo "[WARN] skip unexpected process from ${pid_file}: ${pid}"
+      fi
     fi
     rm -f "$pid_file"
   fi
 done
 
-for port in 8080 8081 8082; do
+for port in 8080 8081 8082 8083; do
   pids="$(lsof -ti ":${port}" || true)"
   if [[ -n "$pids" ]]; then
     while IFS= read -r pid; do

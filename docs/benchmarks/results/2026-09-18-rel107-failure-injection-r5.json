@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "campaign": "EAP-REL-107 failure injection R5",
+  "date": "2026-09-18",
+  "extends": "2026-09-18-rel107-failure-injection-r4.json",
+  "evidenceClass": "owner-state-and-transport-correctness",
+  "capacityClaimAllowed": false,
+  "verdict": "PASS_WITH_OPEN_GAPS",
+  "orderTradeDlqReplay": {
+    "failureClass": "TRANSIENT",
+    "sourceQueue": "order.tradeExecuted.queue",
+    "originalExchange": "trade.exchange",
+    "originalRoutingKey": "trade.executed",
+    "owner": "eap-order",
+    "preflightState": [
+      "order_service.order_trade_execution_inbox",
+      "order_service.order_trade_applications"
+    ],
+    "eligibleOnlyWhenBothAbsent": true,
+    "identityConflictFailsClosed": true,
+    "publishMode": "default exchange direct-to-owner queue",
+    "walletQueueIsolationVerified": true,
+    "gate": "PASS"
+  },
+  "deterministicSuites": {
+    "orderGeneralTestTask": {
+      "tests": 213,
+      "skipped": 58,
+      "failures": 0,
+      "errors": 0,
+      "note": "Integration cases are task-partitioned and run by the dedicated integration task."
+    },
+    "orderPostgresIntegration": {"tests": 58, "failures": 0, "errors": 0},
+    "recoveryControlGeneralTestTask": {
+      "tests": 23,
+      "skipped": 9,
+      "failures": 0,
+      "errors": 0,
+      "note": "Integration cases are task-partitioned and run by dedicated tasks."
+    },
+    "recoveryControlPostgresIntegration": {"tests": 7, "failures": 0, "errors": 0},
+    "recoveryControlRabbitIntegration": {"tests": 2, "failures": 0, "errors": 0}
+  },
+  "supportedDlqReplayRoutes": [
+    {
+      "sourceQueue": "wallet.tradeExecuted.queue",
+      "originalExchange": "trade.exchange",
+      "originalRoutingKey": "trade.executed",
+      "owner": "eap-wallet"
+    },
+    {
+      "sourceQueue": "order.tradeExecuted.queue",
+      "originalExchange": "trade.exchange",
+      "originalRoutingKey": "trade.executed",
+      "owner": "eap-order"
+    }
+  ],
+  "interpretation": {
+    "deliveryGuarantee": "at-least-once",
+    "orderBusinessEffect": "protected by trade application and recovery inbox idempotency",
+    "notClaimed": "a second live confirm-to-audit process-crash campaign for the Order route"
+  },
+  "openGaps": [
+    "MatchEngine and non-TradeExecuted dead-letter routes remain fail closed until each owner defines a business-state preflight.",
+    "Arbitrary Redis full-book reconstruction remains EAP-MATCH-202.",
+    "One HTTP full-chain campaign that kills all three core JVMs in the same run is not yet present."
+  ]
+}

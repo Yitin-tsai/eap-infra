@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-09-17
+> 更新日期：2026-09-18
 
 > 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -16,6 +16,7 @@
 8. **Durable debt 有統一的可觀測契約。** 各服務每 5 秒用獨立 scheduler 查一次本地權威 table；Actuator 與 Prometheus 只讀記憶體 snapshot。觀測失敗會保留上次值，但同時標記失敗與 stale，不能把舊的 0 誤判成完成。
 9. **Inbox commit 前的 DB outage 不再把合法事件灌進 DLQ。** Order、Wallet、MatchEngine 的 CDA consumer 會把 connectivity failure 與 poison 分開；DB outage 經短期 retry 後開啟 service-local circuit、停止自己的 listener，讓未 ACK 訊息留在 durable source queue，再用單一 backoff＋jitter probe 確認 DB 恢復並分批啟動 listener。
 10. **Order Saga 卡住不再只能靠人工猜。** warning-only detector 依 effective lifecycle state 與 stream-head progress time 找出長時間停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的訂單，提供 bounded Actuator 明細、低基數 metrics 與 fail-closed 告警；它刻意不自動取消或釋放資產。
+11. **DLQ replay 有 owner-aware 安全邊界。** 目前只開放 exact Wallet／Order `TradeExecutedEvent` topology、明確 transient failure，且各 owner 的 business-state preflight 通過才可 direct replay。Order 不只查 recovery inbox，也查正常 happy path 的 trade application。MCP 在 publisher confirm 後、中央 audit 前 `SIGKILL` 的 live campaign 已以 Wallet route 證明同 actionId 可恢復，duplicate 最終只形成一筆 Wallet settlement。
 
 ## 現行能力與誠實邊界
 
@@ -66,9 +67,11 @@ BUY／SELL workload 重跑目前程式：
 7. [ADR-004：inbox commit 前 DB outage recovery](adr/ADR-004-cda-inbox-precommit-db-outage-recovery.zh-TW.md)：理解為何保留 source queue、何時開 circuit，以及為何本次不做 delayed retry queue。
 8. [REL-104 故障恢復報告](benchmarks/2026-09-17-rel104-db-outage-recovery.md)：看 60 秒 outage、consumer pause、probe、DLQ 與 durable debt 的正式證據。
 9. [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)：理解 queue／inbox 無 debt 為何仍可能卡單、有效狀態與 last-progress 如何判斷，以及為何 timeout 不等於可以自動補償。
-10. [Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)與
-    [ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)：理解 terminal work 如何單筆
-    inspect／dry-run／replay，以及 shared DLQ 為何先 quarantine 而不直接 redrive。
+10. [Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)、
+    [ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)與
+    [ADR-006](adr/ADR-006-owner-aware-shared-dlq-replay.zh-TW.md)：理解 terminal work 如何單筆
+    inspect／dry-run／replay，以及 shared DLQ 為何只對有 exact owner route 與 business-state
+    preflight 的 Wallet／Order trade 開放。
 11. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
 
 ### 準備面試
@@ -88,5 +91,7 @@ business-complete gate 統一定義。`EAP-REL-104` 也已完成 CDA inbox commi
 DB outage 自動恢復，三個服務各自通過 60 秒 PostgreSQL outage。`EAP-REL-105` 也已用
 warning-only detector 補上 Order Saga 卡住的可見性。`EAP-REL-106` 已完成受保護的單筆
 terminal recovery、owner-side replay policy、兩端 actionId idempotency、rate limit／audit，
-並把 shared DLQ 先持久化 quarantine；下一步是 `EAP-REL-107` 的系統化 failure-injection
-campaign，而不是先擴大自動補償。
+並把 shared DLQ 先持久化 quarantine。`EAP-REL-107` R1～R5 已驗證 DB／Redis outage、核心
+consumer crash、Match outbox confirm ambiguity、MCP replay confirm→central audit crash，並
+把 owner-specific preflight 擴充到 Order `TradeExecutedEvent`；下一步只逐條處理尚未具備
+owner preflight 的 DLQ route，不擴大成未受控自動補償。

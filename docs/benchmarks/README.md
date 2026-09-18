@@ -1,6 +1,13 @@
 # Benchmark Evidence Guide
 
-Current worktree entry: [2026-09-04 reliability-version full-chain campaign](2026-09-04-current-reliability-full-chain.md). It validates the Wallet trade inbox path with three-service inbox age/debt and final outbox/cleanup gates, and supersedes the 2026-09-01／02／03 checkpoints as current status.
+Current reliability entry:
+[2026-09-18 REL-107 failure-injection campaign](2026-09-18-rel107-failure-injection-campaign.md).
+It validates DB outage, JVM crash, Redis generation fencing, worker leases, duplicate／late events,
+recovery response loss, live publisher-confirm/local-commit crashes in both Match outbox and MCP
+replay control paths, DLQ fail-closed behavior, owner-aware Wallet／Order trade DLQ replay
+slices, and the remaining per-route ownership and full-book rebuild gaps.
+The current long-window performance baseline remains the
+[2026-09-04 reliability-version full-chain campaign](2026-09-04-current-reliability-full-chain.md).
 
 This directory separates benchmark definitions, human decisions, and machine-readable
 evidence. A high TPS number is not published merely because a runner emitted JSON.

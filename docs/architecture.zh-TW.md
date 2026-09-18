@@ -337,9 +337,15 @@ AI tool。中央只做 operator token、跨服務聚合、每人每分鐘 action
 disposition 與 durable audit；真正的 replay eligibility 與狀態轉移仍由 Order、Wallet、
 MatchEngine 各自的 source endpoint 執行。每次操作帶 optimistic fingerprint 與 actionId，
 owner 在自己的 local transaction 保存 action result，因此 response 遺失後可用相同 actionId
-收斂。shared DLQ 只在明確啟用時 persist-before-ACK 搬入 quarantine；在拆成可歸屬的
-per-consumer DLQ 前不開放 broker redrive。完整邊界見
-[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)。
+收斂。shared DLQ 只在明確啟用時 persist-before-ACK 搬入 quarantine；目前 Wallet 與 Order
+的 exact `TradeExecutedEvent` transient route 能以 `x-death.queue`、topology allowlist 與
+owner preflight 通過條件式 replay，且只 direct publish 回 owner queue。Wallet 查 durable
+inbox；Order 同時查 recovery inbox 與正常路徑的 trade application。REL-107 另在 replay
+confirm 後、central audit 完成前 `SIGKILL` MCP；相同 actionId
+恢復時允許第二次 at-least-once delivery，但 Wallet durable inbox 最終只提交一筆 settlement。
+其他 route 仍 fail closed。完整邊界見
+[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)與
+[ADR-006](adr/ADR-006-owner-aware-shared-dlq-replay.zh-TW.md)。
 
 `eap-trigger` 也不在核心交易路徑中。目前 Go 實作仍監聽已退役的 `order.matched` event；在遷移成 Trigger 自己擁有的 `TradeExecutedEvent` queue 並通過 end-to-end test 前，只能描述成學習模組，不能說是已整合的平台能力。
 
@@ -391,8 +397,8 @@ Wallet 真正釋放資產時，cancellation application、balance update、relea
 - CDA inbox 寫入前的長時間 DB connectivity failure 已用 service-local circuit、consumer pause 與 backoff probe 保留在 source queue；poison／schema error 仍會進 DLQ。
 - Order 已有 warning-only Saga timeout detector；REL-106 也已提供 terminal case 分類、審核、
   owner-side replay、PARK／RESOLVE 與 audit，但仍沒有跨三服務自動決定補償的 global Saga
-  authority。shared DLQ 已能 quarantine／inspect，尚未提供無法證明 owner 與 business preflight
-  的 broker redrive。
+  authority。shared DLQ 已能 quarantine／inspect；Wallet／Order trade 已有 owner-aware
+  conditional replay，無法證明 owner／business preflight 的其餘 route 仍禁止 redrive。
 - Redis order book 已有 `READY／RECOVERING` generation gate 與受控 activation，但尚無
   自動 full-book rebuild；Redis generation 遺失時會安全停撮，不能宣稱不中斷繼續撮合。
 - Order 已有 logical CQRS 與可重建 projection，但 user query 仍使用 primary database，尚未完成 read replica 或獨立 read-database isolation。

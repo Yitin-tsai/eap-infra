@@ -22,6 +22,7 @@ current_queues=(
   "order.orderFailed.queue"
   "order.tradeExecuted.queue"
   "order.orderCancellationResult.queue"
+  "order.assetReservationReleased.queue"
   "order.auctionCreated.queue"
   "order.auctionCleared.queue"
   "order.dlq"

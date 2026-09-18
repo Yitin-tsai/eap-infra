@@ -233,7 +233,7 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 
 - **Wallet DB 在 inbox insert 前長時間不可用**：REL-104 已用 service-local circuit、consumer pause 與 backoff probe 保留未 ACK delivery，DB 恢復後自動 resume；poison／schema error 不應被 connectivity circuit 無限重試，仍進 DLQ。
 - **Saga timeout 與 age SLO**：REL-105 已能針對 Order 的 `PENDING_ASSET_CHECK`／`CANCELLING` 提供 warning-only 候選與告警；REL-106 可將候選 park／resolve 並保存 audit，但仍不會自動決定補償。
-- **DLQ recovery control plane**：REL-106 已提供 Wallet terminal inbox／outbox 的 inspect、dry-run、rate-limited owner-side replay 與 audit；shared DLQ 因 owner／business preflight 不明，只先 quarantine。
+- **DLQ recovery control plane**：REL-106 已提供 Wallet terminal inbox／outbox 的 inspect、dry-run、rate-limited owner-side replay 與 audit；REL-107 僅為 Wallet trade 補上 exact owner route 與 inbox preflight，reservation／cancellation 等 shared-DLQ route 仍只 quarantine。
 - **Wallet trade failure campaign**：`TradeExecutedEvent` 已納入同一套 durable inbox，但尚未完成真實 Rabbit delivery 下的 60 秒 DB outage、process kill 與恢復測試；目前證據是 PostgreSQL transaction／lease integration test。
 - **Metrics 成本**：目前 inbox status gauge 會查詢資料庫；可用於學習與開發驗證，未來需評估降低 scrape query amplification 並補 oldest-age alert。
 - **事件命名遷移**：後續已將語意不清的 `OrderConfirmedEvent` 改名為 `OrderAssetReservationSucceededEvent`；`OrderSubmittedEvent` 與 `OrderFailedEvent` 仍保留。新 release contract 使用明確的過去式事實名稱 `OrderAssetReservationReleasedEvent`。

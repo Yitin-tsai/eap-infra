@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "campaign": "EAP-REL-107 failure injection R1-R2",
+  "date": "2026-09-18",
+  "evidenceClass": "failure-injection-correctness",
+  "capacityClaimAllowed": false,
+  "verdict": "PASS_WITH_OPEN_GAPS",
+  "liveScenarios": {
+    "orderWalletDatabaseOutage": {
+      "runId": "REL107_ORDER_WALLET_DB_OUTAGE_R2",
+      "requestedOutageSeconds": 60,
+      "measuredOutageSeconds": 71,
+      "published": 200,
+      "orderApplications": 200,
+      "walletSettlements": 200,
+      "finalQueueAndDlq": 0,
+      "finalDurableDebt": 0,
+      "gate": "PASS"
+    },
+    "matchDatabaseOutage": {
+      "runId": "REL107_MATCH_DB_OUTAGE_R1",
+      "requestedOutageSeconds": 60,
+      "measuredOutageSeconds": 71,
+      "published": 200,
+      "appliedRows": 200,
+      "finalQueueAndDlq": 0,
+      "finalDurableDebt": 0,
+      "gate": "PASS"
+    },
+    "orderWalletProcessCrash": {
+      "runId": "REL107_ORDER_WALLET_PROCESS_CRASH_R1",
+      "signal": "SIGKILL",
+      "published": 1000,
+      "orderApplications": 1000,
+      "walletSettlements": 1000,
+      "finalQueueAndDlq": 0,
+      "finalDurableDebt": 0,
+      "gate": "PASS"
+    },
+    "matchRedisOutage": {
+      "runId": "REL107_MATCH_REDIS_OUTAGE_R1",
+      "published": 200,
+      "redisRestartProvenByRunIdChange": true,
+      "appliedBeforeActivation": 0,
+      "appliedAfterActivation": 200,
+      "finalQueueAndDlq": 0,
+      "finalDurableDebt": 0,
+      "gate": "PASS"
+    },
+    "matchOutboxConfirmAmbiguity": {
+      "runId": "REL107_OUTBOX_CONFIRM_CRASH_R4",
+      "signal": "SIGKILL",
+      "brokerConfirmed": 200,
+      "pendingBeforeCrash": 200,
+      "sentBeforeCrash": 0,
+      "orderApplicationsBeforeCrash": 200,
+      "walletSettlementsBeforeCrash": 200,
+      "pendingAfterCrash": 200,
+      "walletDuplicateDeliveriesAfterRestart": 200,
+      "sentAfterRestart": 200,
+      "failedAfterRestart": 0,
+      "orderApplicationsFinal": 200,
+      "walletSettlementsFinal": 200,
+      "finalQueueAndDlq": 0,
+      "finalDurableDebt": 0,
+      "gate": "PASS"
+    }
+  },
+  "deterministicSuites": {
+    "orderPostgresIntegration": {"tests": 57, "failures": 0, "errors": 0},
+    "walletPostgresIntegration": {"tests": 52, "failures": 0, "errors": 0},
+    "walletRabbitDlqIntegration": {"tests": 1, "failures": 0, "errors": 0},
+    "matchPostgresRedisCrashRecovery": {"tests": 60, "failures": 0, "errors": 0},
+    "recoveryControlPostgresIntegration": {"tests": 3, "failures": 0, "errors": 0},
+    "walletOutboxFocused": {"tests": 9, "failures": 0, "errors": 0},
+    "matchOutboxFocused": {"tests": 8, "failures": 0, "errors": 0},
+    "recoveryControlFocused": {"tests": 5, "failures": 0, "errors": 0}
+  },
+  "openGaps": [
+    "Shared broker DLQ cannot identify a single owning consumer or prove business preflight, so broker REPLAY remains disabled; only inspect, park and resolve are allowed.",
+    "The Redis outage scenario proves generation fencing and controlled activation from an empty book; arbitrary full-book reconstruction remains EAP-MATCH-202.",
+    "The live process-crash boundaries cover Match outbox relay and TradeExecuted fanout into Order and Wallet; one HTTP full-chain run that kills all three JVMs is not yet present."
+  ]
+}

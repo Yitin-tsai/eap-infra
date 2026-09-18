@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "campaign": "EAP-REL-107 failure injection R4",
+  "date": "2026-09-18",
+  "extends": "2026-09-18-rel107-failure-injection-r3.json",
+  "evidenceClass": "failure-injection-correctness",
+  "capacityClaimAllowed": false,
+  "verdict": "PASS_WITH_OPEN_GAPS",
+  "liveScenario": {
+    "contract": "rel107-mcp-replay-confirm-audit-crash",
+    "runId": "20260918_155857",
+    "signal": "SIGKILL",
+    "brokerMetadata": "RabbitMQ generated x-death via trade.exchange -> wallet.tradeExecuted.queue TTL/DLX",
+    "firstHttpExitStatus": 52,
+    "preCrash": {
+      "actionStatus": "STARTED",
+      "actionAttemptCount": 1,
+      "resultPersisted": false,
+      "caseDisposition": "OPEN",
+      "ownerQueueReady": 1
+    },
+    "postCrash": {
+      "actionStatus": "STARTED",
+      "actionAttemptCount": 1,
+      "resultPersisted": false,
+      "caseDisposition": "OPEN"
+    },
+    "sameActionRetry": {
+      "actionStatus": "APPLIED",
+      "actionAttemptCount": 2,
+      "caseDisposition": "RESOLVED",
+      "ownerQueueReadyBeforeWalletRestart": 2
+    },
+    "walletConvergence": {
+      "deliveredMessages": 2,
+      "duplicateDeliveriesObserved": 1,
+      "inboxRows": 1,
+      "inboxStatus": "APPLIED",
+      "settlementRows": 1,
+      "buyerBalance": "availableAmount=5,lockedAmount=0,availableCurrency=50,lockedCurrency=0",
+      "sellerBalance": "availableAmount=0,lockedAmount=0,availableCurrency=550,lockedCurrency=0",
+      "finalOwnerQueue": 0,
+      "finalDlq": 0
+    },
+    "gate": "PASS"
+  },
+  "deterministicSuites": {
+    "recoveryControlGeneralTestTask": {
+      "tests": 20,
+      "skipped": 7,
+      "failures": 0,
+      "errors": 0,
+      "note": "Integration cases are task-partitioned and run by dedicated tasks."
+    },
+    "recoveryControlPostgresIntegration": {"tests": 6, "failures": 0, "errors": 0},
+    "recoveryControlRabbitIntegration": {"tests": 1, "failures": 0, "errors": 0}
+  },
+  "interpretation": {
+    "deliveryGuarantee": "at-least-once",
+    "businessEffect": "exactly one Wallet settlement through durable inbox idempotency",
+    "notClaimed": "exactly-once broker delivery"
+  },
+  "openGaps": [
+    "Order, MatchEngine and non-trade Wallet dead-letter routes remain fail closed until each owner defines a business-state preflight.",
+    "Arbitrary Redis full-book reconstruction remains EAP-MATCH-202.",
+    "One HTTP full-chain campaign that kills all three core JVMs in the same run is not yet present."
+  ]
+}

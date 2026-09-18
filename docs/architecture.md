@@ -200,12 +200,19 @@ action ID without repeating the owner mutation.
 Only retry-exhausted technical work and failed outbox publication can be returned to
 their original workers. Schema, identity, invariant, prerequisite, and unknown failures
 remain fail-closed. The shared `order.dlq` can optionally be moved into a PostgreSQL
-quarantine with persist-before-ACK semantics for payload and routing inspection, but it
-is not redriven: the fanout DLX does not reliably prove consumer ownership or provide an
-owner-specific business-state preflight. Recovery endpoints are disabled by default and
-are not exposed as AI tools. See the
+quarantine with persist-before-ACK semantics for payload and routing inspection. REL-107
+opens two conditional `TradeExecutedEvent` slices: an exact Wallet route is checked against
+the Wallet durable inbox, while an exact Order route checks both its recovery inbox and the
+normal-path `order_trade_applications` fact. An eligible message is published directly back
+to that owner queue with mandatory routing and publisher confirms. MatchEngine and all other
+broker routes remain fail-closed. Recovery endpoints
+are disabled by default and are not exposed as AI tools. A live REL-107 campaign also
+SIGKILLed MCP after replay confirm but before central audit completion: retrying the same
+action ID produced a second at-least-once delivery, while the Wallet durable inbox still
+committed exactly one settlement. See the
 [recovery guide](failure-recovery-control-plane.zh-TW.md) and
-[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md).
+[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md) plus
+[ADR-006](adr/ADR-006-owner-aware-shared-dlq-replay.zh-TW.md).
 
 ## Current Scaling Boundary
 

@@ -357,9 +357,10 @@ Wallet reservation 的具體改善計畫、依賴與 Definition of Done 已記�
   reservation crash window。
 - Wallet 的 reservation、`TradeExecutedEvent` settlement 與 cancellation-result consumer 已使用 service-owned durable inbox；trade settlement、`trade_id` business guard 與 inbox `APPLIED` 在同一筆本地 transaction 收斂。CDA inbox insert 前的長時間 DB connectivity outage 已由 service-local consumer circuit 補上；REL-106 也已補齊 technical terminal work 的受控 recovery control plane。
 - REL-106 已建立 terminal debt 的分類、審核、fingerprint、owner-side replay 與 action audit；
-  shared DLQ 則先 persist-before-ACK quarantine。因目前 DLQ 無法可靠判斷 consumer owner 與
-  business-state preflight，broker redrive 仍刻意關閉，而不是把「可看見」誤說成「可安全重播」。
-- Order／Wallet／Match 的 technical terminal inbox／outbox 已能經 REL-106 受控交回 owner worker；永久 invariant、identity conflict 與 shared DLQ 仍只能 park／resolve，不能繞過 owner policy 強制重播。
+  shared DLQ 則先 persist-before-ACK quarantine。REL-107 已對 Wallet／Order 的 exact
+  `TradeExecutedEvent` transient route 加入 bounded-context owner preflight 與
+  direct-to-owner-queue replay；其餘 route 仍不把「可看見」誤說成「可安全重播」。
+- Order／Wallet／Match 的 technical terminal inbox／outbox 已能經 REL-106 受控交回 owner worker；永久 invariant、identity conflict 與未 allowlist 的 shared-DLQ case 仍只能 park／resolve，不能繞過 owner policy 強制重播。
 - client 在「commit 後、HTTP response 前」斷線時仍有結果不確定性；完整解法需要 client-visible idempotency key 與第一次 response 保存。
 - CQRS projection 有 checkpoint 與 repair，但仍需要明確的 lag SLO／告警；query service 遇到資料庫例外目前回空集合，也可能讓 read-side 故障看起來像「沒有訂單」。
 

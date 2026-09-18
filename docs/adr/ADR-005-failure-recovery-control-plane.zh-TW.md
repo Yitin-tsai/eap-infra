@@ -6,6 +6,11 @@
 >
 > 日期：2026-09-17
 
+> 2026-09-18 補充：本 ADR 保留 REL-106 第一版的安全邊界；shared DLQ 的第一個
+> owner-aware 條件式重播由 [ADR-006](ADR-006-owner-aware-shared-dlq-replay.zh-TW.md)
+> 擴充。只有 Wallet `TradeExecutedEvent` 的 allowlisted transient route 開放，其餘 case
+> 仍遵守本 ADR 的 fail-closed 規則。
+
 ## 背景
 
 REL-103 讓 Order、Wallet、MatchEngine 用共同的 durable-debt 語意揭露 retry／terminal
@@ -116,6 +121,6 @@ redrive；即使文字看似 transient 也一樣 fail closed。per-consumer DLQ�
 
 好處是 terminal debt 從「查得到但靠 SQL 手修」升級成可分類、可預演、單筆受控且有兩端
 idempotency 的操作流程。代價是多一個中央 audit schema、三張小型 source action ledger，
-並且必須誠實接受 shared DLQ 尚不能安全 redrive。下一步 REL-107 要用 failure injection
-驗證 response-loss、consumer crash、late event 與 business-state preflight，而不是再增加
-按鈕數量。
+並且必須誠實接受 shared DLQ 在沒有 owner-specific preflight 時不能安全 redrive。REL-107
+後續依 ADR-006 只開放有 exact topology ownership、owner preflight 與冪等 backstop 的單一
+vertical slice；其餘 queue 仍維持 fail closed。

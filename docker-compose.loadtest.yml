@@ -97,6 +97,30 @@ services:
       timeout: 5s
       retries: 10
 
+  mcp-postgres:
+    image: postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647
+    container_name: eap-mcp-postgres-loadtest
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: eap_mcp_db
+    ports:
+      - "15435:5432"
+    volumes:
+      - mcp-pgdata-loadtest:/var/lib/postgresql/data
+    command: >
+      postgres
+      -c max_connections=40
+      -c shared_buffers=128MB
+      -c effective_cache_size=384MB
+      -c synchronous_commit=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d eap_mcp_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   rabbitmq:
     image: rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
     container_name: eap-rabbitmq-loadtest
@@ -139,6 +163,7 @@ volumes:
   order-pgdata-loadtest:
   wallet-pgdata-loadtest:
   match-pgdata-loadtest:
+  mcp-pgdata-loadtest:
   redisdata-loadtest:
   rabbitmq-data-loadtest:
 

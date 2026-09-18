@@ -15,9 +15,13 @@ KEEP_INFRA="${KEEP_INFRA:-false}"
 BUILD_JARS="${BUILD_JARS:-true}"
 DB_OUTAGE_SECONDS="${DB_OUTAGE_SECONDS:-0}"
 PRE_PUBLISH_DELAY_SECONDS="${PRE_PUBLISH_DELAY_SECONDS:-10}"
+PROCESS_CRASH_SERVICES="${PROCESS_CRASH_SERVICES:-}"
+PROCESS_CRASH_AFTER_PUBLISH_SECONDS="${PROCESS_CRASH_AFTER_PUBLISH_SECONDS:-2}"
+PROCESS_RESTART_DELAY_SECONDS="${PROCESS_RESTART_DELAY_SECONDS:-5}"
 OUTPUT="${REPORT_DIR}/trade-consumer-fanout-${RUN_ID}.json"
 GENERATOR_LOG="${REPORT_DIR}/trade-consumer-fanout-${RUN_ID}-generator.log"
 EVIDENCE_OUTPUT="${REPORT_DIR}/trade-consumer-fanout-${RUN_ID}-rel104-evidence.json"
+PROCESS_EVIDENCE_OUTPUT="${REPORT_DIR}/trade-consumer-fanout-${RUN_ID}-rel107-process-evidence.json"
 ORDER_WORK='["asset_reservation_result_inbox","trade_execution_inbox","cancellation_result_inbox","asset_reservation_released_inbox","event_outbox","orders_current_projection"]'
 WALLET_WORK='["order_submission_inbox","cancellation_result_inbox","trade_execution_inbox","event_outbox"]'
 OUTAGE_STARTED_EPOCH_SECONDS=0
@@ -31,6 +35,17 @@ if (( DB_OUTAGE_SECONDS > 0 && DB_OUTAGE_SECONDS < 60 )); then
   echo "[ERROR] REL-104 failure mode requires DB_OUTAGE_SECONDS >= 60" >&2
   exit 2
 fi
+if (( DB_OUTAGE_SECONDS > 0 )) && [[ -n "${PROCESS_CRASH_SERVICES}" ]]; then
+  echo "[ERROR] DB outage and process crash injection must run as separate campaigns" >&2
+  exit 2
+fi
+case ",${PROCESS_CRASH_SERVICES}," in
+  ",,"|",order,"|",wallet,"|",order,wallet,"|",wallet,order,") ;;
+  *)
+    echo "[ERROR] PROCESS_CRASH_SERVICES must be empty, order, wallet, or order,wallet" >&2
+    exit 2
+    ;;
+esac
 
 find_service_jar() {
   local repo="$1"
@@ -52,6 +67,31 @@ stop_pid() {
       wait "${pid}" >/dev/null 2>&1 || true
     fi
     rm -f "${pid_file}"
+  fi
+}
+
+crash_service() {
+  local repo="$1"
+  local pid_file="${LOG_DIR}/${repo}.pid"
+  local pid process_args
+  if [[ ! -f "${pid_file}" ]]; then
+    echo "[ERROR] missing pid file for ${repo}: ${pid_file}" >&2
+    return 1
+  fi
+  pid="$(cat "${pid_file}")"
+  process_args="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
+  if [[ "${process_args}" != *"${repo}"* || "${process_args}" != *"java"* ]]; then
+    echo "[ERROR] refusing to SIGKILL unexpected process for ${repo}: pid=${pid}, args=${process_args}" >&2
+    return 1
+  fi
+  cp "${LOG_DIR}/${repo}.log" "${LOG_DIR}/${repo}-precrash-${RUN_ID}.log"
+  echo "[INFO] SIGKILL ${repo} pid=${pid}"
+  kill -9 "${pid}"
+  wait "${pid}" >/dev/null 2>&1 || true
+  rm -f "${pid_file}"
+  if kill -0 "${pid}" >/dev/null 2>&1; then
+    echo "[ERROR] ${repo} process survived SIGKILL: pid=${pid}" >&2
+    return 1
   fi
 }
 
@@ -156,30 +196,28 @@ run_generator() {
   local phase="$1"
   local target_tps="$2"
   local output_args=()
-  local outage_args=()
+  local injection_args=()
   if [[ "${phase}" == "downstream-run" ]]; then
     output_args=(--output "${OUTPUT}")
-    if (( DB_OUTAGE_SECONDS > 0 )); then
-      outage_args=(--pre-publish-delay-seconds "${PRE_PUBLISH_DELAY_SECONDS}")
+    if (( DB_OUTAGE_SECONDS > 0 )) || [[ -n "${PROCESS_CRASH_SERVICES}" ]]; then
+      injection_args=(--pre-publish-delay-seconds "${PRE_PUBLISH_DELAY_SECONDS}")
     fi
   fi
   (
     cd "${ROOT_DIR}/eap-order"
     GRADLE_USER_HOME="${GRADLE_USER_HOME_DIR}" ./gradlew --no-daemon matchedE2eLoad \
-      --args="--phase ${phase} --market-id ${MARKET_ID} --events ${TRADES} --target-tps ${target_tps} --timeout-seconds ${TIMEOUT_SECONDS} ${outage_args[*]} ${output_args[*]}"
+      --args="--phase ${phase} --market-id ${MARKET_ID} --events ${TRADES} --target-tps ${target_tps} --timeout-seconds ${TIMEOUT_SECONDS} ${injection_args[*]} ${output_args[*]}"
   )
 }
 
-run_with_database_outage() {
-  echo "[INFO] starting downstream generator with a ${PRE_PUBLISH_DELAY_SECONDS}s injection window"
-  run_generator downstream-run "${TARGET_TRADE_TPS}" >"${GENERATOR_LOG}" 2>&1 &
-  local generator_pid=$!
+wait_for_pre_publish_marker() {
+  local generator_pid="$1"
   local marker_deadline=$(( $(date +%s) + 90 ))
   until grep -q "downstream pre-publish delay active" "${GENERATOR_LOG}" 2>/dev/null; do
     if ! kill -0 "${generator_pid}" >/dev/null 2>&1; then
       wait "${generator_pid}" || true
       cat "${GENERATOR_LOG}" >&2
-      echo "[ERROR] downstream generator exited before the outage injection point" >&2
+      echo "[ERROR] downstream generator exited before the injection point" >&2
       return 1
     fi
     if [[ $(date +%s) -ge ${marker_deadline} ]]; then
@@ -189,6 +227,13 @@ run_with_database_outage() {
     fi
     sleep 1
   done
+}
+
+run_with_database_outage() {
+  echo "[INFO] starting downstream generator with a ${PRE_PUBLISH_DELAY_SECONDS}s injection window"
+  run_generator downstream-run "${TARGET_TRADE_TPS}" >"${GENERATOR_LOG}" 2>&1 &
+  local generator_pid=$!
+  wait_for_pre_publish_marker "${generator_pid}"
 
   echo "[INFO] stopping Order and Wallet PostgreSQL for ${DB_OUTAGE_SECONDS}s"
   OUTAGE_STARTED_EPOCH_SECONDS="$(date +%s)"
@@ -213,6 +258,49 @@ run_with_database_outage() {
   if (( generator_status != 0 )); then
     echo "[ERROR] downstream recovery generator failed with status ${generator_status}" >&2
     return "${generator_status}"
+  fi
+}
+
+start_order_service() {
+  start_service eap-order http://localhost:8080/eap-order/actuator/health \
+    --eap.order.market-data-scheduler.enabled=false \
+    --eap.rate-limit.enabled=false \
+    --management.health.redis.enabled=false
+}
+
+start_wallet_service() {
+  start_service eap-wallet http://localhost:8081/eap-wallet/actuator/health \
+    --eap.wallet.outbox-relay.enabled=false
+}
+
+run_with_process_crash() {
+  echo "[INFO] starting downstream generator with process-crash injection; services=${PROCESS_CRASH_SERVICES}"
+  run_generator downstream-run "${TARGET_TRADE_TPS}" >"${GENERATOR_LOG}" 2>&1 &
+  local generator_pid=$!
+  wait_for_pre_publish_marker "${generator_pid}"
+  sleep "${PROCESS_CRASH_AFTER_PUBLISH_SECONDS}"
+
+  case ",${PROCESS_CRASH_SERVICES}," in
+    *,order,*) crash_service eap-order ;;
+  esac
+  case ",${PROCESS_CRASH_SERVICES}," in
+    *,wallet,*) crash_service eap-wallet ;;
+  esac
+
+  sleep "${PROCESS_RESTART_DELAY_SECONDS}"
+  case ",${PROCESS_CRASH_SERVICES}," in
+    *,order,*) start_order_service ;;
+  esac
+  case ",${PROCESS_CRASH_SERVICES}," in
+    *,wallet,*) start_wallet_service ;;
+  esac
+
+  local generator_exit=0
+  wait "${generator_pid}" || generator_exit=$?
+  cat "${GENERATOR_LOG}"
+  if (( generator_exit != 0 )); then
+    echo "[ERROR] downstream process-crash generator failed with status ${generator_exit}" >&2
+    return "${generator_exit}"
   fi
 }
 
@@ -263,12 +351,8 @@ else
   echo "[INFO] reusing existing Order and Wallet executable jars"
 fi
 
-start_service eap-order http://localhost:8080/eap-order/actuator/health \
-  --eap.order.market-data-scheduler.enabled=false \
-  --eap.rate-limit.enabled=false \
-  --management.health.redis.enabled=false
-start_service eap-wallet http://localhost:8081/eap-wallet/actuator/health \
-  --eap.wallet.outbox-relay.enabled=false
+start_order_service
+start_wallet_service
 
 echo "[INFO] seeding legal Order and Wallet state; trades=${TRADES}, marketId=${MARKET_ID}"
 run_generator downstream-seed 0
@@ -276,6 +360,8 @@ run_generator downstream-seed 0
 echo "[INFO] publishing TradeExecuted at target=${TARGET_TRADE_TPS} events/s"
 if (( DB_OUTAGE_SECONDS > 0 )); then
   run_with_database_outage
+elif [[ -n "${PROCESS_CRASH_SERVICES}" ]]; then
+  run_with_process_crash
 else
   run_generator downstream-run "${TARGET_TRADE_TPS}"
 fi
@@ -335,6 +421,54 @@ if (( DB_OUTAGE_SECONDS > 0 )); then
     and all(.durableDebtSnapshots[].components[]; .totalCount == 0)
   ' "${EVIDENCE_OUTPUT}" >/dev/null
   echo "[INFO] REL-104 Order/Wallet outage recovery gate PASS: ${EVIDENCE_OUTPUT}"
+fi
+
+if [[ -n "${PROCESS_CRASH_SERVICES}" ]]; then
+  jq -e '
+    .correctnessGate == "PASS"
+    and .publisherAcked == .trades
+    and .publisherNacked == 0 and .publisherReturned == 0
+    and .publisherTimedOut == 0 and .publisherFailures == 0
+    and .orderApplications == .trades and .walletSettlements == .trades
+    and .orderTradeIdCount == .trades and .walletTradeIdCount == .trades
+    and .missingInOrder == 0 and .missingInWallet == 0
+    and .unexpectedInOrder == 0 and .unexpectedInWallet == 0
+    and .orderQueueFinal.total == 0 and .walletQueueFinal.total == 0
+    and .dlqFinal.total == 0
+  ' "${OUTPUT}" >/dev/null
+  ORDER_DEBT="$(eap_wait_for_zero_durable_debt_snapshot \
+    http://localhost:8080/eap-order eap-order "${ORDER_WORK}" "${TIMEOUT_SECONDS}")"
+  WALLET_DEBT="$(eap_wait_for_zero_durable_debt_snapshot \
+    http://localhost:8081/eap-wallet eap-wallet "${WALLET_WORK}" "${TIMEOUT_SECONDS}")"
+  jq -n \
+    --arg runId "${RUN_ID}" \
+    --arg marketId "${MARKET_ID}" \
+    --arg crashedServices "${PROCESS_CRASH_SERVICES}" \
+    --argjson crashAfterPublishSeconds "${PROCESS_CRASH_AFTER_PUBLISH_SECONDS}" \
+    --argjson restartDelaySeconds "${PROCESS_RESTART_DELAY_SECONDS}" \
+    --argjson businessResult "$(cat "${OUTPUT}")" \
+    --argjson orderDebt "${ORDER_DEBT}" \
+    --argjson walletDebt "${WALLET_DEBT}" \
+    '{rel107EvidenceSchemaVersion:1,contract:"rel107-order-wallet-process-crash-recovery",
+      runId:$runId,marketId:$marketId,signal:"SIGKILL",crashedServices:($crashedServices|split(",")),
+      crashAfterPublishSeconds:$crashAfterPublishSeconds,restartDelaySeconds:$restartDelaySeconds,
+      businessResult:$businessResult,
+      durableDebtSnapshots:{"eap-order":$orderDebt,"eap-wallet":$walletDebt}}' \
+    >"${PROCESS_EVIDENCE_OUTPUT}"
+  jq -e '
+    .signal == "SIGKILL"
+    and .businessResult.correctnessGate == "PASS"
+    and .businessResult.publisherAcked == .businessResult.trades
+    and .businessResult.orderApplications == .businessResult.trades
+    and .businessResult.walletSettlements == .businessResult.trades
+    and .businessResult.missingInOrder == 0 and .businessResult.missingInWallet == 0
+    and .businessResult.unexpectedInOrder == 0 and .businessResult.unexpectedInWallet == 0
+    and .businessResult.orderQueueFinal.total == 0
+    and .businessResult.walletQueueFinal.total == 0
+    and .businessResult.dlqFinal.total == 0
+    and all(.durableDebtSnapshots[].components[]; .totalCount == 0)
+  ' "${PROCESS_EVIDENCE_OUTPUT}" >/dev/null
+  echo "[INFO] REL-107 Order/Wallet process-crash recovery gate PASS: ${PROCESS_EVIDENCE_OUTPUT}"
 fi
 
 echo "[INFO] isolated result=${OUTPUT}"

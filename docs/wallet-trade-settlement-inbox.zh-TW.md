@@ -4,7 +4,7 @@
 >
 > 適用範圍：CDA `TradeExecutedEvent → Wallet settlement`
 >
-> 定位：說明 Wallet 如何先接管成交訊息，再以可恢復的本地 transaction 結算 buyer／seller 資產；inbox insert 前 DB outage、Order warning-only timeout detection 與 terminal recovery control plane 已由後續 REL-104／105／106 補上，但仍不代表有自動業務補償或 shared DLQ redrive。
+> 定位：說明 Wallet 如何先接管成交訊息，再以可恢復的本地 transaction 結算 buyer／seller 資產；inbox insert 前 DB outage、Order warning-only timeout detection 與 terminal recovery control plane 已由後續 REL-104／105／106 補上。REL-107 只為這條 Wallet trade route 增加 owner-aware conditional DLQ replay，仍不代表有自動業務補償或全域 DLQ redrive。
 
 ## 先說結論
 
@@ -221,7 +221,8 @@ Rabbit／service process failure-injection，也不是 release-pinned capacity �
 - inbox insert 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 service-local circuit／consumer pause 處理；poison message 仍走 DLQ；
 - oldest-age 與 permanent-debt metric／基本告警已存在，200 orders/s 長窗未觸發；正式 SLO 仍需多 seed、故障注入與 production-like 環境校準；
 - terminal inbox 已接入 REL-106 的 classify、dry-run、rate-limited owner-side replay 與 audit；
-  shared DLQ 只先 quarantine，尚未開放 broker redrive；
+  REL-107 的 shared-DLQ 切片只在 exact route、transient failure 與 Wallet inbox preflight 都
+  通過時 direct replay 回本 queue；其他 Wallet route 尚未開放；
 - 真實 Rabbit delivery 下的 60 秒 DB outage 已由 REL-104 驗證；process kill、duplicate、
   late event 與 ambiguous recovery response 仍待 REL-107 campaign；
 - 200 orders/s 以上的邊界搜尋與 clean revision release-pinned 重跑。

@@ -234,8 +234,12 @@ Use a focused probe only after a specific bottleneck hypothesis exists.
 | RabbitMQ into Match | `run-rabbit-match-intake-probe.sh` |
 | Trade fanout into Order and Wallet | `run-trade-consumer-fanout-probe.sh` |
 | Order／Wallet 60-second DB outage recovery | `DB_OUTAGE_SECONDS=60 run-trade-consumer-fanout-probe.sh` |
+| Order／Wallet process crash recovery | `PROCESS_CRASH_SERVICES=order,wallet run-trade-consumer-fanout-probe.sh` |
 | Match admission 60-second DB outage recovery | `run-rel104-match-db-outage-recovery.sh` |
+| Match Redis loss／controlled generation activation | `run-rel107-match-redis-outage-recovery.sh` |
 | Match outbox relay into downstream services | `run-match-relay-downstream-probe.sh` |
+| Match outbox confirm→local `SENT` process crash | `POST_CONFIRM_CRASH_ENABLED=true run-match-relay-downstream-probe.sh` |
+| MCP DLQ replay confirm→central audit process crash | `run-rel107-mcp-replay-confirm-crash.sh` |
 | RabbitMQ publisher confirms only | `run-rabbitmq-publish-only-10k.sh` |
 
 An isolated probe may reject a candidate cheaply. It cannot establish complete
@@ -247,6 +251,22 @@ greater than zero, final circuit state closed, exact durable effects, source-que
 drain, and zero transient-outage DLQ delta. `publish-only-retain` is reserved for the
 Match recovery harness; unlike the diagnostic `publish-only` phase, it deliberately
 does not purge the source queue after publisher confirms.
+
+REL-107 process-crash mode requires an explicit service allowlist, verifies the PID
+belongs to the expected Java service before `SIGKILL`, restarts only those services,
+and requires exact Trade ID sets plus zero queue, DLQ, and owner-local durable debt.
+The Redis-loss runner proves a changed Redis `run_id`, durable intake with zero
+pre-activation mutation, `RECOVERING` fail-closed state, and operator activation using
+generation/fence/version/watermark/manifest evidence. Its empty-book scenario does not
+claim arbitrary full-book reconstruction.
+
+REL-107 outbox-confirm crash mode installs a `loadtest`-only post-confirm probe, requires
+one batch of at most 500 trades, writes an atomic PID/confirmed-ID marker before local
+`SENT`, and then `SIGKILL`s that exact MatchEngine process. A valid run must prove the
+rows were still `PENDING` after the crash, observe duplicate delivery after restart,
+retain one business effect in Order and Wallet, drain Queue/DLQ, and report zero durable
+debt in all three services. Its elapsed time includes the injected pause and restart and
+is never capacity evidence.
 
 ## Experiment Orchestrators
 

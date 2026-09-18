@@ -1,8 +1,10 @@
 # Failure Recovery Control Plane 操作與實作指南（REL-106）
 
 這份文件說明 EAP 如何把 terminal debt 從「告警後手動下 SQL」提升成受保護的單筆 recovery
-流程。設計決策先看 [ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)；durable debt
-的定義先看 [Durable Debt SLO](durable-debt-slo.zh-TW.md)。
+流程。基本 ownership 決策先看 [ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)，
+shared DLQ 條件式重播看
+[ADR-006](adr/ADR-006-owner-aware-shared-dlq-replay.zh-TW.md)；durable debt 的定義先看
+[Durable Debt SLO](durable-debt-slo.zh-TW.md)。
 
 ## 它解決什麼
 
@@ -14,7 +16,7 @@ Control plane 統一列出五類 debt：
 | `OUTBOX_TERMINAL` | Order、Wallet、Match outbox | inspect；條件式重設為 `PENDING` |
 | `CLEANUP_TERMINAL` | Match reservation cleanup／reconciliation | technical exhausted 可回原 worker；ownership conflict 不可 replay |
 | `SAGA_TIMEOUT` | Order warning-only detector | inspect、park、resolve；不自動取消或補償 |
-| `BROKER_DEAD_LETTER` | shared `order.dlq` quarantine | payload／header／route inspect、park、resolve；本版不 redrive |
+| `BROKER_DEAD_LETTER` | shared `order.dlq` quarantine | inspect、park、resolve；allowlisted transient Wallet／Order trade 可經 owner preflight 後 replay |
 
 它不解決 producer 根本沒建立 outbox、Redis 全量重建、跨服務 atomic commit，也不會替人判斷
 哪一份 identity conflict payload 才是真的。
@@ -71,6 +73,49 @@ operator 與 reason。中央會沿用第一次 audit；Owner 則從 `recovery_so
 注意「交回 worker」和「直接修好」不同。Control plane 不執行 domain mutation；原 worker
 仍要重新取得 lease、跑 idempotency guard 並在自己的 local transaction 完成。
 
+## Shared DLQ 的條件式重播
+
+目前開放的是 `wallet.tradeExecuted.queue` 與 `order.tradeExecuted.queue` 的
+`TradeExecutedEvent`。MCP 必須從 broker `x-death` 同時核對 source queue、
+`trade.exchange`、`trade.executed`，failure class 也必須是明確的 transient；owner 由 exact
+topology allowlist 決定，不會解析 JSON 後猜測。
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant Control as eap-mcp
+    participant Audit as recovery_control
+    participant Owner as Wallet or Order recovery source
+    participant Store as owner durable state
+    participant Rabbit as RabbitMQ owner queue
+
+    Operator->>Control: dry-run case and fingerprint
+    Control->>Owner: exact route and captured payload
+    Owner->>Store: validate payload identity and state
+    Store-->>Owner: missing durable applied or conflict
+    Owner-->>Control: preflight decision
+    Control-->>Operator: allowed or fail closed
+
+    Operator->>Control: execute actionId
+    Control->>Audit: STARTED
+    Control->>Owner: repeat preflight
+    Owner-->>Control: current decision
+    alt ELIGIBLE
+        Control->>Rabbit: direct to wallet queue with mandatory and confirm
+        Rabbit-->>Control: ack or return or nack
+    else already durable or applied
+        Control->>Control: no publish
+    end
+    Control->>Audit: result and RESOLVED disposition
+```
+
+Owner 回覆 `ALREADY_DURABLE` 或 `ALREADY_APPLIED` 時，execute 是安全 no-op，不會為了「真的
+按過重播」而再次送訊息。Wallet 查 `message_inbox`；Order 因 happy path 不一定寫 recovery
+inbox，必須同時查 `order_trade_execution_inbox` 與 `order_trade_applications`。identity
+conflict、permanent failure、invalid payload、unknown route 一律拒絕。真正 publish 時只送回
+owner queue，不回送 topic exchange；publisher return、nack 或 timeout 會保留失敗狀態。
+完整理由見 ADR-006。
+
 ## API 與保護
 
 中央入口位於 `eap-mcp`：
@@ -105,6 +150,7 @@ eap:
     max-actions-per-operator-minute: 10
     broker-dlq:
       enabled: ${EAP_RECOVERY_BROKER_DLQ_ENABLED:false}
+      replay-confirm-timeout-ms: 5000
 ```
 
 `EAP_RECOVERY_CONTROL_ENABLED=true` 會一併啟用 control-plane Liquibase migration 與 DB
@@ -146,6 +192,21 @@ Owner schema：
 broker quarantine integration test，以及 Order／Wallet／Match 各自的 PostgreSQL（Match 另含
 Redis）replay policy 與 actionId idempotency test。所有既有 repo unit tests也通過。
 
-尚未宣稱完成的是 production RBAC／approval、per-consumer DLQ redrive、跨 instance 分散式
-operator quota，以及完整 response-loss／late-event／business-state failure campaign。這些分別
-屬 EAP-SEC-304、後續 DLQ topology 與 EAP-REL-107。
+2026-09-18 再通過 Wallet 一般 test task `113` cases（其中 `37` 個 integration cases 依
+task 分流而 skipped）、`54` PostgreSQL integration；Order 一般 test task `213` cases（其中
+`58` 個 integration cases 分流 skipped）、`58` PostgreSQL integration；MCP 一般 test task
+`23` cases（其中 `9` 個 integration cases 分流 skipped）、`7` PostgreSQL integration 與
+`2` real Rabbit integration。所有 task 均為 `0` failures／`0` errors；被分流的案例已在各自
+integration task 執行。這組證據涵蓋 Wallet／Order trade 的 business-state preflight、
+same-message/different-consumer case identity、transient-only allowlist、owner dispatch、direct
+owner queue 與 publisher confirm。
+
+同日的 MCP process-crash campaign 另在 Rabbit confirm 後、central audit commit 前
+`SIGKILL` 真實 JVM。重啟後以相同 actionId 從 attempt 1 恢復為 attempt 2；兩次 at-least-once
+delivery 最終只形成一筆 Wallet inbox 與一筆 settlement，case 才從 `OPEN` 轉為 `RESOLVED`。
+
+尚未宣稱完成的是 production RBAC／approval、Match 與非 TradeExecuted consumer 的
+owner-specific redrive，以及跨 instance 分散式 operator quota。這些分別屬 EAP-SEC-304 與
+後續 DLQ route 切片。confirm→audit 的真實 process-crash campaign 目前以 Wallet owner route
+驗證；Order route 本輪完成 deterministic owner-state 與真實 Rabbit transport 驗證，沒有把它
+誤寫成第二次 process-crash campaign。

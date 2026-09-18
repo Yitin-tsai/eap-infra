@@ -128,13 +128,16 @@ Label 只使用編譯期固定的 service／work／class，不放 order ID、tra
 RabbitMQ 3.13 的 Prometheus plugin 在 `/metrics/per-object` 提供 `rabbitmq_queue_messages` 與 `rabbitmq_queue_head_message_timestamp`。現行 shared `order.dlq` 被映射成：
 
 - `total = terminal = ready + unacked` 的 broker queue count；
-- `retry = 0`，因為 shared DLQ 的 owner／業務狀態無法可靠 preflight，broker redrive 刻意關閉；
+- `retry = 0`，因為 queue-level metric 無法把 shared DLQ 拆成各 owner 的可重播子集合；
 - oldest age 由 queue head timestamp 計算，不為了查看訊息而 consume；
 - queue metric 缺失本身就是 critical alert，不能當成空 queue。
 
-Shared DLQ 無法精確歸因到某個 consumer。EAP-REL-106 已提供 persist-before-ACK quarantine、
-inspect、分類與可稽核處置，但在 owner 與業務狀態無法可靠 preflight 前，broker redrive 仍刻意關閉；
-若要安全重播 broker 訊息，後續應先拆成 per-consumer DLQ 或補上可信的 owner metadata。
+EAP-REL-106 已提供 persist-before-ACK quarantine、inspect、分類與可稽核處置。REL-107 以
+broker `x-death.queue` 與 exact topology allowlist 識別 `TradeExecutedEvent` owner；Wallet
+以 durable inbox、Order 以 recovery inbox 加 trade application 執行各自 preflight。目前只有
+這兩條 transient route 可條件式重播。由於 queue metric
+仍無法安全聚合「可 replay」數量，SLO contract 繼續把整條 DLQ 視為 terminal debt；其他
+consumer 必須先補 owner-specific preflight，或另行遷移 per-consumer DLQ。
 
 ## SLO 與告警規則
 
@@ -209,9 +212,11 @@ start／end／max／slope、retry／terminal max 與 oldest-age max，
 - 訂單可能沒有任何明顯 queue debt、卻長時間卡在 Saga state；EAP-REL-105 已提供 [warning-only timeout detector](order-saga-timeout-detector.zh-TW.md)。
 - Terminal debt 已由 EAP-REL-106 接入統一的 inspect／dry-run／rate-limited single-case replay／
   park／resolve 與 audit control plane；replay policy 仍由 owner 強制執行。
-- Failure injection 尚未把所有 DB outage、consumer crash、duplicate、late event 與 redrive preflight 做成一套 campaign；由 EAP-REL-107 驗證。
-- RabbitMQ 目前使用 shared DLQ；REL-106 能 persist-before-ACK quarantine 並保存 payload／route，
-  但仍無法可靠證明 consumer owner，因此 broker redrive 維持 fail closed。
+- EAP-REL-107 已把核心 CDA 的 DB outage、consumer crash、duplicate、late event 與兩條 trade
+  redrive preflight 納入同一 campaign；尚未覆蓋的是 Match 與非 `TradeExecutedEvent` 的其他
+  shared-DLQ route，以及一次同時 kill 三個核心 JVM 的 HTTP 全鏈 run。
+- RabbitMQ 目前使用 shared DLQ；Wallet／Order trade 已以 broker route evidence 與各自的
+  owner preflight 開放 conditional replay，其餘 route 仍 fail closed，不能宣稱全域 DLQ recovery。
 
 換句話說，REL-103 解決的是「失敗不能被 queue=0 隱藏」與「所有觀測者使用同一套債務語意」，不是把所有失敗自動修好。
 
