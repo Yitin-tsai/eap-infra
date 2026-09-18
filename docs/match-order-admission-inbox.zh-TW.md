@@ -129,10 +129,12 @@ Actuator endpoint `matchOrderAdmissionInbox` 預設關閉。設定
 目前仍有以下限制：
 
 - inbox commit 前若資料庫長時間 connectivity outage，REL-104 已以 consumer pause 與
-  backoff probe 自動恢復；受控 DLQ replay runbook／control plane 仍未完成。
+  backoff probe 自動恢復；REL-106 已提供 terminal admission case 的受保護 inspect、dry-run、
+  action audit 與 technical-exhausted replay。shared DLQ 本版只 quarantine，不直接 redrive。
 - lease 沒有 heartbeat。單筆 admission 若超過 30 秒可能被 reclaim；effect safety 依賴既有 Redis
   idempotency guard。
-- terminal debt 已可查與有限重開，但不是完整的 operator UI、審批與 audit control plane。
+- terminal debt 已接入 token-protected operator API 與 durable audit；完整 UI、RBAC／審批與
+  per-consumer DLQ redrive 仍未實作。
 - 新增每張訂單至少一次 inbox insert、claim update 與 terminal update，會增加 Match DB write
   amplification；效能數字必須重新量測，不能沿用改造前 benchmark。
 

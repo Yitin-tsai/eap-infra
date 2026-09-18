@@ -63,7 +63,8 @@ PostgreSQL `CURRENT_TIMESTAMP`；剛好等於 deadline 即成為候選。若資�
 DB scan 失敗時不把 count 清成 0，而是保留 last-good values，同時把
 `observationSuccess=false` 並持續增加 snapshot age。如此 dashboard 不會把「看不到資料」
 誤解成「沒有卡單」。這個 snapshot 在記憶體中；服務重啟後會從既有 Order tables 重建，
-不保存 timeout episode 的歷史或 operator audit。後者屬於 REL-106 control plane。
+detector 本身不保存 timeout episode 歷史；REL-106 control plane 會在 case 被觀察或操作時
+保存 snapshot、operator disposition 與 action audit。
 
 ## Metrics 與告警
 
@@ -89,7 +90,7 @@ fail closed。規則在 `observability/prometheus/rules/eap-order-saga-timeout.y
 3. 查該 order 的 `order_event_store`，再查相關 inbox、outbox、Rabbit DLQ 與 Wallet／Match
    durable facts，判斷缺的是事件、consumer 套用、terminal publication 或真正的業務前置。
 4. 本 ticket 到此停止。不可因為 timeout 就直接把狀態改成 `CANCELLED` 或釋放資產。
-5. 由 REL-106 提供受保護、可 dry-run、可稽核的 replay／park／resolve 操作。
+5. REL-106 已提供受保護、可 dry-run、可稽核的 park／resolve；Saga timeout 本身不可直接 replay。
 
 timeout 是「需要調查的症狀」，不是足以產生業務結果的新事實。這也是第一版刻意不做
 自動 compensation 的原因。
@@ -107,7 +108,8 @@ timeout 是「需要調查的症狀」，不是足以產生業務結果的新事
 - `promtool` 規則語法與告警等待時間。
 
 仍未提供：跨三服務的全域 Saga record、自動判斷補償、timeout 歷史與 operator audit、
-受控 DLQ／terminal replay。REL-105 讓 liveness 問題可見；REL-106 才處理如何安全恢復。
+受控 DLQ／terminal replay。REL-105 讓 liveness 問題可見；REL-106 已處理 technical terminal
+work 的安全重開與 operator audit，但不會把 timeout 自動轉成補償事實。
 
 此外 migration 使用一般 `CREATE INDEX`，符合目前資料量有限的本機學習環境；正式大表部署
 應安排 maintenance window，或採 Liquibase 非 transaction changeSet 搭配

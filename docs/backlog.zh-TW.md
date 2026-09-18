@@ -210,20 +210,31 @@ count／oldest age；refresh failure 保留 last-good values 並 fail closed。P
 future timestamp、bounded snapshot、partial-index plan 與 `promtool` alert tests 均通過。
 完整設計見 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)。
 
-### EAP-REL-106：最小 Failure Recovery Control Plane
+### EAP-REL-106：最小 Failure Recovery Control Plane（完成）
 
-**決策：** 保留為高優先級，但等 P0 封版與基本 debt visibility 完成後再實作。
-它管理 transport／terminal debt，不代替 Order、Wallet、Match 做業務判定。
+**決策：** 已完成最小版本。它管理 transport／terminal debt，不代替 Order、Wallet、
+Match 做業務判定，也不把 recovery endpoint 暴露成 LLM tool。
 
 **MVP：**
 
-- 盤點並區分 `BROKER_DEAD_LETTER`、`INBOX_TERMINAL`、`OUTBOX_TERMINAL`、
+- [x] 盤點並區分 `BROKER_DEAD_LETTER`、`INBOX_TERMINAL`、`OUTBOX_TERMINAL`、
   `CLEANUP_TERMINAL`、`SAGA_TIMEOUT`。
-- list／inspect source queue、routing key、payload、identity、attempt、first／last error。
-- transient／permanent／schema／identity／invariant／unknown 分類。
-- 只提供受保護的單筆 dry-run、rate-limited replay、park／resolve。
-- 保存 operator、reason、時間、redrive count、前後狀態與結果 audit。
-- 第一版不提供 bulk replay，也不自動 replay permanent／identity conflict。
+- [x] list／inspect source queue、routing key、payload、identity、attempt、first／last error。
+- [x] transient／permanent／schema／identity／invariant／prerequisite／unknown 分類。
+- [x] 只提供受保護的單筆 dry-run、rate-limited replay、park／resolve。
+- [x] 保存 operator、reason、時間、attempt／redrive count、前後狀態與結果 audit。
+- [x] 第一版不提供 bulk replay，也不 replay permanent／identity／invariant／unknown。
+
+**實作與驗證：** `eap-mcp` 聚合三個 owner 的 recovery source API，但不直接修改 owner
+schema。暫時性 terminal work 只會回到原 inbox／outbox／cleanup worker；三個服務各自用
+`recovery_source_actions` 在同一筆 local transaction 保存 actionId 與結果，中央另保存
+operator audit，處理 source 成功但 response 遺失的 crash window。shared `order.dlq` 在明確
+啟用時採 persist-before-ACK quarantine；因目前 fanout DLX 無法可靠判斷 owner 與 business
+preflight，broker case 本版只允許 inspect／park／resolve，不假裝已能安全 redrive。共同
+contract、中央 PostgreSQL quarantine／audit、Order／Wallet／Match replay policy 與 actionId
+idempotency integration tests 均通過。完整說明見
+[Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)與
+[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)。
 
 後續再評估將 shared `order.dlq` 改成 per-consumer DLQ、direct/topic DLX、Rabbit
 policy 與 quorum queue；這些 topology 變更不能和 control-plane API 一次混做。
@@ -257,10 +268,10 @@ policy 與 quorum queue；這些 topology 變更不能和 control-plane API 一�
 - 再 A/B 比較 scheduler isolation、bounded partitioning、batch append／projection。
 - 不以縮短 retry 或放寬 durable-debt gate 換取表面 TPS。
 
-### EAP-OPS-204：Outbox／Inbox terminal recovery 能力對齊
+### EAP-OPS-204：Outbox／Inbox terminal recovery 能力對齊（完成於 REL-106）
 
-- Wallet 已有部分 inspect／outbox requeue；Order、Match 與各種 cleanup 尚不一致。
-- 對齊後再接入 EAP-REL-106 的集中檢視入口。
+- Order、Wallet、Match 與 Match cleanup 已使用共同 recovery contract 與 owner-side policy。
+- 永久／identity／invariant failure 維持 fail closed，不因介面對齊而開放重播。
 
 ## P3：延後，不搶占目前主線
 
@@ -292,7 +303,7 @@ primary DB。等 query load、replication lag 與 read-your-write contract 明�
 REL-001 → REL-002 → REL-003
                      │
                      ├─ REL-101 → REL-102
-                     ├─ REL-103 ✓ → REL-104 ✓ → REL-105 ✓ → REL-106
+                     ├─ REL-103 ✓ → REL-104 ✓ → REL-105 ✓ → REL-106 ✓
                      └─ REL-107（持續擴充 failure campaign）
 
 以上每一條都由 REL-107 failure injection 驗證
@@ -302,6 +313,7 @@ TDA、read replica 與進階 scaling 保持延後
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003／101／102／103／104／105 已完成。下一件事是 EAP-REL-106：**
-以受保護、可判斷、可安全 replay 且可稽核的 control plane 處理 DLQ／terminal debt；
-200 orders/s 以上的邊界搜尋仍先讓位給 P1 reliability。
+**EAP-REL-001／002／003／101／102／103／104／105／106 已完成。下一件事是 EAP-REL-107：**
+用系統化 failure injection 驗證 DB／Redis outage、consumer crash、lease expiry、duplicate、
+late event、outbox confirm ambiguity 與 recovery response-loss；200 orders/s 以上的邊界搜尋
+仍先讓位給這輪可靠性驗證。

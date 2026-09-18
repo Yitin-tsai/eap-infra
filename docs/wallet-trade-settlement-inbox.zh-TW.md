@@ -4,7 +4,7 @@
 >
 > 適用範圍：CDA `TradeExecutedEvent → Wallet settlement`
 >
-> 定位：說明 Wallet 如何先接管成交訊息，再以可恢復的本地 transaction 結算 buyer／seller 資產；inbox insert 前 DB outage 與 Order warning-only timeout detection 已由後續 REL-104／105 補上，但仍不代表已有自動補償或 DLQ control plane。
+> 定位：說明 Wallet 如何先接管成交訊息，再以可恢復的本地 transaction 結算 buyer／seller 資產；inbox insert 前 DB outage、Order warning-only timeout detection 與 terminal recovery control plane 已由後續 REL-104／105／106 補上，但仍不代表有自動業務補償或 shared DLQ redrive。
 
 ## 先說結論
 
@@ -220,11 +220,12 @@ Rabbit／service process failure-injection，也不是 release-pinned capacity �
 
 - inbox insert 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 service-local circuit／consumer pause 處理；poison message 仍走 DLQ；
 - oldest-age 與 permanent-debt metric／基本告警已存在，200 orders/s 長窗未觸發；正式 SLO 仍需多 seed、故障注入與 production-like 環境校準；
-- terminal inbox 可以只讀檢視，尚未具備跨 DLQ／inbox 的 classify、rate-limited replay
-  與 audit control plane；
-- 真實 Rabbit delivery 下的 60 秒 DB outage、process kill、duplicate 與恢復 campaign；
+- terminal inbox 已接入 REL-106 的 classify、dry-run、rate-limited owner-side replay 與 audit；
+  shared DLQ 只先 quarantine，尚未開放 broker redrive；
+- 真實 Rabbit delivery 下的 60 秒 DB outage 已由 REL-104 驗證；process kill、duplicate、
+  late event 與 ambiguous recovery response 仍待 REL-107 campaign；
 - 200 orders/s 以上的邊界搜尋與 clean revision release-pinned 重跑。
 
 ## 面試版說法
 
-> Wallet 原本直接在 Rabbit listener 裡結算成交，DB 故障超過幾次 retry 就只剩 DLQ。我把 TradeExecuted 納入 Wallet-owned durable inbox：listener 在 inbox commit 後才返回，lease worker 再把 trade settlement、buyer／seller balance 與 inbox APPLIED 放進同一筆 transaction。相同 trade ID 由 inbox hash 與 settlement primary key 兩層去重；worker 失去 lease 時整筆 rollback，crash 後由新 worker接手。REL-104 再把 inbox insert 前的 connectivity outage 改為 pause consumer、保留未 ACK delivery 並自動恢復；terminal recovery control plane 仍是下一階段。
+> Wallet 原本直接在 Rabbit listener 裡結算成交，DB 故障超過幾次 retry 就只剩 DLQ。我把 TradeExecuted 納入 Wallet-owned durable inbox：listener 在 inbox commit 後才返回，lease worker 再把 trade settlement、buyer／seller balance 與 inbox APPLIED 放進同一筆 transaction。相同 trade ID 由 inbox hash 與 settlement primary key 兩層去重；worker 失去 lease 時整筆 rollback，crash 後由新 worker接手。REL-104 再把 inbox insert 前的 connectivity outage 改為 pause consumer、保留未 ACK delivery並自動恢復；REL-106 讓 technical retry exhausted 可經受保護的單筆操作交回同一個 Wallet worker，永久 invariant 與 identity conflict 仍 fail closed。

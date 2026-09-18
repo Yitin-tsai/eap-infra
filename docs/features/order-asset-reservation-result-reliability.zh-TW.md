@@ -103,7 +103,7 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 
 目前可以說：
 
-> Order 對 Wallet 驗資成功與拒絕建立統一 durable processing record，以 local transaction、business identity、lease worker、backoff／jitter 和 conflict quarantine 處理 duplicate 與 worker crash；後續再以 consumer circuit 處理 inbox commit 前 DB outage，並用 warning-only detector 找出卡住 Saga。terminal recovery control plane 仍是明確後續工作。
+> Order 對 Wallet 驗資成功與拒絕建立統一 durable processing record，以 local transaction、business identity、lease worker、backoff／jitter 和 conflict quarantine 處理 duplicate 與 worker crash；後續再以 consumer circuit 處理 inbox commit 前 DB outage、用 warning-only detector 找出卡住 Saga，並由 REL-106 control plane 提供 technical terminal work 的單筆受控 replay 與 audit。
 
 目前不能說：
 

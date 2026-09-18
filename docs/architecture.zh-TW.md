@@ -332,6 +332,15 @@ EAP 把 RabbitMQ ordering 視為 queue-scoped，而不是 global ordering。開�
 
 `eap-mcp` 與 `eap-ai-client` 提供受控後端工具與本地 AI 實驗，不參與 order acceptance、reservation、matching、settlement 或 benchmark completion。這些模組是否可用，不得影響交易正確性。
 
+REL-106 另外把 `eap-mcp` 當作低頻 failure-recovery access layer，但沒有把 recovery 註冊成
+AI tool。中央只做 operator token、跨服務聚合、每人每分鐘 action rate limit、PARK／RESOLVE
+disposition 與 durable audit；真正的 replay eligibility 與狀態轉移仍由 Order、Wallet、
+MatchEngine 各自的 source endpoint 執行。每次操作帶 optimistic fingerprint 與 actionId，
+owner 在自己的 local transaction 保存 action result，因此 response 遺失後可用相同 actionId
+收斂。shared DLQ 只在明確啟用時 persist-before-ACK 搬入 quarantine；在拆成可歸屬的
+per-consumer DLQ 前不開放 broker redrive。完整邊界見
+[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)。
+
 `eap-trigger` 也不在核心交易路徑中。目前 Go 實作仍監聽已退役的 `order.matched` event；在遷移成 Trigger 自己擁有的 `TradeExecutedEvent` queue 並通過 end-to-end test 前，只能描述成學習模組，不能說是已整合的平台能力。
 
 ## 共用合約版本
@@ -380,7 +389,10 @@ Wallet 真正釋放資產時，cancellation application、balance update、relea
 - TDA 尚未具備 CDA 等級的 outbox、consumer idempotency、rejection event 與完整收斂驗證，兩條流程的保證不能混用。
 - Wallet 的 reservation／trade settlement／cancellation-result 都已使用同一套 durable inbox、lease worker 與本地 transaction；最新版 200 orders/s 長窗已驗證正流程沒有巨大退化，但 200 以上的精確邊界尚未重測。
 - CDA inbox 寫入前的長時間 DB connectivity failure 已用 service-local circuit、consumer pause 與 backoff probe 保留在 source queue；poison／schema error 仍會進 DLQ。
-- Order 已有 warning-only Saga timeout detector 找出長期停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的候選；仍沒有跨三服務自動決定補償的 global Saga control plane，也沒有完整的 DLQ 分類、審核與安全 replay control plane。
+- Order 已有 warning-only Saga timeout detector；REL-106 也已提供 terminal case 分類、審核、
+  owner-side replay、PARK／RESOLVE 與 audit，但仍沒有跨三服務自動決定補償的 global Saga
+  authority。shared DLQ 已能 quarantine／inspect，尚未提供無法證明 owner 與 business preflight
+  的 broker redrive。
 - Redis order book 已有 `READY／RECOVERING` generation gate 與受控 activation，但尚無
   自動 full-book rebuild；Redis generation 遺失時會安全停撮，不能宣稱不中斷繼續撮合。
 - Order 已有 logical CQRS 與可重建 projection，但 user query 仍使用 primary database，尚未完成 read replica 或獨立 read-database isolation。

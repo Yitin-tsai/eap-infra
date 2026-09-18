@@ -10,6 +10,8 @@ The project is designed around three questions: which service owns each business
 
 > **Reliability gate update (2026-09-15):** schema v4 now consumes a single versioned durable-debt contract from Order, Wallet, and MatchEngine. Inbox, outbox, cleanup, cancellation, reconciliation, projection, and DLQ debt—as well as stale or missing telemetry—must all converge before a run can be called business-complete. A short full-chain smoke passed this wiring; it does not replace the long-window capacity evidence above. See the [durable-debt SLO](docs/durable-debt-slo.zh-TW.md).
 >
+> **Recovery control update (2026-09-17):** terminal inbox, outbox, cleanup, Saga-timeout, and broker-dead-letter cases now share a protected single-case inspection and audit contract. Safe technical failures are returned to their owning workers with fingerprint and action-ID guards; permanent and identity failures remain fail-closed. The shared DLQ is quarantined for inspection but is not automatically redriven. See the [recovery guide](docs/failure-recovery-control-plane.zh-TW.md).
+>
 > **Historical boundary:** two release-pinned seeds supported a `648 accepted orders/s` 15-minute same-host pressure boundary for older commits. That evidence remains valid for those commits but is not the capacity of the current reliability revision.
 
 ## System Overview
@@ -59,7 +61,7 @@ See [the architecture guide](docs/architecture.md) for transaction boundaries, e
 | [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | Available/locked balances, settlement facts, and applied cancellation facts | Asset validation, idempotent trade settlement, and cancellation release |
 | [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | Order book and `TradeExecuted` facts | CDA matching, atomic cancellation arbitration, Redis reservation recovery, trade persistence; TDA scheduling and clearing |
 | [eap-common](https://github.com/Yitin-tsai/eap-common) | Shared integration contracts | Event and DTO definitions; no business-state ownership |
-| [eap-mcp](https://github.com/Yitin-tsai/eap-mcp) / [eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | Controlled AI tooling | Experimental control-plane operations, never core transaction correctness |
+| [eap-mcp](https://github.com/Yitin-tsai/eap-mcp) / [eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | Recovery access layer and controlled AI tooling | Protected recovery aggregation/audit and experimental AI operations; never core transaction correctness |
 
 TDA is implemented as a separate market mode that collects confirmed stepped bids and clears them on a schedule. It has not yet completed the same reliability and capacity campaign as CDA, so CDA evidence is not generalized to TDA.
 
@@ -70,7 +72,8 @@ TDA is implemented as a separate market mode that collects confirmed stepped bid
 | Database commit succeeds but event publication fails | Transactional outbox and retryable relay |
 | RabbitMQ redelivers an event | Database-backed idempotency and unique constraints |
 | Consumer stops before acknowledgement | Durable intake or durable local effect commits before manual/container acknowledgement |
-| Poison event cannot be processed | Retry policy plus DLX / DLQ |
+| Poison event cannot be processed | Retry policy plus DLX / DLQ; optional persist-before-ACK quarantine for inspection |
+| Durable work exhausts retries | Owner-enforced failure classification, fingerprinted dry-run, single-case replay, action-ID idempotency, rate limit, and audit |
 | Redis reservation cleanup is interrupted | Durable cleanup task, exact `tradeId` correlation, and reconciliation |
 | Read projection is delayed | Projection remains rebuildable and does not block command-side trade application |
 | Cancellation races with matching or trade delivery | MatchEngine atomic arbitration, durable result, Wallet cancellation idempotency, commutative asset deltas, and Order prerequisite retry |

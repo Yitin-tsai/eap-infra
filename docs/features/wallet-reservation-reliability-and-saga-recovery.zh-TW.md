@@ -1,10 +1,10 @@
 # Ticket：Wallet 驗資可靠性與 Saga 自動恢復
 
-> 狀態：Core inbox implemented／recovery control plane conditional
+> 狀態：Core inbox 與最小 recovery control plane 已完成；跨服務自動補償仍未實作
 >
 > 建立日期：2026-08-27
 >
-> 最近更新：2026-09-04
+> 最近更新：2026-09-18
 >
 > 範圍：CDA `OrderSubmittedEvent → Wallet reservation → OrderAssetReservationSucceededEvent／OrderFailedEvent`，並延伸至 `OrderCancellationResultEvent → Wallet release → OrderAssetReservationReleasedEvent → Order final cancellation`。不把所有 consumer 一次改造成通用框架。
 
@@ -30,7 +30,7 @@
 
 - inbox commit 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 consumer pause／service-local circuit 完成；poison 仍進 DLQ。
 - Order warning-only Saga timeout detector 與 oldest-age alert 已由 REL-105／REL-103 完成；自動 prerequisite recovery／補償未完成。
-- 完整 DLQ inspect／classify／rate-limited replay／audit control plane。
+- REL-106 已完成 terminal inbox／outbox 的 inspect、classify、dry-run、rate-limited owner-side replay 與 action audit；shared DLQ 因 owner／business preflight 不明，只提供 persist-before-ACK quarantine 與 park／resolve，不做 broker redrive。
 - 60 秒 DB outage、consumer process kill、duplicate／late event 的真實 Rabbit failure-injection campaign；目前只有 PostgreSQL transaction／lease integration evidence。
 
 詳細實作與驗收數據見 [Wallet Inbox 與取消訂單最終確認](../wallet-inbox-and-cancellation-completion.zh-TW.md)。以下 Current Baseline 保留的是改造前問題背景；Target／task list 同時記錄已完成與剩餘工作。
@@ -72,16 +72,16 @@ EAP 已具備 choreography-based Saga 的結構：
 - 取消成功會釋放 unmatched reservation；Match 在 durable trade 前後使用不同的 Redis recovery／roll-forward 路徑。
 - 已成交事實不做跨服務 rollback。
 
-但 Saga pattern 本身不會自動產生 retry、timeout、DLQ replay、監控或 compensation。後續 REL-103～105 已補上 durable-debt 監控、intake DB outage recovery 與 Order warning-only timeout detection；EAP 仍缺：
+但 Saga pattern 本身不會自動產生 retry、timeout、DLQ replay、監控或 compensation。後續 REL-103～106 已補上 durable-debt 監控、intake DB outage recovery、Order warning-only timeout detection，以及最小 terminal recovery control plane；EAP 仍缺：
 
 - 尚未納入 durable inbox 的 consumer，以及跨服務一致的 oldest-age／retry-debt 告警。
 - 跨三服務、能安全決定處置的 end-to-end Saga deadline authority；Order detector 目前只列候選。
-- terminal outbox／DLQ 的完整 recovery control plane。
+- shared DLQ 的 owner-aware business preflight 與安全 broker redrive；現行 control plane 刻意只 quarantine／park／resolve。
 - Wallet DB outage、consumer crash、late event 的系統性 failure-injection 證據。
 
 因此後續文件與面試的精確說法應是：
 
-> EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／trade／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；CDA intake DB outage 可 pause/resume，Order 也能 warning-only 偵測卡住 Saga，但 terminal DLQ／outbox control plane 與跨服務自動處置仍未完成。
+> EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／trade／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；CDA intake DB outage 可 pause/resume，Order 也能 warning-only 偵測卡住 Saga。REL-106 已提供 terminal inbox／outbox 的受控 owner-side replay 與 action audit；仍未完成的是 shared DLQ 安全 redrive 與跨服務自動補償決策。
 
 不得再使用下列說法：
 
@@ -261,12 +261,12 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 ### Must Fix Before Implementation
 
 - [x] 接受 inbox state machine、唯一 identity 與 immutable payload contract。
-- [ ] 選定 intake DB outage 的 delayed retry 或 consumer-pause 策略。
+- [x] 選定並實作 intake DB outage 的 consumer-pause／probe／resume 策略。
 - [x] 列出 exception taxonomy、default unknown policy 與 retry budget。
-- [x] 定義 lease duration、fencing、backoff／jitter；age alerts 尚未完成。
+- [x] 定義 lease duration、fencing、backoff／jitter 與 age alerts。
 - [x] 確認 reservation、trade settlement、cancellation result、business idempotency／outbox 與 inbox terminal state 的單一 transaction。
-- [ ] 定義第一版 Saga warning threshold；自動 expiry 留在未核准範圍。
-- [ ] 定義 DLQ ownership、replay authorization 與 audit。
+- [x] 定義第一版 Saga warning threshold；自動 expiry 留在未核准範圍。
+- [x] 定義 recovery ownership、replay authorization 與 audit；shared DLQ 因 owner 不明而禁止 redrive。
 
 ### Recommended Task Split
 
@@ -321,7 +321,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 | WRR-106 | 建立 inbox metrics／age alert／admin inspect | Implementation | pending／processing／retryable／permanent count、oldest age、attempt／error 可觀測；已完成 | WRR-104 |
 | WRR-201 | Order Saga timeout detector 第一版 | Implementation | 偵測過久 `PENDING_ASSET_CHECK`／`CANCELLING`；metric／alert；不自動釋放資產；已完成 | WRR-000 |
 | WRR-202 | 定義 reservation status／expiry protocol | Architect／Product | Wallet／Order／Match authority、late event、terminal guard、compensation 明確 | WRR-201；第二階段 |
-| WRR-301 | 最小 DLQ quarantine／replay control plane | Implementation | list／inspect／classify／rate-limited replay／audit；不直接決定 business failure | WRR-000、WRR-103 |
+| WRR-301 | 最小 terminal recovery／DLQ quarantine control plane | Implementation | terminal debt 可 list／inspect／classify／dry-run／rate-limited owner-side replay／audit；shared DLQ 只 quarantine／park／resolve；已由 REL-106 完成 | WRR-000、WRR-103 |
 | WRR-401 | DB outage／consumer crash／worker lease failure tests | QA | 60 秒 outage 自動恢復；沒有 duplicate reservation／untracked debt | WRR-102～106 |
 | WRR-402 | Duplicate／identity conflict／late event／outbox ambiguity tests | QA | 所有列出的 business invariants 通過 | WRR-105、WRR-201 |
 | WRR-403 | Retry-storm 與 2,000 offered TPS 回歸 | Performance／QA | 報告 ACK、completion、drain、DB pool、oldest age、DLQ；不過度宣稱 | WRR-401、WRR-402 |
@@ -339,7 +339,8 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 - [x] 已涵蓋流程的 available／locked asset 與 terminal result invariants 通過。
 - [x] inbox status count、identity conflict 與 oldest unresolved age 已有低成本快照 metrics；Prometheus 對 permanent failure 與 age 提供告警；conditional read-only admin endpoint 可依 status／message type 檢視 attempt、lease 與 error，且不回傳 payload。
 - [x] Order timeout detector 能找出 stuck Saga，但未核准前不自動改變資產。
-- [ ] DLQ replay 有 ownership、rate limit、payload conflict check 與 audit。
+- [x] Terminal inbox／outbox replay 有 ownership、rate limit、fingerprint conflict check 與 audit。
+- [ ] Shared DLQ 尚無可信 owner／business preflight，因此 broker redrive 刻意關閉；未來需 per-consumer DLQ 或可信 owner metadata。
 - [ ] 效能與正確性報告分開 ACK intake、Wallet completion 與 full-lifecycle completion。
 - [x] 文件只宣稱實際完成的 Saga 能力與已知缺口。
 
@@ -347,6 +348,6 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 目前可使用的敘述：
 
-> 將 Wallet 驗資、成交與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。後續以 consumer circuit 補上 intake DB outage，並以 Order warning-only timeout detector 找出卡住 Saga；DLQ control plane 與完整 process-kill campaign 仍是 production gap。
+> 將 Wallet 驗資、成交與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。後續以 consumer circuit 補上 intake DB outage、以 Order warning-only timeout detector 找出卡住 Saga，並建立受保護的 terminal recovery control plane；shared DLQ redrive 與完整 process-kill campaign 仍是 production gap。
 
-不能使用「60 秒 DB outage 不需人工恢復」或「完整 DLQ 自動恢復」等說法，直到剩餘 Definition of Done 與 failure-injection evidence 完成。
+可以引用已完成 campaign 的「三服務 60 秒 DB outage 可自動恢復、transient DLQ delta 為 0」，但必須附上測試範圍與日期；不得宣稱「完整 DLQ 自動恢復」，因為 shared DLQ redrive 仍刻意關閉，process-kill campaign 也仍待 REL-107。

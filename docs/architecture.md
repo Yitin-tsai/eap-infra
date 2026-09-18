@@ -189,6 +189,24 @@ graph TD
 | RabbitMQ is empty while service-owned work remains | service-owned `DurableDebtSnapshot` v1, schema-v4 fail-closed completion gates, and Prometheus alerts |
 | a debt snapshot query or service disappears | retain last values but expose failed/stale observation; endpoints, alerts, and the load gate treat unknown telemetry as failure |
 
+REL-106 adds a low-frequency failure-recovery access layer in `eap-mcp`. The control
+plane authenticates operators, aggregates bounded terminal-case queries, rate-limits
+single-case actions, and stores dispositions and audit results. It never updates an
+owner schema directly. Order, Wallet, and MatchEngine each enforce their own replay
+policy and persist the action ID plus result in the same local transaction as the
+conditional state transition. This lets a lost HTTP response be retried with the same
+action ID without repeating the owner mutation.
+
+Only retry-exhausted technical work and failed outbox publication can be returned to
+their original workers. Schema, identity, invariant, prerequisite, and unknown failures
+remain fail-closed. The shared `order.dlq` can optionally be moved into a PostgreSQL
+quarantine with persist-before-ACK semantics for payload and routing inspection, but it
+is not redriven: the fanout DLX does not reliably prove consumer ownership or provide an
+owner-specific business-state preflight. Recovery endpoints are disabled by default and
+are not exposed as AI tools. See the
+[recovery guide](failure-recovery-control-plane.zh-TW.md) and
+[ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md).
+
 ## Current Scaling Boundary
 
 The current bottleneck is not one isolated service operation. Redis/Lua matching, combined Match processing, RabbitMQ-to-Match intake, TradeExecuted fanout, and Match relay plus downstream application all run materially faster in their isolated diagnostics than the complete mixed HTTP flow. These probes rule out a standalone ceiling; they do not remove those components from the integrated path.

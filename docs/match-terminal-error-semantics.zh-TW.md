@@ -98,7 +98,7 @@ terminal／fresh key 或多 instance 一直卡在同一批 key。實際 mutation
 
 完全相同的 terminal `issue_id` 會被跳過，但 terminal row **不會**只因 Redis key 消失
 就自動改為 `RESOLVED`；Redis restart、其他 worker 刪除或新 identity 取代舊值，都不能
-證明 invariant 已經被調查。它必須保留到 REL-106 的受控處理。只有 `RETRYABLE` issue
+證明 invariant 已經被調查。REL-106 會把它保留為只能 park／resolve 的受控 case。只有 `RETRYABLE` issue
 會以另一個有界 DB page 輪流檢查原 reservation key；若 fingerprint 已不存在，才可視為
 「Redis mutation 已成功、但 DB `markResolved` 失敗」並自動收斂。若 resolved identity
 日後真的重現，row 會重設 attempt budget。
@@ -109,7 +109,7 @@ terminal／fresh key 或多 instance 一直卡在同一批 key。實際 mutation
 
 這張表不會自動刪 Redis poison key，也不是 replay UI。操作者必須先確認 PostgreSQL
 trade fact、reservation identity 與目前 generation，再修資料或決定 recovery 動作；
-安全重播／稽核 API 屬於 `EAP-REL-106` control plane。
+安全重播／稽核 API 已由 `EAP-REL-106` control plane 補上。
 
 ## Cleanup lease fencing
 
@@ -131,7 +131,8 @@ instance 可能取得同一 task。每次 claim 都不同的 token 才能證明�
 
 ## 操作者怎麼查
 
-目前先提供 durable SQL visibility；受 RBAC 保護的 recovery API 留給 REL-106。
+目前同時提供 durable SQL visibility 與 REL-106 的 token-protected recovery API；完整 RBAC／
+approval workflow 仍屬 EAP-SEC-304。
 
 ```sql
 SELECT cancellation_id, order_id, status,

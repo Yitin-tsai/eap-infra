@@ -511,15 +511,15 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 | Spring Rabbit simple listener | 3 attempts；1 秒起始、倍增、最高 10 秒；不預設 requeue | shared DLQ | 同一設定同時套 transient 與 permanent exception，分類仍粗 |
 | Order asset reservation result inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | confirmed／failed 共用 `order_id` terminal guard；intake DB outage 仍需 delayed retry／consumer pause |
 | Wallet message inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | 驗資／成交／取消共用機制；locked asset 不足直接是 permanent invariant，intake DB outage 仍需 transport recovery |
-| Order／Wallet／Match outbox | 最多 10 次；約 1 秒 exponential backoff，最高 300 秒 | `FAILED` | terminal debt 已告警；安全 recovery control plane 仍待 REL-106 |
+| Order／Wallet／Match outbox | 最多 10 次；約 1 秒 exponential backoff，最高 300 秒 | `FAILED` | REL-106 可用 fingerprint＋actionId 單筆重設為 `PENDING`，仍由 owner relay 發布 |
 | Order trade inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，以 durable-debt oldest-age SLO 偵測 stuck |
 | Order cancellation inbox | poll 500 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，以 durable-debt oldest-age SLO 偵測 stuck |
 | Order asset-release inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts | `FAILED_PERMANENT` | release 早於 cancellation accepted 時，以 oldest-age／retry debt 觀測 |
-| Match cleanup task | poll 100 ms、lease 30 秒＋owner/token fence；10 technical attempts；1 秒至 300 秒 | `FAILED` | 必須納入 business-complete gate；安全人工恢復介面仍待 REL-106 |
-| Match orphan reservation scan | 每 5 秒；30 秒後才處理；一般 action failure 最多 10 次 | `reservation_reconciliation_issues.TERMINAL` | durable payload／ownership／last error 已保存；修復與 re-drive control plane 尚待 REL-106 |
-| Match cancellation reconciler | poll 250 ms、lease 30 秒；20 technical attempts；250 ms 至 30 秒 backoff；prerequisite 獨立計時 | `FAILED_TERMINAL` | prerequisite 已納入 oldest-age SLO；人工恢復介面待 REL-106 |
+| Match cleanup task | poll 100 ms、lease 30 秒＋owner/token fence；10 technical attempts；1 秒至 300 秒 | `FAILED` | REL-106 只重開 `RETRY_EXHAUSTED_%`；ownership conflict 保持 fail closed |
+| Match orphan reservation scan | 每 5 秒；30 秒後才處理；一般 action failure 最多 10 次 | `reservation_reconciliation_issues.TERMINAL` | transient terminal 可回原 reconciler；ownership／invariant 不可 replay |
+| Match cancellation reconciler | poll 250 ms、lease 30 秒；20 technical attempts；250 ms 至 30 秒 backoff；prerequisite 獨立計時 | `FAILED_TERMINAL` | technical exhausted 可單筆重開；prerequisite／permanent 僅 park／resolve |
 
-目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，跨服務 durable debt 也已有共同 count／age／retry／terminal 契約、告警與 schema-v4 completion gate；CDA inbox commit 前的 DB connectivity outage 也能 pause consumer 後自動恢復。Order warning-only timeout detector 已讓長期停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的 Saga 可見，但它不自動補償；terminal outbox／DLQ 的 recovery control plane 仍未完成。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)，可觀測性見 [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)與 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
+目前架構判定仍是 **Conditional**：Order 驗資結果、trade、取消結果與 Wallet release fact，以及 Wallet 驗資／trade／取消結果都已有 durable inbox 或既有 durable application guard；取消狀態也已拆成 `CANCELLING → CANCELLED`。Match cancellation、orphan reservation 與 cleanup lease 的 terminal semantics 已補齊，跨服務 durable debt 也已有共同 count／age／retry／terminal 契約、告警與 schema-v4 completion gate；CDA inbox commit 前的 DB connectivity outage 也能 pause consumer 後自動恢復。Order warning-only timeout detector 已讓長期停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的 Saga 可見；REL-106 再補上受保護的單筆 inspect／dry-run／owner-side replay／park／resolve 與兩端 action audit。它仍不自動補償，shared DLQ 也只先 quarantine，不宣稱能安全 redrive。Match 細節見 [Match terminal error semantics](match-terminal-error-semantics.zh-TW.md)，recovery 操作見 [Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)，可觀測性見 [Durable Debt SLO 與完成關卡](durable-debt-slo.zh-TW.md)與 [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)；其餘實作見 [Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)與 [Wallet 成交結算 Durable Inbox](wallet-trade-settlement-inbox.zh-TW.md)，後續範圍追蹤在[工程 Backlog](backlog.zh-TW.md)。
 
 ## Retry、ACK、DLQ 與恢復層次
 
@@ -556,8 +556,8 @@ ACK 規則也需要精確表達：Order 的 confirmation／trade batch listener 
 | 機制 | EAP 例子 | 觸發條件 | 它保護的範圍 | 現況 |
 | --- | --- | --- | --- | --- |
 | Rollback | Wallet settlement 任一 row-count invariant 失敗 | local transaction 尚未 commit | 只讓這次本地變更全部不成立 | 已實作 |
-| Retry | outbox publish、暫時 DB lock conflict、Rabbit redelivery | 同一操作仍可安全重做 | 依原方向再做一次，不反轉已成立事實 | 已實作；terminal failure 仍需 runbook |
-| Defer | Order trade／cancellation／release inbox，或 Wallet cancellation inbox 等 prerequisite | 必要事實只是尚未抵達 | 保存 payload，等順序收斂後套用 | 已實作；durable-debt age SLO 與 Order lifecycle timeout detector 可發現長期未收斂，安全恢復仍待 control plane |
+| Retry | outbox publish、暫時 DB lock conflict、Rabbit redelivery | 同一操作仍可安全重做 | 依原方向再做一次，不反轉已成立事實 | 已實作；technical terminal work 可由 REL-106 受控交回 owner worker |
+| Defer | Order trade／cancellation／release inbox，或 Wallet cancellation inbox 等 prerequisite | 必要事實只是尚未抵達 | 保存 payload，等順序收斂後套用 | 已實作；durable-debt age SLO 與 Order lifecycle timeout detector 可發現長期未收斂，operator 可 park／resolve，但不自動決定補償 |
 | Reconciliation | reservation／cleanup worker 比對 Redis 與 durable trade | crash 留下跨資源中間狀態 | 以 authority 的 durable fact 決定 roll forward 或恢復暫存狀態 | 局部 reservation 已實作；Redis 全毀重建未完成 |
 | Business compensation | Wallet 依 `CANCELLED` 釋放 unmatched locked asset | 先前 reservation 已成立，但剩餘訂單合法終止 | 新增一筆冪等、可稽核的釋放效果 | 已實作 |
 | Reversal | 未來若需沖銷錯誤 trade | durable trade 已成立後才發現業務錯誤 | 需要新的反向交易 | 未實作，也不屬於目前取消訂單 |
@@ -585,7 +585,7 @@ row 保持 `PENDING`；relay poll 後重試。服務重啟不會遺失它。
 3. 修正 code／configuration 後，以有 idempotency key 的受控 replay 或 backfill 建立事件。
 4. 再次核對下游 durable facts、資產、queue、DLQ 與 retry debt。
 
-目前不是每一種 terminal `FAILED` 都有完整的公開 recovery API。Wallet 有可列出／requeue `FAILED` outbox 的 admin capability，但預設關閉；Order 與 Match 主要依賴 status／metrics、資料庫操作與受控 runbook。把 terminal failure 自動改回 `PENDING` 可能重送 poison event，因此必須先查原因，不能用無限 retry 掩蓋。
+REL-106 已為 Order／Wallet／Match 的 technical terminal inbox／outbox 與 Match cleanup 提供受保護的 inspect、dry-run、fingerprint 驗證、rate limit、owner-side replay 與 action audit。它不允許中央服務直接改 owner schema，也不會把 permanent invariant、identity conflict 或 shared DLQ 強制改回 `PENDING`；這些 case 只能 park／resolve，避免用無限 retry 掩蓋 poison event。
 
 ## Saga Pattern：目前真正實作的是什麼
 
@@ -617,13 +617,16 @@ graph LR
 - 沒有中央 Saga orchestrator 或單一 global saga status；任何服務都不能單獨宣稱三服務已完成。
 - 沒有跨服務 exactly-once；提供的是 at-least-once delivery 加上 effectively-once local state transition。
 - Order 已能找出長時間停在驗資或取消中的候選，但沒有跨服務 end-to-end timeout authority，也不會僅憑時間自動決定補償。
-- shared DLQ 尚不是完整的分類、審核、replay control plane；Wallet reservation／trade／cancellation-result 已有 service-owned inbox，但 inbox insert 前的 DB outage 仍會落入 transport retry／DLQ 窗口。
-- Order／Match terminal outbox failure 的人工 recovery 介面不如 Wallet 完整。
+- shared DLQ 已能 persist-before-ACK quarantine、分類與審核，但因 owner／business preflight
+  不可證明，本版刻意不提供 broker redrive；各服務 inbox insert 前的 dependency-wide DB
+  outage 則由 REL-104 保留未 ACK delivery 並暫停 consumer。
+- Order／Wallet／Match terminal inbox、outbox 與 Match cleanup 已對齊共同 recovery contract；
+  permanent／schema／identity／invariant／unknown 類型仍刻意不可 replay。
 - Redis 全毀後由 PostgreSQL 重建完整 order book，仍是較大的 recovery architecture 題目；reservation reconciler 只處理局部中斷。
 
 因此面試時不應說「我用了 Saga，所以跨服務一致性已解決」。更精確的說法是：
 
-> 我把下單、資產保留、撮合、成交套用與取消訂單切成各服務擁有的本地交易，再以事實事件接續。Outbox 解決 commit 後可靠發布，冪等與 inbox 解決重送及亂序，補償流程處理未成交資產與 Redis reservation；最後用跨服務 durable fact verifier 定義是否收斂。它是 choreography Saga；Order timeout detector 能找出長期未前進的候選，但不把 timeout 當成業務事實，terminal failure 與 DLQ replay 仍需受控 recovery plane。
+> 我把下單、資產保留、撮合、成交套用與取消訂單切成各服務擁有的本地交易，再以事實事件接續。Outbox 解決 commit 後可靠發布，冪等與 inbox 解決重送及亂序，補償流程處理未成交資產與 Redis reservation；最後用跨服務 durable fact verifier 定義是否收斂。它是 choreography Saga；Order timeout detector 能找出長期未前進的候選，但不把 timeout 當成業務事實。Terminal failure 現在可經受保護、可 dry-run、可稽核的單筆 control plane 交回 owner worker；shared DLQ 因 owner 不明只先 quarantine，不假裝能安全重播。
 
 ## 失敗情境矩陣
 
@@ -668,7 +671,7 @@ graph LR
 
 主管若追問「這算 Saga 嗎」：
 
-> 算 choreography Saga，但我不把 Saga 當成魔法。它沒有中央 orchestrator，也沒有跨服務 exactly-once。補償不是回滾已成交交易，而是對尚未成交的 reservation 做可稽核釋放；我已補上 Order warning-only timeout detection，但 timeout 只代表需要調查，terminal outbox 與 DLQ replay 仍是刻意留下的 production gap。
+> 算 choreography Saga，但我不把 Saga 當成魔法。它沒有中央 orchestrator，也沒有跨服務 exactly-once。補償不是回滾已成交交易，而是對尚未成交的 reservation 做可稽核釋放；Order warning-only timeout detection 只表示需要調查，REL-106 則讓 technical terminal work 能被安全地交回 owner worker。Shared DLQ 因 owner 與業務狀態不明仍禁止 redrive，這是刻意保留的安全邊界。
 
 主管若追問「event 真的解耦嗎」：
 

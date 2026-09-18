@@ -232,8 +232,8 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 ### 尚未解決
 
 - **Wallet DB 在 inbox insert 前長時間不可用**：REL-104 已用 service-local circuit、consumer pause 與 backoff probe 保留未 ACK delivery，DB 恢復後自動 resume；poison／schema error 不應被 connectivity circuit 無限重試，仍進 DLQ。
-- **Saga timeout 與 age SLO**：REL-105 已能針對 Order 的 `PENDING_ASSET_CHECK`／`CANCELLING` 提供 warning-only 候選與告警；它不會自動決定補償，受控 escalation／replay 仍待 REL-106。
-- **DLQ recovery control plane**：還沒有完整的 inspect、原因修正、rate-limited replay、audit 與 re-verification 流程。
+- **Saga timeout 與 age SLO**：REL-105 已能針對 Order 的 `PENDING_ASSET_CHECK`／`CANCELLING` 提供 warning-only 候選與告警；REL-106 可將候選 park／resolve 並保存 audit，但仍不會自動決定補償。
+- **DLQ recovery control plane**：REL-106 已提供 Wallet terminal inbox／outbox 的 inspect、dry-run、rate-limited owner-side replay 與 audit；shared DLQ 因 owner／business preflight 不明，只先 quarantine。
 - **Wallet trade failure campaign**：`TradeExecutedEvent` 已納入同一套 durable inbox，但尚未完成真實 Rabbit delivery 下的 60 秒 DB outage、process kill 與恢復測試；目前證據是 PostgreSQL transaction／lease integration test。
 - **Metrics 成本**：目前 inbox status gauge 會查詢資料庫；可用於學習與開發驗證，未來需評估降低 scrape query amplification 並補 oldest-age alert。
 - **事件命名遷移**：後續已將語意不清的 `OrderConfirmedEvent` 改名為 `OrderAssetReservationSucceededEvent`；`OrderSubmittedEvent` 與 `OrderFailedEvent` 仍保留。新 release contract 使用明確的過去式事實名稱 `OrderAssetReservationReleasedEvent`。
@@ -272,7 +272,7 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 
 ## 面試版說法
 
-> 我把 Wallet consumer 從「listener 直接做業務，短期重試後進 DLQ」改成 durable inbox。Rabbit ACK 只代表訊息已在 Wallet 落盤；lease worker 以 `SKIP LOCKED`、owner fencing、backoff 與 jitter 重試。驗資、成交與取消的資產異動，各自和 business idempotency／outbox／inbox `APPLIED` 放在同一筆 local transaction，所以 worker crash 不會留下半套效果。取消流程則拆成 MatchEngine 判定取消成功與 Wallet 確實釋放資產兩個事實，Order 中間是 `CANCELLING`，收到 Wallet 的 `OrderAssetReservationReleasedEvent` 才成為 `CANCELLED`。後續 REL-104 已處理 intake 前 DB outage，REL-105 已提供 warning-only timeout visibility；DLQ／terminal recovery control plane 仍是明確缺口。
+> 我把 Wallet consumer 從「listener 直接做業務，短期重試後進 DLQ」改成 durable inbox。Rabbit ACK 只代表訊息已在 Wallet 落盤；lease worker 以 `SKIP LOCKED`、owner fencing、backoff 與 jitter 重試。驗資、成交與取消的資產異動，各自和 business idempotency／outbox／inbox `APPLIED` 放進同一筆 local transaction，所以 worker crash 不會留下半套效果。取消流程則拆成 MatchEngine 判定取消成功與 Wallet 確實釋放資產兩個事實，Order 中間是 `CANCELLING`，收到 Wallet 的 `OrderAssetReservationReleasedEvent` 才成為 `CANCELLED`。REL-104 處理 intake 前 DB outage，REL-105 提供 warning-only timeout visibility；REL-106 再讓 technical terminal work 能以 fingerprint、actionId 與 audit 安全交回 Wallet worker，但 invariant／identity conflict 仍不可重播。
 
 ## 程式碼入口
 

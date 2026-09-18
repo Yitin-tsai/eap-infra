@@ -128,11 +128,13 @@ Label 只使用編譯期固定的 service／work／class，不放 order ID、tra
 RabbitMQ 3.13 的 Prometheus plugin 在 `/metrics/per-object` 提供 `rabbitmq_queue_messages` 與 `rabbitmq_queue_head_message_timestamp`。現行 shared `order.dlq` 被映射成：
 
 - `total = terminal = ready + unacked` 的 broker queue count；
-- `retry = 0`，因為尚未實作自動 redrive control plane；
+- `retry = 0`，因為 shared DLQ 的 owner／業務狀態無法可靠 preflight，broker redrive 刻意關閉；
 - oldest age 由 queue head timestamp 計算，不為了查看訊息而 consume；
 - queue metric 缺失本身就是 critical alert，不能當成空 queue。
 
-Shared DLQ 無法精確歸因到某個 consumer，per-consumer DLQ 與受控 replay 仍屬 EAP-REL-106。
+Shared DLQ 無法精確歸因到某個 consumer。EAP-REL-106 已提供 persist-before-ACK quarantine、
+inspect、分類與可稽核處置，但在 owner 與業務狀態無法可靠 preflight 前，broker redrive 仍刻意關閉；
+若要安全重播 broker 訊息，後續應先拆成 per-consumer DLQ 或補上可信的 owner metadata。
 
 ## SLO 與告警規則
 
@@ -205,9 +207,11 @@ start／end／max／slope、retry／terminal max 與 oldest-age max，
 
 - CDA inbox commit 前的 DB connectivity outage 已由 EAP-REL-104 處理：合法 delivery 不 ACK、不轉送 retry queue，而是留在 durable source queue；service-local circuit 暫停 consumer，DB 恢復後自動 resume。這不涵蓋 TDA consumer，也不代替 Saga timeout 或 terminal recovery。
 - 訂單可能沒有任何明顯 queue debt、卻長時間卡在 Saga state；EAP-REL-105 已提供 [warning-only timeout detector](order-saga-timeout-detector.zh-TW.md)。
-- Terminal debt 現在可見，但還沒有統一的 inspect／dry-run／rate-limited replay／audit control plane；由 EAP-REL-106 處理。
+- Terminal debt 已由 EAP-REL-106 接入統一的 inspect／dry-run／rate-limited single-case replay／
+  park／resolve 與 audit control plane；replay policy 仍由 owner 強制執行。
 - Failure injection 尚未把所有 DB outage、consumer crash、duplicate、late event 與 redrive preflight 做成一套 campaign；由 EAP-REL-107 驗證。
-- RabbitMQ 目前使用 shared DLQ，無法直接以 queue 名稱定位 consumer。
+- RabbitMQ 目前使用 shared DLQ；REL-106 能 persist-before-ACK quarantine 並保存 payload／route，
+  但仍無法可靠證明 consumer owner，因此 broker redrive 維持 fail closed。
 
 換句話說，REL-103 解決的是「失敗不能被 queue=0 隱藏」與「所有觀測者使用同一套債務語意」，不是把所有失敗自動修好。
 

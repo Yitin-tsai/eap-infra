@@ -8,6 +8,8 @@ EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向�
 
 > **最近一版目前程式證據（2026-09-04）：** Wallet 成交結算與 Match admission 納入 durable inbox 後，schema v3 k6 長窗以單一 seed 通過 `199.99 accepted orders/s`、`100.02 completed trades/s`；`192000` 筆 HTTP 訂單收斂為三服務完全相同的 `96000` 筆交易，資產、CQRS、Redis、RabbitMQ、DLQ、inbox、outbox 與 cleanup 都通過。這是 dirty-worktree、同機、單一 seed 的診斷下界，不是 release-pinned 容量或 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)。
 >
+> **故障恢復控制面更新（2026-09-17）：** terminal inbox、outbox、cleanup、Saga timeout 與 broker dead letter 現在使用共同的受保護單筆查詢與 audit contract。可安全重試的技術錯誤會帶著 fingerprint／actionId 交回原服務 worker；永久與 identity conflict 仍 fail closed。shared DLQ 只先 quarantine 供調查，不自動 redrive；詳見[故障恢復指南](docs/failure-recovery-control-plane.zh-TW.md)。
+>
 > **歷史證據邊界：** 舊 commits 曾由兩個 release-pinned seed 支持 `648 accepted orders/s` 的 15 分鐘同機壓力邊界，但不能沿用成目前可靠性版本的容量。失敗結果沒有否定 durable inbox 的正確性價值，而是量出它目前的處理成本與下一個瓶頸。
 
 ## 系統總覽
@@ -57,7 +59,7 @@ MatchEngine 不再維護額外的下游 Completion View，也不等待 Order 或
 | [eap-wallet](https://github.com/Yitin-tsai/eap-wallet) | 可用／鎖定餘額、結算事實與已套用的訂單取消結果 | 驗資、冪等交易結算與訂單取消後的資產釋放 |
 | [eap-matchEngine](https://github.com/Yitin-tsai/eap-matchEngine) | 訂單簿、`TradeExecuted` 與訂單取消結果 | CDA 撮合、確保訂單剩餘數量不會同時被撮合與取消、Redis reservation 復原、成交持久化；TDA 排程與清算 |
 | [eap-common](https://github.com/Yitin-tsai/eap-common) | 共用整合契約 | Event 與 DTO 定義，不擁有業務狀態 |
-| [eap-mcp](https://github.com/Yitin-tsai/eap-mcp)／[eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | 受控 AI 工具 | 實驗性 control-plane 操作，不參與核心交易正確性 |
+| [eap-mcp](https://github.com/Yitin-tsai/eap-mcp)／[eap-ai-client](https://github.com/Yitin-tsai/eap-ai-client) | Recovery access layer 與受控 AI 工具 | 受保護的 recovery 聚合／audit 與實驗性 AI 操作，不參與核心交易正確性 |
 
 TDA 是另一條已實作的市場模式，會收集通過驗資的階梯式出價，再依排程統一清算。目前尚未完成與 CDA 同等的可靠性與容量驗證，因此不能把 CDA 的證據直接套用到 TDA。
 
@@ -68,7 +70,8 @@ TDA 是另一條已實作的市場模式，會收集通過驗資的階梯式出�
 | 資料庫提交成功，但事件發布失敗 | Transactional Outbox 與可重試 relay |
 | RabbitMQ 重複投遞事件 | 資料庫冪等紀錄、payload identity guard 與唯一約束 |
 | Consumer 在 ACK 前停止 | 關鍵 Order／Wallet consumer 先 durable intake；commit 後才 manual ACK 或由 container ACK，後續以 lease worker 恢復 |
-| 錯誤事件無法處理 | Retry policy 與 DLX／DLQ |
+| 錯誤事件無法處理 | Retry policy 與 DLX／DLQ；可選的 persist-before-ACK quarantine 供調查 |
+| 持久化工作重試耗盡 | Owner 強制 failure classification、fingerprint dry-run、單筆 replay、actionId 冪等、rate limit 與 audit |
 | Redis reservation 清理中斷 | 持久化 cleanup task、精確 `tradeId` 對應與 reconciliation |
 | 讀取 projection 延遲 | Projection 可重建，且不阻擋命令端交易套用 |
 | 取消訂單與撮合競爭，或事件亂序抵達 | MatchEngine 決定剩餘量歸屬；Wallet durable inbox 冪等釋放並發布釋放事實；Order 以 `CANCELLING → CANCELLED` 與 prerequisite retry 等待收斂 |

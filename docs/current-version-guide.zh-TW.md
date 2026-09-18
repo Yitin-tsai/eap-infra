@@ -66,7 +66,10 @@ BUY／SELL workload 重跑目前程式：
 7. [ADR-004：inbox commit 前 DB outage recovery](adr/ADR-004-cda-inbox-precommit-db-outage-recovery.zh-TW.md)：理解為何保留 source queue、何時開 circuit，以及為何本次不做 delayed retry queue。
 8. [REL-104 故障恢復報告](benchmarks/2026-09-17-rel104-db-outage-recovery.md)：看 60 秒 outage、consumer pause、probe、DLQ 與 durable debt 的正式證據。
 9. [Order Saga Timeout Detector](order-saga-timeout-detector.zh-TW.md)：理解 queue／inbox 無 debt 為何仍可能卡單、有效狀態與 last-progress 如何判斷，以及為何 timeout 不等於可以自動補償。
-10. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
+10. [Failure Recovery Control Plane](failure-recovery-control-plane.zh-TW.md)與
+    [ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md)：理解 terminal work 如何單筆
+    inspect／dry-run／replay，以及 shared DLQ 為何先 quarantine 而不直接 redrive。
+11. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
 
 ### 準備面試
 
@@ -83,5 +86,7 @@ reservation issue 與 cleanup lease 的 terminal semantics。`EAP-REL-103` 也�
 durable debt 的 count、oldest age、retry／terminal、Prometheus 告警與 schema-v4
 business-complete gate 統一定義。`EAP-REL-104` 也已完成 CDA inbox commit 前的長時間
 DB outage 自動恢復，三個服務各自通過 60 秒 PostgreSQL outage。`EAP-REL-105` 也已用
-warning-only detector 補上 Order Saga 卡住的可見性；下一步是 `EAP-REL-106` 的
-DLQ／terminal recovery control plane。
+warning-only detector 補上 Order Saga 卡住的可見性。`EAP-REL-106` 已完成受保護的單筆
+terminal recovery、owner-side replay policy、兩端 actionId idempotency、rate limit／audit，
+並把 shared DLQ 先持久化 quarantine；下一步是 `EAP-REL-107` 的系統化 failure-injection
+campaign，而不是先擴大自動補償。
