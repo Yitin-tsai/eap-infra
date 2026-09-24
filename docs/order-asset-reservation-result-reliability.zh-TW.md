@@ -358,6 +358,6 @@ cd eap-order
 最大 backlog `291`、slope `+0.0079/s`、oldest age max `1s`、terminal debt `0`，且最終
 debt 歸零。詳見[最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。
 
-## 面試時可以怎麼說
+## 設計摘要
 
 > 我原本的 Order confirmation consumer 在失敗時直接 Rabbit requeue，資料雖然靠 event ID 冪等，但 DB outage 會形成 hot loop，而且 confirmed 和 failed 的 retry policy 不一致。後來我把 Wallet 驗資結果建成 Order-owned durable inbox：listener 只在 inbox commit 後 ACK，worker 用 `SKIP LOCKED` 和 lease claim；Order domain event 與 inbox `APPLIED` 在同一 transaction，lost lease 就整筆 rollback。Transient DB error 走有 jitter 的 backoff，identity conflict 直接 quarantine。這不是 exactly-once，而是用 at-least-once delivery 加上 durable processing state，做到可恢復且 effectively-once 的業務效果。

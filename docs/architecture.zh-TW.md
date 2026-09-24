@@ -196,6 +196,38 @@ graph TD
 | Rabbit queue 已空但本地工作未完成 | 三服務 `DurableDebtSnapshot` v1、schema-v4 fail-closed completion gate 與 Prometheus alerts |
 | debt snapshot query 失敗或服務消失 | 保留上次值並標記 observation failure／staleness；endpoint、metrics 與 load gate 不把未知當成零 |
 | queue／inbox 無 debt 但 Order 生命週期卡住 | warning-only timeout detector 掃描 `PENDING_ASSET_CHECK`／`CANCELLING`；只告警與列出候選，不自動產生業務結果 |
+| 自動重試耗盡但 payload 仍可能合法 | owner-side classification、fingerprint dry-run、受保護的單筆 replay／park／resolve 與 action audit |
+| shared DLQ 訊息要重播 | 只有 exact owner route、transient failure 與 owner business-state preflight 全部通過才 direct publish 回該 owner queue |
+
+### 錯誤處理的五層責任
+
+```mermaid
+graph TD
+    delivery["RabbitMQ delivery"] --> intake{"本地 durable intake 成功？"}
+    intake -->|DB connectivity failure| circuit["不 ACK；暫停 consumer；backoff + jitter probe"]
+    intake -->|成功| durable["Inbox / application fact 接管工作"]
+    intake -->|schema / poison| dlq["有限 broker retry 後進 DLQ quarantine"]
+    durable --> worker["Lease worker 分類與重試"]
+    worker -->|transient| retry["持久化 next attempt；bounded retry"]
+    worker -->|prerequisite| wait["等待前置事實；不消耗 technical budget"]
+    worker -->|permanent / identity / invariant| terminal["Terminal debt；停止自動重試"]
+    retry --> localTx["本地 transaction + idempotency"]
+    wait --> localTx
+    localTx --> outbox["Outbox + publisher confirm"]
+    outbox --> downstream["下游以 at-least-once duplicate-safe 套用"]
+    dlq --> control["Control plane inspect / dry-run / park / conditional replay"]
+    terminal --> control
+```
+
+這五層刻意把「訊息還沒被服務接管」、「服務已持久化接管但尚未完成」與「自動處理已不應
+繼續」分開。ACK 只代表 durable ownership，不代表業務完成；DLQ 也只是隔離與調查入口，
+不是 Saga 已完成或資料已修復。
+
+REL-107 R1～R5 已用真實 PostgreSQL／Redis outage、Order／Wallet process crash、worker
+lease reclaim、Match publisher-confirm→`SENT` crash、MCP replay-confirm→central-audit crash、
+duplicate 與 late event 驗證核心 CDA。Wallet／Order `TradeExecutedEvent` 已有 owner-aware
+DLQ replay；Match 與其他 broker route 仍 fail closed。完整證據見
+[failure-injection campaign](benchmarks/2026-09-18-rel107-failure-injection-campaign.md)。
 
 ## 擴充與效能邊界
 
@@ -402,5 +434,10 @@ Wallet 真正釋放資產時，cancellation application、balance update、relea
 - Redis order book 已有 `READY／RECOVERING` generation gate 與受控 activation，但尚無
   自動 full-book rebuild；Redis generation 遺失時會安全停撮，不能宣稱不中斷繼續撮合。
 - Order 已有 logical CQRS 與可重建 projection，但 user query 仍使用 primary database，尚未完成 read replica 或獨立 read-database isolation。
+- REL-107 尚未逐條開放其他 shared-DLQ route，也尚未在同一個 HTTP 全鏈 run 同時
+  `SIGKILL` Order、Wallet 與 MatchEngine；這些是延後的證據廣度，不影響既有 route 的
+  fail-closed 邊界。
+- MCP 在 broker confirm 後更新中央 disposition 的極小競態目前保留為已知營運一致性缺口；
+  owner-side actionId 與 inbox 冪等仍保護業務結果，本版本不把它包裝成完全自動收斂。
 
 詳細 happy path、retry、亂序與 crash window 請讀[訂單事件完整生命週期](order-event-lifecycle.zh-TW.md)；一致性設計的理由與保證邊界請讀[事件驅動一致性的五個核心問題](event-consistency-five-questions.zh-TW.md)。

@@ -188,6 +188,42 @@ graph TD
 | benchmark observer effect | light/deep diagnostics levels and queue-first sampling |
 | RabbitMQ is empty while service-owned work remains | service-owned `DurableDebtSnapshot` v1, schema-v4 fail-closed completion gates, and Prometheus alerts |
 | a debt snapshot query or service disappears | retain last values but expose failed/stale observation; endpoints, alerts, and the load gate treat unknown telemetry as failure |
+| CDA database is unavailable before inbox commit | do not ACK; pause the service-local consumers and resume only after a single-flight backoff-and-jitter probe confirms recovery |
+| queues and inbox debt are empty but an Order Saga is stuck | warning-only detector for `PENDING_ASSET_CHECK` and `CANCELLING`; expose bounded diagnostics without inventing a business result |
+| automatic retry is exhausted but the payload may still be valid | owner-side classification, fingerprint dry-run, protected single-case replay/park/resolve, and action audit |
+| a shared-DLQ message is considered for replay | require an exact owner route, a transient failure, and owner business-state preflight before direct publication to that owner queue |
+
+### Five Failure-Handling Layers
+
+```mermaid
+graph TD
+    delivery["RabbitMQ delivery"] --> intake{"Local durable intake succeeds?"}
+    intake -->|DB connectivity failure| circuit["Do not ACK; pause consumer; backoff + jitter probe"]
+    intake -->|yes| durable["Inbox / application fact owns the work"]
+    intake -->|schema / poison| dlq["Bounded broker retry, then DLQ quarantine"]
+    durable --> worker["Leased worker classifies and processes"]
+    worker -->|transient| retry["Persist next attempt; bounded retry"]
+    worker -->|prerequisite| wait["Wait without consuming technical retry budget"]
+    worker -->|permanent / identity / invariant| terminal["Terminal debt; stop automatic retry"]
+    retry --> localTx["Local transaction + idempotency"]
+    wait --> localTx
+    localTx --> outbox["Outbox + publisher confirm"]
+    outbox --> downstream["At-least-once duplicate-safe downstream apply"]
+    dlq --> control["Control-plane inspect / dry-run / park / conditional replay"]
+    terminal --> control
+```
+
+These layers separate messages not yet owned by a service, durable work that is not yet
+complete, and failures that automation must stop hiding. An ACK means durable ownership,
+not business completion. A DLQ is an isolation and investigation boundary, not proof that
+the Saga completed or that data was repaired.
+
+REL-107 R1-R5 exercised PostgreSQL and Redis outages, Order/Wallet process crashes, worker
+lease reclaim, the Match publisher-confirm-to-`SENT` crash window, the MCP
+replay-confirm-to-central-audit crash window, duplicates, and late events. Owner-aware DLQ
+replay exists for the exact Wallet and Order `TradeExecutedEvent` routes; MatchEngine and
+all other broker routes remain fail-closed. See the
+[failure-injection campaign](benchmarks/2026-09-18-rel107-failure-injection-campaign.md).
 
 REL-106 adds a low-frequency failure-recovery access layer in `eap-mcp`. The control
 plane authenticates operators, aggregates bounded terminal-case queries, rate-limits
@@ -214,36 +250,43 @@ committed exactly one settlement. See the
 [ADR-005](adr/ADR-005-failure-recovery-control-plane.zh-TW.md) plus
 [ADR-006](adr/ADR-006-owner-aware-shared-dlq-replay.zh-TW.md).
 
-## Current Scaling Boundary
+## Scalability and Performance Boundary
 
-The current bottleneck is not one isolated service operation. Redis/Lua matching, combined Match processing, RabbitMQ-to-Match intake, TradeExecuted fanout, and Match relay plus downstream application all run materially faster in their isolated diagnostics than the complete mixed HTTP flow. These probes rule out a standalone ceiling; they do not remove those components from the integrated path.
+Architecture documentation does not maintain a ranking of historical TPS results. A capacity
+claim must be tied to source revisions, workload, environment, and the business-completion gate;
+an isolated component rate is not full-transaction capacity. The 2026-09 reliability revision
+added service-owned inboxes and separate Order execution/reservation state, so older 648
+orders/s evidence does not transfer to the current path.
 
-- `TradeExecuted` persistence and trade outbox relay.
-- Order trade application and event-store writes.
-- Wallet reservation/confirmation outbox and trade settlement.
-- Service-owned idempotency, retry, and reliability writes.
+The current long-window diagnostic passed one seed at `199.99 accepted orders/s` and
+`100.02 completed trades/s` under the then-current schema-v3 gate. The runner now uses schema
+v4 and reads the same versioned durable-debt snapshots as Actuator and Micrometer. Missing,
+stale, incomplete, or non-zero snapshots fail closed even when RabbitMQ is empty. A short
+schema-v4 smoke verifies wiring and correctness, not a new capacity boundary. See the
+[current-version campaign](benchmarks/2026-09-04-current-reliability-full-chain.md),
+[durable-debt contract](durable-debt-slo.zh-TW.md), and
+[performance report](performance-report.md) for dated evidence and limitations.
 
-The 2026-08-07 deep mixed HTTP diagnostic exposed an additional MatchEngine scheduling boundary. Spring reported one `taskScheduler` worker while reservation cleanup, trade outbox polling, reservation reconciliation, and auction jobs shared that scheduler. A cleanup invocation reached `9.380s`; Match-to-Order and Match-to-Wallet p95 lag rose together to about `7.38s`. MatchEngine now separates the trade-outbox scheduler from reservation maintenance and retains a default scheduler for other periodic work.
+The complete path pays for several local consistency boundaries:
 
-```mermaid
-graph TD
-    outboxScheduler["Trade outbox scheduler"] --> outboxPolling["Trade outbox polling"]
-    reservationScheduler["Reservation maintenance scheduler"] --> cleanup["Reservation cleanup"]
-    reservationScheduler --> reconciliation["Reservation reconciliation"]
-    defaultScheduler["Default scheduler"] --> periodic["Other periodic schedules"]
-    outboxPolling --> publisher["Bounded publisher executor"]
-    publisher --> mq["RabbitMQ TradeExecuted"]
-```
+- Order event append, command-state update, and outbox insertion.
+- Wallet durable intake, conditional asset mutation, and result outbox.
+- MatchEngine admission inbox, Redis Lua matching, durable trade, and trade outbox.
+- Order and Wallet durable trade application, idempotency, retry, and reconciliation writes.
+- Order projection into the user-visible `orders_current` read model.
 
-The same-seed controlled A/B improved the 800-stage completion rate from `167.93` to `383.45 trades/s` and reduced maximum backlog from `4090` to `246`, with exact final convergence. Scheduler isolation is therefore current architecture. Later repeats did not make 800 a stable capacity point, so this is an adopted scheduling fix rather than a higher public capacity claim.
+RabbitMQ queue drain therefore does not prove the system has caught up. Queue depth, inbox
+level/age/slope, outbox debt, and projection lag are distinct queues. REL-103 normalizes them
+as `totalCount`, `retryCount`, `terminalCount`, and `oldestUnresolvedAgeSeconds`; each service
+refreshes a cached snapshot on a dedicated observability scheduler so Prometheus scrape and
+Actuator reads do not issue database queries directly.
 
-The 2026-08-14 isolated boundary campaign then measured the real Match listener at up to `918.46 persisted trades/s`, direct downstream Order/Wallet fanout at up to `1972.77 durable trades/s`, and pre-seeded Match relay plus downstream convergence at `2125.20-2521.07 trades/s`. All are short component diagnostics with `capacityClaimAllowed=false`. In the canonical mixed HTTP recheck, `600 orders/s` passed 3 valid seeds, `624` passed 2 and failed 1, and `648` passed only 1 short sample with elevated HTTP tail latency and transient backlog. Two later 624 long-window runs passed, followed by two release-pinned `648 orders/s` 15-minute runs at `315.96` and `314.84 same-window trades/s`. Both 648 runs converged exactly, establishing that historical revision's same-host lower-bound class at `648 accepted orders/s`; their `4001-4907` maximum backlog, higher tail latency, pool pressure, and high shared-host CPU make this a pressure boundary rather than comfortable capacity.
-
-Redis resting-order reservations also carry the exact durable `tradeId` they are expected to produce. Cleanup, compensation, and orphan reconciliation present that ID to Lua before changing the reservation. This prevents an old cleanup or a timestamp-based false negative from releasing a consumed order or deleting a newer reservation for the same order ID.
-
-The remaining pressure appears only when HTTP admission, reservation, confirmation, matching, relays, settlement, three databases, RabbitMQ, JVMs, monitoring, and the load generator compete on the same host. The 648 long repeats reached Order command-pool pending peaks of `90` and `91`, Wallet pending peaks of `25`, and system CPU averages of roughly `85-88%`. Their full-lifecycle rates remained in the same `301-310 trades/s` range as 624 despite the higher accepted input. These are pressure signals rather than proof that a larger pool is the fix. A later low-external-observability repeat matched the accepted run through its first half but degraded late; because the generator's exact one-second durable-count monitor remained active and resource diagnostics were absent, it is inconclusive for attribution. A prepared-sync diagnostic moved deterministic schedule and JSON construction outside the traffic clock and calibrated at `1999.98 requests/s` against a no-op endpoint, but its full-chain 1200/2000 probes still missed offered-load gates. The external Vegeta driver subsequently removed the Java driver's scheduling ambiguity and passed a short equivalence sandwich at 648, but it did not create additional service capacity. A release-pinned 20-minute 700 run supplied all `882000` requests and converged exactly, yet completed only `240.01 same-window trades/s` and required about `844.93s` of post-input drain. RabbitMQ backlog alone did not expose this service-owned debt. The next decisive step is per-stage durable-debt measurement before another high-cost capacity repeat; a separate load-generator host remains necessary only when testing beyond the same-host boundary.
-
-The 2026-09 reliability revision adds service-owned inboxes plus separate Order execution/reservation state, so the historical 648 number does not transfer. The Wallet-trade-inbox worktree passed one k6 long-window seed at `199.99 orders/s` and `100.02 trades/s` under the then-current schema-v3 gate. The runner now uses schema v4 and reads the same versioned service-owned durable-debt contract used by Actuator and Micrometer; unavailable, stale, incomplete, or non-zero snapshots fail closed even when RabbitMQ is empty. A short 2026-09-15 smoke verified this wiring but does not update the capacity claim. The earlier long-window source was stable during the run but dirty, the load generator was co-located, and PostgreSQL used `synchronous_commit=off`, so it remains a diagnostic lower bound rather than a release-pinned capacity claim. See the [current-version campaign](benchmarks/2026-09-04-current-reliability-full-chain.md) and the [durable-debt contract](durable-debt-slo.zh-TW.md).
+Scaling follows ownership boundaries: Order workers partition independent streams while
+serializing aggregate versions; Wallet may partition different accounts but preserves the
+wallet-row invariant; MatchEngine shards by market/product while keeping one matching authority
+per book; inbox/outbox workers use bounded concurrency and fenced leases; query projections may
+batch or later move to a read database. Every optimization must preserve idempotency, publisher
+confirm, durable debt, final trade-ID equality, and asset reconciliation.
 
 ## Why Not Split More Services Now
 
@@ -401,3 +444,27 @@ way Wallet trusts `TradeExecuted`. Wallet still owns balance calculation, non-ne
 guards, transaction rollback, and idempotent application; MatchEngine does not command
 an absolute Wallet balance. This keeps cancellation-only persistence off the normal
 order and trade write paths while preserving replay and out-of-order convergence.
+
+## Known Limits
+
+- TDA does not yet have CDA-equivalent outbox coverage, consumer idempotency, rejection
+  events, or full-convergence evidence. CDA guarantees and throughput do not transfer to it.
+- Wallet reservation, trade settlement, and cancellation-result handling use durable intake,
+  leased workers, and local transactions. The current reliability revision has only one
+  same-host 200 orders/s long-window diagnostic; it does not establish a production SLA or
+  the current ceiling above 200.
+- Long database outages before CDA inbox commit are handled by service-local circuits and
+  consumer pause. Poison and schema failures still terminate in the DLQ path.
+- Order has a warning-only Saga timeout detector and REL-106 provides controlled terminal
+  recovery. There is no global Saga authority that automatically chooses cross-service
+  compensation.
+- Shared-DLQ conditional replay is proven only for the exact Wallet and Order trade routes.
+  Other routes remain fail-closed, and REL-107 has not SIGKILLed Order, Wallet, and
+  MatchEngine together in one HTTP full-chain run.
+- Redis generation loss fails closed behind `READY`/`RECOVERING` and controlled activation;
+  an automatic full-book rebuild is not implemented.
+- Order has logical CQRS and a rebuildable projection, but user queries still use the primary
+  database rather than a read replica.
+- A rare MCP race after broker confirm but before central disposition update remains an
+  acknowledged operational-consistency gap. Owner-side action IDs and inbox idempotency still
+  protect business results; the current release does not claim automatic central convergence.

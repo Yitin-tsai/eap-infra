@@ -270,7 +270,7 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 後續三服務 inbox 與 Order 雙狀態整合後的正常交易回歸，請以
 [2026-09-04 最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)為準；本頁的取消生命週期數據是 correctness evidence，不是目前 mixed-flow 容量。
 
-## 面試版說法
+## 設計摘要
 
 > 我把 Wallet consumer 從「listener 直接做業務，短期重試後進 DLQ」改成 durable inbox。Rabbit ACK 只代表訊息已在 Wallet 落盤；lease worker 以 `SKIP LOCKED`、owner fencing、backoff 與 jitter 重試。驗資、成交與取消的資產異動，各自和 business idempotency／outbox／inbox `APPLIED` 放進同一筆 local transaction，所以 worker crash 不會留下半套效果。取消流程則拆成 MatchEngine 判定取消成功與 Wallet 確實釋放資產兩個事實，Order 中間是 `CANCELLING`，收到 Wallet 的 `OrderAssetReservationReleasedEvent` 才成為 `CANCELLED`。REL-104 處理 intake 前 DB outage，REL-105 提供 warning-only timeout visibility；REL-106 再讓 technical terminal work 能以 fingerprint、actionId 與 audit 安全交回 Wallet worker，但 invariant／identity conflict 仍不可重播。
 

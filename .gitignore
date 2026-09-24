@@ -39,6 +39,11 @@ docs/workflow/resume-ai-workflow-notes.md
 docs/archive/local-machine/
 scripts/fill_yueqing_resume.applescript
 
+# Private career and conference materials live in eap-career-notes
+docs/interview-guide.zh-TW.md
+docs/talks/hello-world-dev-conference-2026*
+scripts/presentation/
+
 # Local editor / scratch files
 .vscode/
 Solution.java

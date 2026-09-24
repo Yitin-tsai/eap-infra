@@ -29,8 +29,6 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 | Benchmark methods | [`benchmarks/load-test-taxonomy.md`](benchmarks/load-test-taxonomy.md) | Workload definitions and claim boundaries |
 | Benchmark campaigns | [`benchmarks/`](benchmarks/) | Human-readable dated experiment reports |
 | Published evidence | [`benchmarks/results/`](benchmarks/results/) | Minimal reviewed artifacts that support committed reports |
-| Interview entry | [`interview-guide.zh-TW.md`](interview-guide.zh-TW.md) | Five-minute project, architecture, consistency, performance, and trade-off briefing |
-| Conference material | [`talks/`](talks/) | Audience-specific presentations derived from project evidence |
 | Frozen history | [`archive/`](archive/) | Superseded plans and append-only historical records |
 
 `features/` is reserved for active feature specifications that have not yet been
@@ -63,6 +61,5 @@ runner / tests
 See the [benchmark evidence guide](benchmarks/README.md) for the promotion checklist.
 
 For this reliability revision, start with the
-[latest-version guide](current-version-guide.zh-TW.md). For an upcoming conversation,
-continue with the [Traditional Chinese interview guide](interview-guide.zh-TW.md) or
-the [Hello World Dev brief](talks/hello-world-dev-conference-2026-brief.zh-TW.md).
+[latest-version guide](current-version-guide.zh-TW.md), then continue with the
+[architecture](architecture.md) and dated benchmark evidence linked from it.

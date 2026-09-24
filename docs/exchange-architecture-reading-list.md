@@ -61,7 +61,7 @@
   - order modification 可能失去 timestamp priority
 - 對 EAP 的價值：
   - EAP 已有 CDA 與 Timed Double Auction，可參考 CME 對不同產品套用不同撮合規則的思路
-  - 對 pro-rata 與 price-time priority 的面試說法有幫助
+  - 有助於精確說明 pro-rata 與 price-time priority 的差異
 
 ### Nasdaq Matching Engines Overview
 
@@ -71,7 +71,7 @@
   - 交易所技術供應商如何描述 matching engine 價值
 - 對 EAP 的價值：
   - 可作為高層次產品/架構語言參考
-  - 適合整理 README 或面試簡報中的非程式碼敘事
+  - 適合整理 README 中的高層次非程式碼敘事
 
 ## 對 EAP 的暫定架構結論
 

@@ -1,6 +1,6 @@
 # EAP Engineering Backlog
 
-> 更新日期：2026-09-18
+> 更新日期：2026-09-21
 
 > 本頁是跨 Order、Wallet、MatchEngine 的唯一優先順序入口。各 feature ticket
 > 保存設計與驗收細節；若 ticket 內的排列與本頁不同，以本頁為準。
@@ -11,6 +11,19 @@
 2. 再補 CDA 的 liveness、故障偵測與受控恢復能力。
 3. 只有在目前版本通過完整正確性關卡後，才繼續最佳化吞吐量。
 4. TDA、read replica 與平台型功能保留為後續學習題，不搶占 CDA 可靠性工作。
+
+## 目前里程碑：先統合成果，不再擴張可靠性範圍
+
+核心 CDA 的 durable intake、錯誤分類、DB outage recovery、Saga timeout 可見性、
+terminal recovery control plane 與 REL-107 R1～R5 failure injection 已形成完整證據鏈。
+2026-09-21 起先凍結這條主線，統一架構、驗證與版本文件；不為了把
+shared DLQ 的每一條 route 打勾而繼續增加 owner preflight。
+
+下一個新工程題目預設是 `EAP-PLAT-201` HTTP command idempotency。它直接補上「DB 已提交、
+但 HTTP response 遺失，client 不知道是否該重送」的交易入口缺口，範圍比 Redis full-book
+rebuild 小，也更容易形成可重用的 API contract。`EAP-MATCH-202` 保留為後續較大型的
+recovery 專題；沒有新的故障證據或產品需求前，不先做 read replica、TDA parity 或更多
+平台功能。
 
 ## P0：先封版目前的 CDA 可靠性改版
 
@@ -242,7 +255,7 @@ policy 與 quorum queue；這些 topology 變更不能和 control-plane API 一�
 
 ### EAP-REL-107：系統化 failure-injection campaign
 
-**狀態：R5 已完成；ticket 僅保留尚未支援的 route／全鏈範圍。**
+**狀態：核心 R1～R5 已完成；尚未支援的 route／全鏈廣度已明確延後。**
 
 **完成條件：**
 
@@ -253,7 +266,7 @@ policy 與 quorum queue；這些 topology 變更不能和 control-plane API 一�
   200 次 duplicate delivery 被 durable inbox 吸收，三服務 debt 歸零。
 - [x] 真實 MCP replay publisher confirm 與 central audit completion 邊界的 process crash；
   同 actionId 重試為 attempt 2，兩次 broker delivery 最終只有一筆 Wallet settlement。
-- [ ] 逐 consumer 補齊 DLQ redrive business-state preflight。Wallet／Order
+- [ ] （延後）逐 consumer 補齊 DLQ redrive business-state preflight。Wallet／Order
   `TradeExecutedEvent` 已用 `x-death.queue`＋exact topology allowlist 證明 owner，並在
   dry-run／execute 查 owner-local durable state；Match 與 Order／Wallet 其他 queue 尚未開放。
 - [x] 已執行案例都核對沒有 duplicate trade、重複資產異動、遺失工作或未追蹤 debt。
@@ -306,9 +319,13 @@ deterministic owner-state 與真實 transport evidence，不冒充第二次 proc
 
 ### EAP-PLAT-201：HTTP idempotency contract
 
+**建議：下一個新工程題目。**
+
 - 由 client 提供穩定 idempotency key。
 - DB commit 後 response 遺失時，可查回第一次結果而不是產生新的 sequence／timestamp
   payload conflict。
+- 驗收必須包含同 key 同 payload、同 key 不同 payload、commit 後 response 中斷、並行重送
+  與過期策略；不能只在 Controller 放一個 cache。
 
 ### EAP-MATCH-202：Redis order book durable rebuild
 
@@ -358,16 +375,26 @@ REL-001 → REL-002 → REL-003
                      │
                      ├─ REL-101 → REL-102
                      ├─ REL-103 ✓ → REL-104 ✓ → REL-105 ✓ → REL-106 ✓
-                     └─ REL-107（持續擴充 failure campaign）
+                     └─ REL-107 R1～R5 ✓（其餘廣度延後）
 
-以上每一條都由 REL-107 failure injection 驗證
-完成後才進 PLAT-201／MATCH-202／PERF-203
+目前先統合架構、驗證與版本文件
+下一個新工程題目：PLAT-201
+大型 recovery 題目：MATCH-202
 TDA、read replica 與進階 scaling 保持延後
 ```
 
 ## 目前下一件事
 
-**EAP-REL-001／002／003／101／102／103／104／105／106 已完成。REL-107 下一個缺口是：**
-把已在 Wallet／Order trade 證明的 owner routing／business-state preflight 模式逐一擴充到其他 queue，
-並依每條 route 的 owner state 定義可重播語意；broker-confirm 到中央 action completion 的
-process-crash boundary 已用 Wallet route 驗證。任意 Redis full-book rebuild 仍留在 MATCH-202。
+**先完成成果統合，再開始新的功能 ticket。**
+
+目前不把以下項目排入近期實作：
+
+- MCP broker confirm 後中央 disposition 的極小競態；owner inbox 冪等不受影響，先保留為
+  已知營運一致性缺口。
+- shared DLQ 其他 route 的逐條 preflight；未定義 owner state 的 route 繼續 fail closed。
+- 在同一次 HTTP 全鏈 run 同時 `SIGKILL` 三個核心 JVM；現有 component 與 fanout crash
+  evidence 保留，不把未執行案例寫成已證明。
+- Redis 任意 open book 的自動 rebuild、TDA reliability parity、read replica 與進階 scaling。
+
+成果統合完成後，優先評估 `EAP-PLAT-201`；若要繼續深挖故障恢復，再啟動
+`EAP-MATCH-202`，而不是先擴大 control plane 功能面。

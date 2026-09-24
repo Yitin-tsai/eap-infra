@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-09-18
+> 更新日期：2026-09-21
 
 > 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -17,13 +17,14 @@
 9. **Inbox commit 前的 DB outage 不再把合法事件灌進 DLQ。** Order、Wallet、MatchEngine 的 CDA consumer 會把 connectivity failure 與 poison 分開；DB outage 經短期 retry 後開啟 service-local circuit、停止自己的 listener，讓未 ACK 訊息留在 durable source queue，再用單一 backoff＋jitter probe 確認 DB 恢復並分批啟動 listener。
 10. **Order Saga 卡住不再只能靠人工猜。** warning-only detector 依 effective lifecycle state 與 stream-head progress time 找出長時間停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的訂單，提供 bounded Actuator 明細、低基數 metrics 與 fail-closed 告警；它刻意不自動取消或釋放資產。
 11. **DLQ replay 有 owner-aware 安全邊界。** 目前只開放 exact Wallet／Order `TradeExecutedEvent` topology、明確 transient failure，且各 owner 的 business-state preflight 通過才可 direct replay。Order 不只查 recovery inbox，也查正常 happy path 的 trade application。MCP 在 publisher confirm 後、中央 audit 前 `SIGKILL` 的 live campaign 已以 Wallet route 證明同 actionId 可恢復，duplicate 最終只形成一筆 Wallet settlement。
+12. **可靠性主線已進入成果統合。** REL-107 R1～R5 已涵蓋核心 DB／Redis outage、consumer crash、worker lease、duplicate／亂序、Match outbox confirm ambiguity 與 MCP replay confirm ambiguity。其他 DLQ route、三 JVM 同場 crash 與中央 disposition 極小競態保留為已知邊界，不為了追求功能數量繼續擴張 control plane。
 
 ## 現行能力與誠實邊界
 
 | 面向 | 現在可以說 | 仍不能說 |
 | --- | --- | --- |
 | 一致性 | local transaction＋outbox＋at-least-once＋idempotency＋durable inbox，使 duplicate、worker crash 與部分亂序可恢復 | exactly-once messaging、跨服務 ACID transaction |
-| Saga | CDA choreography、取消 remainder compensation、多段 retry、inbox commit 前 DB outage 自動恢復，以及 Order warning-only timeout detection 已實作 | 跨服務 timeout 自動判斷補償、DLQ／terminal debt 自動修復 |
+| Saga | CDA choreography、取消 remainder compensation、多段 retry、inbox commit 前 DB outage 自動恢復，以及 Order warning-only timeout detection 已實作 | 跨服務 timeout 自動判斷補償、所有 DLQ／terminal debt 自動修復 |
 | CQRS | Order event store 是事實來源；`orders_current` 可重建並為查詢塑形；API 回傳 execution／reservation 雙狀態 | 強 read-your-write、獨立 read replica 已完成 |
 | 撮合 | Redis Lua 維持單一 market 內的撮合／取消互斥，PostgreSQL 保存成交與 recovery task | Redis 全量遺失可自動重建並無縫開放 |
 | 效能 | 新版 Wallet trade inbox 加入後，以 dirty-worktree 單一 seed 在完整 gate 下通過 `200 orders/s`、`100.02 trades/s` 長窗，且沒有觀察到相對同 seed baseline 的巨大退化 | 把單次本機結果當成精確 ceiling、release-pinned capacity 或 production SLA；200 以上尚未重測 |
@@ -72,11 +73,8 @@ BUY／SELL workload 重跑目前程式：
     [ADR-006](adr/ADR-006-owner-aware-shared-dlq-replay.zh-TW.md)：理解 terminal work 如何單筆
     inspect／dry-run／replay，以及 shared DLQ 為何只對有 exact owner route 與 business-state
     preflight 的 Wallet／Order trade 開放。
-11. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
-
-### 準備面試
-
-先讀[面試快速入口](interview-guide.zh-TW.md)，再用本文件的「現行能力與誠實邊界」回答追問。效能問題一律先說 workload、版本、完成條件與 evidence class，再報數字。
+11. [REL-107 failure-injection campaign](benchmarks/2026-09-18-rel107-failure-injection-campaign.md)：直接看 DB／Redis outage、process crash、duplicate 與兩個 publisher-confirm ambiguity window 的實證與未完成邊界。
+12. 各服務 README，再進對應 listener、inbox、processor、reconciler 與 database changelog。
 
 ## 接下來做什麼
 
@@ -93,5 +91,7 @@ warning-only detector 補上 Order Saga 卡住的可見性。`EAP-REL-106` 已�
 terminal recovery、owner-side replay policy、兩端 actionId idempotency、rate limit／audit，
 並把 shared DLQ 先持久化 quarantine。`EAP-REL-107` R1～R5 已驗證 DB／Redis outage、核心
 consumer crash、Match outbox confirm ambiguity、MCP replay confirm→central audit crash，並
-把 owner-specific preflight 擴充到 Order `TradeExecutedEvent`；下一步只逐條處理尚未具備
-owner preflight 的 DLQ route，不擴大成未受控自動補償。
+把 owner-specific preflight 擴充到 Order `TradeExecutedEvent`。目前先凍結可靠性主線，
+統一架構、驗證與版本文件；其他 DLQ route、三 JVM 同場 crash與中央
+disposition 極小競態明確延後。成果統合完成後，下一個建議的新工程題目是 HTTP command
+idempotency；Redis full-book rebuild 保留為後續大型 recovery 專題。

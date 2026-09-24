@@ -227,6 +227,6 @@ Rabbit／service process failure-injection，也不是 release-pinned capacity �
   late event 與 ambiguous recovery response 仍待 REL-107 campaign；
 - 200 orders/s 以上的邊界搜尋與 clean revision release-pinned 重跑。
 
-## 面試版說法
+## 設計摘要
 
 > Wallet 原本直接在 Rabbit listener 裡結算成交，DB 故障超過幾次 retry 就只剩 DLQ。我把 TradeExecuted 納入 Wallet-owned durable inbox：listener 在 inbox commit 後才返回，lease worker 再把 trade settlement、buyer／seller balance 與 inbox APPLIED 放進同一筆 transaction。相同 trade ID 由 inbox hash 與 settlement primary key 兩層去重；worker 失去 lease 時整筆 rollback，crash 後由新 worker接手。REL-104 再把 inbox insert 前的 connectivity outage 改為 pause consumer、保留未 ACK delivery並自動恢復；REL-106 讓 technical retry exhausted 可經受保護的單筆操作交回同一個 Wallet worker，永久 invariant 與 identity conflict 仍 fail closed。

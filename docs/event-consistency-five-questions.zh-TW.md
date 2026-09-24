@@ -325,7 +325,7 @@ flowchart TD
 
 這五點共同構成同一個設計，不是五個互不相關的 pattern。
 
-## 面試／1-on-1 的兩分鐘回答
+## 兩分鐘設計摘要
 
 > 我的系統不是 distributed transaction。Order、Wallet、MatchEngine 各自只在自己的 PostgreSQL 做 ACID transaction，RabbitMQ 和 Redis 也沒有參與一個全域 commit，所以中間狀態可能存在。我用 transactional outbox 解決本地狀態與事件發布的 dual-write：狀態和發布意圖一起 commit，再由 relay 重試送出；但 publish 成功和標記 `SENT` 之間仍有重複窗口，所以它不是 exactly-once。
 >
@@ -333,7 +333,7 @@ flowchart TD
 >
 > Saga 的補償也不是把已成交交易 rollback。成交一旦 durable 就是不可變事實；取消只釋放尚未成交的 reservation。若真的需要沖銷成交，必須新增一筆可稽核、可冪等的 reversal，而不是刪除歷史。這個設計接受 eventual consistency，但要求每個不一致窗口都有 identity、重試、補償或對帳出口。
 
-## 主管繼續追問時的自我檢查
+## 設計審查清單
 
 - 若 outbox 永久 `FAILED`，誰收到告警、誰能安全 replay，如何避免 poison event 無限循環？
 - 每一種 consumer 是否都把冪等紀錄和業務效果放在同一個 local transaction？
@@ -380,5 +380,4 @@ Wallet reservation 的具體改善計畫、依賴與 Definition of Done 已記�
 
 1. [CDA 訂單事件完整生命週期](order-event-lifecycle.zh-TW.md)：把本文觀念映射到每一個服務、listener、retry、outbox／inbox 與取消分支。
 2. [系統架構](architecture.zh-TW.md)：服務 ownership、CDA／TDA 能力邊界與一致性模型。
-3. [面試快速入口](interview-guide.zh-TW.md)：專案功能、效能證據與可快速展開的故事。
-4. [效能報告](performance-report.md)：business-complete 如何成為壓測 correctness gate，而不只看 HTTP TPS 或 queue depth。
+3. [效能報告](performance-report.md)：business-complete 如何成為壓測 correctness gate，而不只看 HTTP TPS 或 queue depth。

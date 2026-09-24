@@ -625,7 +625,7 @@ graph LR
   permanent／schema／identity／invariant／unknown 類型仍刻意不可 replay。
 - Redis 全毀後由 PostgreSQL 重建完整 order book，仍是較大的 recovery architecture 題目；reservation reconciler 只處理局部中斷。
 
-因此面試時不應說「我用了 Saga，所以跨服務一致性已解決」。更精確的說法是：
+因此不應宣稱「用了 Saga，所以跨服務一致性已解決」。更精確的說法是：
 
 > 我把下單、資產保留、撮合、成交套用與取消訂單切成各服務擁有的本地交易，再以事實事件接續。Outbox 解決 commit 後可靠發布，冪等與 inbox 解決重送及亂序，補償流程處理未成交資產與 Redis reservation；最後用跨服務 durable fact verifier 定義是否收斂。它是 choreography Saga；Order timeout detector 能找出長期未前進的候選，但不把 timeout 當成業務事實。Terminal failure 現在可經受保護、可 dry-run、可稽核的單筆 control plane 交回 owner worker；shared DLQ 只有 Wallet／Order trade 能以 broker route 證據與 owner preflight 安全重播，其他 route 不猜測。
 
@@ -664,17 +664,17 @@ graph LR
 
 目前效能數字、工作負載限制與證據等級以[效能報告](performance-report.md)為準；本文只定義流程與正確性語意，不用局部吞吐量替整體容量背書。
 
-## 面試時可以從這裡開始講
+## 設計摘要
 
 一分鐘版本：
 
 > 這個專案最初看起來只是 Order、Wallet、MatchEngine 用 RabbitMQ 串起來，但我後來把問題改成「每一段事實由誰負責，以及 crash 可以落在哪裡」。Order 接受命令時把事件與 outbox 一起 commit；Wallet 在一筆交易中做冪等 claim、資產保留與 confirmation outbox；MatchEngine 用 Redis Lua 判定 order book 競爭，再把成交事實與 trade outbox 一起寫入 PostgreSQL。RabbitMQ 是 at-least-once，所以我刻意讓 publisher 可能重送，consumer 以 trade ID、order ID、cancellation ID 去重。遇到跨 queue 亂序時，Order 用 durable inbox 等 prerequisite；遇到 Redis 與資料庫之間的 crash window，Match 用 cleanup task 與 reconciler 收斂。最後不是看訊息有沒有送出，而是比對三個服務的 durable trade facts、資產與所有 retry debt。
 
-主管若追問「這算 Saga 嗎」：
+針對「這算 Saga 嗎」：
 
 > 算 choreography Saga，但我不把 Saga 當成魔法。它沒有中央 orchestrator，也沒有跨服務 exactly-once。補償不是回滾已成交交易，而是對尚未成交的 reservation 做可稽核釋放；Order warning-only timeout detection 只表示需要調查，REL-106 則讓 technical terminal work 能被安全地交回 owner worker。Shared DLQ 也不是全域重送按鈕：目前只有 Wallet／Order trade 具備 exact owner route 與各自的業務狀態預檢，其他 route 仍禁止 redrive。
 
-主管若追問「event 真的解耦嗎」：
+針對「event 真的解耦嗎」：
 
 > 它降低執行與部署耦合，producer 不需要同步呼叫 consumer；但 event name、欄位與業務順序仍形成 semantic coupling。我讓 event 攜帶 consumer 做決策所需的穩定事實，例如 `TradeExecutedEvent` 的雙方 order、價格與數量，但不塞 consumer 的資料表命令。真正的解耦來自 ownership、版本策略、冪等與可獨立恢復，不是只因為中間放了 RabbitMQ。
 
@@ -702,4 +702,4 @@ graph LR
 | Wallet release fact／Order final confirmation | [`OrderAssetReservationReleasedEvent`](../eap-common/src/main/java/com/eap/common/event/OrderAssetReservationReleasedEvent.java)、[`OrderAssetReservationReleasedInbox`](../eap-order/src/main/java/com/eap/eap_order/application/OrderAssetReservationReleasedInbox.java)、[`OrderAssetReservationReleasedReconciler`](../eap-order/src/main/java/com/eap/eap_order/application/OrderAssetReservationReleasedReconciler.java) |
 | Queue／routing contract | [`RabbitMQConstants`](../eap-common/src/main/java/com/eap/common/constants/RabbitMQConstants.java) |
 
-延伸閱讀：[Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)、[事件驅動一致性的五個核心問題](event-consistency-five-questions.zh-TW.md)、[系統架構](architecture.zh-TW.md)、[取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)、[效能報告](performance-report.md)、[面試快速入口](interview-guide.zh-TW.md)。
+延伸閱讀：[Wallet Inbox 與取消最終確認](wallet-inbox-and-cancellation-completion.zh-TW.md)、[事件驅動一致性的五個核心問題](event-consistency-five-questions.zh-TW.md)、[系統架構](architecture.zh-TW.md)、[取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)、[效能報告](performance-report.md)。

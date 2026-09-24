@@ -10,7 +10,7 @@ The project is designed around three questions: which service owns each business
 
 > **Reliability gate update (2026-09-15):** schema v4 now consumes a single versioned durable-debt contract from Order, Wallet, and MatchEngine. Inbox, outbox, cleanup, cancellation, reconciliation, projection, and DLQ debt—as well as stale or missing telemetry—must all converge before a run can be called business-complete. A short full-chain smoke passed this wiring; it does not replace the long-window capacity evidence above. See the [durable-debt SLO](docs/durable-debt-slo.zh-TW.md).
 >
-> **Recovery control update (2026-09-17):** terminal inbox, outbox, cleanup, Saga-timeout, and broker-dead-letter cases now share a protected single-case inspection and audit contract. Safe technical failures are returned to their owning workers with fingerprint and action-ID guards; permanent and identity failures remain fail-closed. The shared DLQ is quarantined for inspection but is not automatically redriven. See the [recovery guide](docs/failure-recovery-control-plane.zh-TW.md).
+> **Failure-recovery evidence update (2026-09-18):** terminal inbox, outbox, cleanup, Saga-timeout, and broker-dead-letter cases share a protected single-case inspection and audit contract. REL-107 R1-R5 exercised database and Redis outages, consumer crashes, worker leases, duplicate/late events, and two publisher-confirm crash windows. The shared DLQ supports owner-aware conditional replay only for the exact Wallet and Order `TradeExecutedEvent` routes; all other routes remain fail-closed. See the [recovery guide](docs/failure-recovery-control-plane.zh-TW.md) and [failure-injection campaign](docs/benchmarks/2026-09-18-rel107-failure-injection-campaign.md).
 >
 > **Historical boundary:** two release-pinned seeds supported a `648 accepted orders/s` 15-minute same-host pressure boundary for older commits. That evidence remains valid for those commits but is not the capacity of the current reliability revision.
 
@@ -102,7 +102,7 @@ flowchart TD
 
 Every experiment records its baseline, one primary variable, commands, observations, correctness gate, and decision. High-throughput changes are rejected when transaction or concurrency tests show that their results cannot be rolled back safely. Rejected experiments remain documented so the project does not repeat an unsafe optimization without new evidence.
 
-Read [EAP's evidence-driven AI engineering workflow](docs/ai-engineering-workflow.md) for the role contracts and real adopted/rejected cases. The version-controlled [workflow skills](skills/) show the executable role boundaries behind the document. The [Hello World Dev Conference case study](docs/talks/hello-world-dev-conference-2026-case-study.md) explains how this workflow supports self-review, feature expansion, and enterprise SDLC practices.
+Read [EAP's evidence-driven AI engineering workflow](docs/ai-engineering-workflow.md) for the role contracts and real adopted/rejected cases. The version-controlled [workflow skills](skills/) show the executable role boundaries behind the document.
 
 ## Engineering Evidence
 
@@ -147,9 +147,8 @@ See [DEV-GUIDE.md](DEV-GUIDE.md) for repository setup and service operations. Lo
 1. [Current-version guide](docs/current-version-guide.zh-TW.md) - the reliability redesign, current evidence, limitations, and reading routes.
 2. [Architecture](docs/architecture.md) - service ownership, CDA/TDA flows, transaction boundaries, and completion semantics.
 3. [AI engineering workflow](docs/ai-engineering-workflow.md) - role contracts, human checkpoints, evidence gates, and rejected experiments.
-4. [Conference case study](docs/talks/hello-world-dev-conference-2026-case-study.md) - how the workflow is applied and generalized.
-5. [Performance report](docs/performance-report.md) - benchmark contracts and current evidence.
-6. [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md) - detailed workload boundaries.
-7. Service repositories: [Order](https://github.com/Yitin-tsai/eap-order), [Wallet](https://github.com/Yitin-tsai/eap-wallet), [MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine), and [Common](https://github.com/Yitin-tsai/eap-common).
+4. [Performance report](docs/performance-report.md) - benchmark contracts and current evidence.
+5. [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md) - detailed workload boundaries.
+6. Service repositories: [Order](https://github.com/Yitin-tsai/eap-order), [Wallet](https://github.com/Yitin-tsai/eap-wallet), [MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine), and [Common](https://github.com/Yitin-tsai/eap-common).
 
 The frozen experiment history under `docs/archive/performance/` is retained for traceability but is not part of the normal introduction path.

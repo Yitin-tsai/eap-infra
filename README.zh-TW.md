@@ -8,7 +8,7 @@ EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向�
 
 > **最近一版目前程式證據（2026-09-04）：** Wallet 成交結算與 Match admission 納入 durable inbox 後，schema v3 k6 長窗以單一 seed 通過 `199.99 accepted orders/s`、`100.02 completed trades/s`；`192000` 筆 HTTP 訂單收斂為三服務完全相同的 `96000` 筆交易，資產、CQRS、Redis、RabbitMQ、DLQ、inbox、outbox 與 cleanup 都通過。這是 dirty-worktree、同機、單一 seed 的診斷下界，不是 release-pinned 容量或 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)。
 >
-> **故障恢復控制面更新（2026-09-17）：** terminal inbox、outbox、cleanup、Saga timeout 與 broker dead letter 現在使用共同的受保護單筆查詢與 audit contract。可安全重試的技術錯誤會帶著 fingerprint／actionId 交回原服務 worker；永久與 identity conflict 仍 fail closed。shared DLQ 只先 quarantine 供調查，不自動 redrive；詳見[故障恢復指南](docs/failure-recovery-control-plane.zh-TW.md)。
+> **故障恢復證據更新（2026-09-18）：** terminal inbox、outbox、cleanup、Saga timeout 與 broker dead letter 使用共同的受保護單筆查詢與 audit contract。REL-107 R1～R5 已驗證 DB／Redis outage、consumer crash、worker lease、duplicate／late event 與兩個 publisher-confirm crash window；shared DLQ 目前只對 exact Wallet／Order `TradeExecutedEvent` route 開放 owner-aware conditional replay，其餘 route 維持 fail closed。詳見[故障恢復指南](docs/failure-recovery-control-plane.zh-TW.md)與[故障注入報告](docs/benchmarks/2026-09-18-rel107-failure-injection-campaign.md)。
 >
 > **歷史證據邊界：** 舊 commits 曾由兩個 release-pinned seed 支持 `648 accepted orders/s` 的 15 分鐘同機壓力邊界，但不能沿用成目前可靠性版本的容量。失敗結果沒有否定 durable inbox 的正確性價值，而是量出它目前的處理成本與下一個瓶頸。
 
@@ -100,7 +100,7 @@ flowchart TD
 
 每次實驗都要記錄 baseline、單一主要變因、執行命令、觀測資料、正確性關卡與最終決策。即使修改提高局部 TPS，只要交易或 concurrency tests 證明結果無法安全 rollback，仍會被拒絕。被拒絕的實驗也保留，避免未來在沒有新證據時重做相同的不安全最佳化。
 
-角色契約與真實採用／拒絕案例請見 [EAP 證據驅動 AI 工程工作流](docs/ai-engineering-workflow.md)；版本控制的[工作流技能](skills/)則提供文件背後可執行的角色邊界。[Hello World Dev Conference 案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)整理這套流程如何用於自我審查、功能擴充與企業 SDLC。
+角色契約與真實採用／拒絕案例請見 [EAP 證據驅動 AI 工程工作流](docs/ai-engineering-workflow.md)；版本控制的[工作流技能](skills/)則提供文件背後可執行的角色邊界。
 
 ## 工程證據
 
@@ -123,6 +123,7 @@ flowchart TD
 - [排程隔離診斷](docs/benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md)：較早的採用修正與被拒絕高流量證據。
 - [Wallet 穩健性報告](docs/benchmarks/2026-08-05-wallet-settlement-robustness.md)：交易安全、混合流量、長時間及故障證據。
 - [取消責任與回歸報告](docs/benchmarks/2026-08-24-cancellation-ownership-and-regression.md)：說明 Wallet 為何不投影每張訂單，以及競態、亂序與正常流程回歸證據。
+- [REL-107 故障注入報告](docs/benchmarks/2026-09-18-rel107-failure-injection-campaign.md)：DB／Redis outage、process crash、duplicate、lease 與受控 DLQ replay 證據。
 
 ## 本機執行
 
@@ -144,17 +145,14 @@ Repository 初始化與服務操作請見 [DEV-GUIDE.md](DEV-GUIDE.md)。壓測�
 ## 建議閱讀順序
 
 1. [最新版本導覽](docs/current-version-guide.zh-TW.md)：先掌握這次可靠性大改版、目前數據、限制與分流閱讀入口。
-2. [面試快速入口](docs/interview-guide.zh-TW.md)：五分鐘掌握功能、架構、一致性、效能、優缺點與可展開故事。
-3. [架構文件](docs/architecture.zh-TW.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
-4. [CDA 訂單事件完整生命週期](docs/order-event-lifecycle.zh-TW.md)：從下單、驗資、撮合、結算到取消訂單，包含 retry、outbox／inbox、DLQ、Saga 與非 happy path。
-5. [事件驅動一致性的五個核心問題](docs/event-consistency-five-questions.zh-TW.md)：詳細回答 distributed transaction、Outbox、at-least-once、business complete 與 Saga compensation 的邊界。
-6. [Wallet Inbox 與取消最終確認](docs/wallet-inbox-and-cancellation-completion.zh-TW.md)：本次 durable intake、錯誤分類、lease retry、資料表與 `CANCELLING → CANCELLED` 的實作證據。
-7. [Order Saga Timeout Detector](docs/order-saga-timeout-detector.zh-TW.md)：queue／inbox 無 backlog 時如何依業務狀態找出卡住候選，以及為何 timeout 只告警、不自動取消或解鎖。
-8. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
-9. [研討會快速說明](docs/talks/hello-world-dev-conference-2026-brief.zh-TW.md)：一分鐘開場、中文故事與後續討論問題。
-10. [研討會案例說明](docs/talks/hello-world-dev-conference-2026-case-study.md)：工作流如何實際運作與泛化。
-11. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
-12. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
-13. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
+2. [架構文件](docs/architecture.zh-TW.md)：服務責任、CDA／TDA 流程、交易邊界與完成語意。
+3. [CDA 訂單事件完整生命週期](docs/order-event-lifecycle.zh-TW.md)：從下單、驗資、撮合、結算到取消訂單，包含 retry、outbox／inbox、DLQ、Saga 與非 happy path。
+4. [事件驅動一致性的五個核心問題](docs/event-consistency-five-questions.zh-TW.md)：詳細回答 distributed transaction、Outbox、at-least-once、business complete 與 Saga compensation 的邊界。
+5. [Wallet Inbox 與取消最終確認](docs/wallet-inbox-and-cancellation-completion.zh-TW.md)：本次 durable intake、錯誤分類、lease retry、資料表與 `CANCELLING → CANCELLED` 的實作證據。
+6. [Order Saga Timeout Detector](docs/order-saga-timeout-detector.zh-TW.md)：queue／inbox 無 backlog 時如何依業務狀態找出卡住候選，以及為何 timeout 只告警、不自動取消或解鎖。
+7. [AI 工程工作流](docs/ai-engineering-workflow.md)：角色契約、人工檢查點、證據關卡與 rejected experiments。
+8. [效能報告](docs/performance-report.md)：壓測合約與目前證據。
+9. [壓測分類](docs/benchmarks/load-test-taxonomy.md)：詳細工作負載邊界。
+10. 各服務 repository：[Order](https://github.com/Yitin-tsai/eap-order)、[Wallet](https://github.com/Yitin-tsai/eap-wallet)、[MatchEngine](https://github.com/Yitin-tsai/eap-matchEngine) 與 [Common](https://github.com/Yitin-tsai/eap-common)。
 
 `docs/archive/performance/` 下的凍結實驗歷史會保留供追溯，但不屬於一般讀者的專案介紹路徑。

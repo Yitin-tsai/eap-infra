@@ -79,7 +79,7 @@ EAP 已具備 choreography-based Saga 的結構：
 - shared DLQ 其餘 route 的 owner-aware business preflight；Wallet trade 已有安全切片，但不能外推到 reservation／cancellation。
 - Wallet DB outage、consumer crash、late event 的系統性 failure-injection 證據。
 
-因此後續文件與面試的精確說法應是：
+因此後續文件的精確說法應是：
 
 > EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／trade／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；CDA intake DB outage 可 pause/resume，Order 也能 warning-only 偵測卡住 Saga。REL-106 已提供 terminal inbox／outbox 的受控 owner-side replay 與 action audit；仍未完成的是 shared DLQ 安全 redrive 與跨服務自動補償決策。
 
@@ -301,7 +301,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 ### Role Reviews
 
-- Product：值得做；直接強化交易正確性、故障思考與面試價值。核心 CDA Wallet reservation、trade settlement 與 cancellation result 已納入，TDA 不擴張。
+- Product：值得做；直接強化交易正確性、故障思考與學習價值。核心 CDA Wallet reservation、trade settlement 與 cancellation result 已納入，TDA 不擴張。
 - Architect：Conditional；auto-expiry protocol 尚未核准。
 - Performance：需控制 write amplification、worker pool、retry storm；ACK TPS 不得冒充 completion TPS。
 - QA：failure injection 是 Definition of Done，不是選配。
