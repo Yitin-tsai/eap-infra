@@ -1,7 +1,8 @@
 import { SharedArray } from 'k6/data';
 import encoding from 'k6/encoding';
+import { applyIdempotencyMode } from './idempotency.js';
 
-export function loadPreparedTargets(path, expectedRequests) {
+export function loadPreparedTargets(path, expectedRequests, idempotencyMode = 'none') {
   const targets = new SharedArray('prepared matched-order targets', () =>
     open(path)
       .split('\n')
@@ -11,7 +12,8 @@ export function loadPreparedTargets(path, expectedRequests) {
         if (!target.method || !target.url || !target.body) {
           throw new Error(`prepared target ${index} is missing method, url, or body`);
         }
-        return target;
+        return applyIdempotencyMode(target, idempotencyMode,
+          (body) => encoding.b64decode(body, 'std', 's'));
       }),
   );
 

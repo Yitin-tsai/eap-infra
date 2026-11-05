@@ -6,7 +6,9 @@ EAP 是一套獨立開發的事件驅動電力市場後端，支援連續雙向�
 
 專案主要回答三個工程問題：每一項業務事實應由哪個服務負責、交易如何在重試與局部失敗下維持正確，以及工程成果如何用持久化證據驗證。它不是單純的 CRUD 範例，也不是只為了展示壓測數字的專案。
 
-> **最近一版目前程式證據（2026-09-04）：** Wallet 成交結算與 Match admission 納入 durable inbox 後，schema v3 k6 長窗以單一 seed 通過 `199.99 accepted orders/s`、`100.02 completed trades/s`；`192000` 筆 HTTP 訂單收斂為三服務完全相同的 `96000` 筆交易，資產、CQRS、Redis、RabbitMQ、DLQ、inbox、outbox 與 cleanup 都通過。這是 dirty-worktree、同機、單一 seed 的診斷下界，不是 release-pinned 容量或 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)。
+> **HTTP 冪等性已驗收（2026-11-05）：** CDA BUY／SELL 支援可選的 `Idempotency-Key`，原受理結果與 Order event／outbox 同交易提交。六輪同版 schema-v4 比較在 200 unique orders/s 完成 288000 單與 144000 筆交易；Order JVM 重啟後另有 12000 次 replay，沒有新增業務效果。新 key 的穩態 HTTP p95 跨輪中位數由 6.10ms 增至 9.64ms。這是同機 dirty-source 診斷，不是容量上限或 SLA；詳見[契約](docs/features/http-command-idempotency.zh-TW.md)、[量測報告](docs/benchmarks/2026-11-05-http-idempotency-comparison.md)與[入口模式決策](docs/adr/ADR-007-cda-http-order-intake-mode.zh-TW.md)。
+
+> **最近長窗證據（2026-09-04）：** Wallet 成交結算與 Match admission 納入 durable inbox 後，schema v3 k6 長窗以單一 seed 通過 `199.99 accepted orders/s`、`100.02 completed trades/s`；`192000` 筆 HTTP 訂單收斂為三服務完全相同的 `96000` 筆交易，資產、CQRS、Redis、RabbitMQ、DLQ、inbox、outbox 與 cleanup 都通過。這是 dirty-worktree、同機、單一 seed 的診斷下界，不是 release-pinned 容量或 production SLA；詳見[最新版本導覽](docs/current-version-guide.zh-TW.md)與[完整報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)。
 >
 > **故障恢復證據更新（2026-09-18）：** terminal inbox、outbox、cleanup、Saga timeout 與 broker dead letter 使用共同的受保護單筆查詢與 audit contract。REL-107 R1～R5 已驗證 DB／Redis outage、consumer crash、worker lease、duplicate／late event 與兩個 publisher-confirm crash window；shared DLQ 目前只對 exact Wallet／Order `TradeExecutedEvent` route 開放 owner-aware conditional replay，其餘 route 維持 fail closed。詳見[故障恢復指南](docs/failure-recovery-control-plane.zh-TW.md)與[故障注入報告](docs/benchmarks/2026-09-18-rel107-failure-injection-campaign.md)。
 >
@@ -38,7 +40,7 @@ flowchart LR
 ## CDA 完整業務流程
 
 1. 使用者透過 Order HTTP API 提交 BUY 或 SELL 訂單。
-2. Order 驗證命令，在同一筆交易中寫入訂單事件與 outbox。
+2. Order 驗證命令，在同一筆交易中寫入訂單事件與 outbox；若提供 `Idempotency-Key`，受理 receipt 也一同提交，重送時回傳原結果。
 3. Wallet 接收訂單、保留所需資產，再透過自己的 outbox 發布 `OrderAssetReservationSucceededEvent`。
 4. MatchEngine 先把這項事實寫入 durable admission inbox，再由 lease worker 將合格訂單放入 Redis sorted-set 訂單簿，並用 Lua 原子執行撮合。
 5. 成交時，MatchEngine 在同一筆資料庫交易中寫入 `TradeExecuted`、trade outbox，以及必要的 reservation cleanup task。
@@ -67,6 +69,7 @@ TDA 是另一條已實作的市場模式，會收集通過驗資的階梯式出�
 
 | 失敗或一致性風險 | 現行控制方式 |
 | --- | --- |
+| HTTP 已受理，但成功回應遺失 | 可選 `Idempotency-Key`、payload 衝突檢查，以及與初始 Order 事實同交易提交的 receipt |
 | 資料庫提交成功，但事件發布失敗 | Transactional Outbox 與可重試 relay |
 | RabbitMQ 重複投遞事件 | 資料庫冪等紀錄、payload identity guard 與唯一約束 |
 | Consumer 在 ACK 前停止 | 關鍵 Order／Wallet consumer 先 durable intake；commit 後才 manual ACK 或由 container ACK，後續以 lease worker 恢復 |
@@ -110,7 +113,8 @@ flowchart TD
 [文件地圖](docs/README.md)。
 
 - [效能報告](docs/performance-report.md)：目前宣稱、定義、限制與瓶頸歷程。
-- [最新版本全鏈報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)：嚴格 200 診斷通過、三服務 inbox age/debt 與 final outbox/cleanup gate。
+- [HTTP 冪等性增量比較](docs/benchmarks/2026-11-05-http-idempotency-comparison.md)：已驗收契約、同版有／無 key 成本、Order 重啟 replay 與證據限制。
+- [最近長窗全鏈報告](docs/benchmarks/2026-09-04-current-reliability-full-chain.md)：嚴格 200 診斷通過、三服務 inbox age/debt 與 final outbox/cleanup gate。
 - [壓測分類](docs/benchmarks/load-test-taxonomy.md)：各種工作負載能證明及不能證明的內容。
 - [歷史 canonical mixed 短窗邊界](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md)：較早 CDA 版本的短窗轉折區與限制，不是目前版本容量。
 - [624 持續測試證據](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md)：2 個有效的 15 分鐘 seed，支持前一級持續下界。

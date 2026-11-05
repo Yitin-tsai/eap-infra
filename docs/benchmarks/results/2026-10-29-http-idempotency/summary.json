@@ -1,0 +1,106 @@
+{
+  "ticket": "EAP-PLAT-201",
+  "verifiedOn": "2026-10-29",
+  "scope": "Optional Idempotency-Key for CDA BUY/SELL HTTP; current_order_path new submissions only; permanent receipts",
+  "baseRevisions": {
+    "infra": "d49664665310b50ceb75d8ba52886a0c1bf27a25",
+    "order": "ca2d6dba268447347a3c492c5066af94b603bb53",
+    "common": "30e86864b4b0fc327e3ff10b818bbca4a43b6dba"
+  },
+  "sourceState": "uncommitted working tree",
+  "orderSrcSha256": "5c622ad4e76ab81bd9ad5a769684ce60aaa9b2ef7f460fe065fd7c2f80bb5a7e",
+  "command": "GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradlew --no-daemon test postgresIntegrationTest --tests com.eap.eap_order.application.OrderHttpIdempotencyPostgresIT",
+  "workingDirectory": "eap-order",
+  "results": {
+    "test": {
+      "counts": {
+        "tests": 227,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 70,
+        "executed": 157
+      }
+    },
+    "postgresIntegrationTest": {
+      "counts": {
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "executed": 12
+      },
+      "cases": [
+        {
+          "name": "differentKeyReusingUncommittedClientOrderIdTimesOutWithoutPartialWrites()",
+          "seconds": 1.201,
+          "passed": true
+        },
+        {
+          "name": "receiptInsertFailureRollsBackEventAndOutbox()",
+          "seconds": 0.025,
+          "passed": true
+        },
+        {
+          "name": "failureAfterEventAppendRollsBackAllSqlThenSameKeyCanRetry()",
+          "seconds": 0.029,
+          "passed": true
+        },
+        {
+          "name": "invalidAndMultipleHeadersReturn400BeforeAdmission()",
+          "seconds": 0.199,
+          "passed": true
+        },
+        {
+          "name": "permanentReceiptSurvivesAgeAndFreshServiceInstanceAndModeChange()",
+          "seconds": 0.035,
+          "passed": true
+        },
+        {
+          "name": "transactionLocalTimeoutsDoNotLeakToReusedPoolConnectionAfterFailure()",
+          "seconds": 2.033,
+          "passed": true
+        },
+        {
+          "name": "unkeyedRequestsKeepRateLimitAndProduceNoReceipts()",
+          "seconds": 0.029,
+          "passed": true
+        },
+        {
+          "name": "responseTransmissionFailureAfterCommitStillReplaysOneSubmission()",
+          "seconds": 0.039,
+          "passed": true
+        },
+        {
+          "name": "changedPayloadAndCrossSideReuseConflictWithoutAllocatingSequence()",
+          "seconds": 0.029,
+          "passed": true
+        },
+        {
+          "name": "buyAndSellReplayOriginalResponseWithoutAnyAdmissionDependencies()",
+          "seconds": 0.034,
+          "passed": true
+        },
+        {
+          "name": "sameKeyIsIsolatedByUserAndCaseSensitive()",
+          "seconds": 0.033,
+          "passed": true
+        },
+        {
+          "name": "concurrentSameKeyReturnsBoundedBusyThenOriginalResult()",
+          "seconds": 0.099,
+          "passed": true
+        }
+      ]
+    }
+  },
+  "database": "disposable Testcontainers PostgreSQL 14.6",
+  "capacityClaimAllowed": false,
+  "limitations": [
+    "Other existing PostgreSQL integration suites not rerun.",
+    "HTTP uses Spring MockMvc with real application/AOP and DB; Redis sequence, rate limiter and Rabbit backpressure are controlled doubles.",
+    "Response loss is post-controller servlet IOException, not a live socket or JVM crash.",
+    "Fresh coordinator instance and aged receipts tested; full application JVM restart not tested.",
+    "No keyed load test; permanent storage growth, pool contention, synchronized backpressure waits remain.",
+    "Redis/Rabbit timeout configuration affects existing paths too; live dependency timeout behavior not tested."
+  ]
+}

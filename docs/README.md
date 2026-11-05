@@ -26,14 +26,17 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 | Performance claims | [`performance-report.md`](performance-report.md) | Canonical current capacity claims and limitations |
 | Latest full-chain campaign | [`benchmarks/2026-09-04-current-reliability-full-chain.md`](benchmarks/2026-09-04-current-reliability-full-chain.md) | Current Wallet／Match inbox path: strict 200 diagnostic pass, three-service inbox age/debt, final outbox/cleanup checks, and claim limits |
 | API contracts | [`api/`](api/) | Reviewed OpenAPI snapshots for public service contracts |
+| HTTP order idempotency | [`features/http-command-idempotency.zh-TW.md`](features/http-command-idempotency.zh-TW.md) / [`ADR-007`](adr/ADR-007-cda-http-order-intake-mode.zh-TW.md) | Accepted BUY/SELL contract, committed Order revision, original-response replay, transaction boundary and intake-mode decision |
+| HTTP idempotency cost comparison | [`benchmarks/2026-11-05-http-idempotency-comparison.md`](benchmarks/2026-11-05-http-idempotency-comparison.md) | Same-version keyed/unkeyed diagnostic, restarted Order replay, retained interruption and explicit capacity limits |
 | Benchmark methods | [`benchmarks/load-test-taxonomy.md`](benchmarks/load-test-taxonomy.md) | Workload definitions and claim boundaries |
 | Benchmark campaigns | [`benchmarks/`](benchmarks/) | Human-readable dated experiment reports |
 | Published evidence | [`benchmarks/results/`](benchmarks/results/) | Minimal reviewed artifacts that support committed reports |
 | Frozen history | [`archive/`](archive/) | Superseded plans and append-only historical records |
 
-`features/` is reserved for active feature specifications that have not yet been
-absorbed into architecture, workflow, or benchmark reports. A completed or superseded
-plan moves to `archive/`; it must not remain beside current sources of truth.
+`features/` holds feature specifications and current contracts that have not yet
+been absorbed into architecture, API, workflow, or benchmark reports. An accepted
+contract remains current while it defines API behavior. Completed planning-only or
+superseded records move to `archive/` rather than competing with current sources of truth.
 
 ## Artifact Lifecycle
 

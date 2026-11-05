@@ -43,12 +43,14 @@ function markdown(data, config, expectedRequests) {
 - Driver gate: **${driverPassed ? 'PASS' : 'REJECT'}**
 - Benchmark contract: \`${config.benchmarkContract}\`
 - Workload: constant arrival rate, prepared finite request schedule
+- HTTP idempotency mode: \`${config.idempotencyMode}\`
+- Traffic class: \`${config.trafficClass || 'unique-orders'}\`
 
 ## Offered Load
 
 | Metric | Value |
 | --- | ---: |
-| Target orders/s | ${config.targetOrderTps} |
+| Target ${config.trafficClass === 'replay-only' ? 'replay requests' : 'unique orders'}/s | ${config.targetOrderTps} |
 | Duration | ${config.totalSeconds}s |
 | Expected requests | ${expectedRequests} |
 | Executed requests | ${requests} |
@@ -84,7 +86,12 @@ export function writeSummary(data, config, expectedRequests) {
     stdout: `k6 driver artifacts: summary=${config.summaryPath || '<disabled>'}, report=${config.reportPath || '<disabled>'}\n`,
   };
   if (config.summaryPath) {
-    outputs[config.summaryPath] = `${JSON.stringify(data, null, 2)}\n`;
+    outputs[config.summaryPath] = `${JSON.stringify({ ...data,
+      eapDriverConfig: { idempotencyMode: config.idempotencyMode,
+        trafficClass: config.trafficClass || 'unique-orders',
+        expectedUniqueOrders: config.trafficClass === 'replay-only' ? 0 : expectedRequests,
+        expectedReplayRequests: config.trafficClass === 'replay-only' ? expectedRequests : 0 },
+    }, null, 2)}\n`;
   }
   if (config.reportPath) {
     outputs[config.reportPath] = markdown(data, config, expectedRequests);

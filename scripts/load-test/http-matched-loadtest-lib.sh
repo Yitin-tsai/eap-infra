@@ -15,7 +15,7 @@ http_matched_worktree_sha256() {
   local repo_dir="$1"
   {
     git -C "${repo_dir}" diff --binary HEAD --
-    git -C "${repo_dir}" ls-files --others --exclude-standard | while IFS= read -r untracked; do
+    git -C "${repo_dir}" ls-files --others --exclude-standard -z | while IFS= read -r -d '' untracked; do
       printf 'untracked:%s\n' "${untracked}"
       http_matched_sha256 "${repo_dir}/${untracked}"
     done

@@ -1346,7 +1346,7 @@ evidence, not a replacement for the release-pinned sustained boundary.
 - The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
 - One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
-- Atomic MatchEngine incoming-order redelivery protection now passes a real RabbitMQ duplicate injection, a real MatchEngine SIGKILL/redelivery run, an 864K-order reliability run, and deterministic PostgreSQL/Redis crash-window tests. Outbox crash/retry and projection replay fault injection remain pending.
+- Atomic MatchEngine incoming-order redelivery protection has historical RabbitMQ duplicate, SIGKILL/redelivery, and PostgreSQL/Redis crash-window evidence. The [REL-107 R1–R5 campaign](benchmarks/2026-09-18-rel107-failure-injection-campaign.md) subsequently completed live Match outbox confirm-before-SENT and MCP replay confirm-before-audit crash tests. This does not claim a separate projection-replay process-crash campaign or a simultaneous three-JVM full-HTTP crash test.
 - RabbitMQ publisher-confirm stalls, resource alarms, PostgreSQL crash recovery, and shared-host CPU saturation can invalidate capacity comparisons. The harness now samples broker alarms and preserves failure artifacts, but a separate load-generator host remains required for production-style capacity evidence.
 - RabbitMQ management queue statistics refresh more slowly than the 100ms client sampling loop, so the Rabbit-to-Match diagnostic treats sampled ready/unacked peaks as potentially undercounted. Final queue/DLQ drain and durable record equality remain correctness gates; peak samples are diagnostic only.
 - The trade-consumer fanout diagnostic samples queue totals every `500ms`; a reported peak of zero can miss sub-interval backlog. Durable arrival counts, exact trade-ID equality, assets, and final queue/DLQ drain are its correctness evidence. Three zero samples add about one second of verification delay, so durable arrival and queue-drain verification are reported separately.
@@ -1407,14 +1407,16 @@ Interpretation: EAP completed two near-500 seeded matched-flow steady-state runs
 
 ## Next Measurement Plan
 
+HTTP command idempotency was accepted on 2026-11-05. Its [same-version cost comparison](benchmarks/2026-11-05-http-idempotency-comparison.md) passed six schema-v4 runs at 200 unique orders/s plus a separate restarted-Order replay phase. The keyed path has measured latency and connection-hold costs; the diagnostic does not replace a clean-revision long-window capacity baseline.
+
 Before pushing for higher completed TPS, the next public-quality benchmark should:
 
-1. Do not retry the historical 648 target. The Wallet trade-inbox path has re-established the same-seed 200 orders/s baseline with three-service inbox gates; finish the higher-priority Redis fail-closed and terminal-error work before searching above 200.
+1. Establish a new revision-pinned baseline with the current schema-v4 gate before searching above the historical 200 orders/s diagnostic. Redis fail-closed, terminal-error semantics, core REL-107 fault injection, and the bounded HTTP idempotency slice are complete. Distinguish keyed from unkeyed workload and investigate reservation-result/projection costs according to the [engineering backlog](backlog.zh-TW.md).
 2. Keep macOS sleep disabled and reject any run with HTTP count mismatch, broker alarm, cross-JVM starvation warning, or lost diagnostic samples.
 3. Require zero reused orders, exact three-service trade IDs, exact assets, fresh successful schema-v4 snapshots, and empty inbox/outbox/cleanup/cancellation/reconciliation/projection/queue/DLQ debt in every accepted run; missing or wrongly typed fields must fail closed.
 4. Capture Order command-pool wait, HTTP latency, queue slope, PostgreSQL/WAL, and system/process CPU without changing pool or listener concurrency in the same experiment.
 5. Repeat the same canonical contract from a separate load-generator CPU domain or host before attributing the same-host boundary to application code.
-6. Publish a dedicated failure-injection report for retry, redelivery, ack-timeout, and restart behavior.
+6. Retain the published [REL-107 fault report](benchmarks/2026-09-18-rel107-failure-injection-campaign.md) and its explicit scope. A new benchmark must identify the tested revisions and any new failure coverage rather than treating completed fault campaigns as pending or extrapolating to untested scenarios.
 
 The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchmark.md](benchmarks/2026-07-public-benchmark.md).
 

@@ -9,7 +9,7 @@ import { writeSummary } from './lib/report.js';
 
 const config = loadConfig();
 const expectedRequests = config.targetOrderTps * config.totalSeconds;
-const targets = loadPreparedTargets(config.targetsFile, expectedRequests);
+const targets = loadPreparedTargets(config.targetsFile, expectedRequests, config.idempotencyMode);
 const outOfRangeIterations = new Counter('eap_out_of_range_iterations');
 
 export const options = buildOptions(config, expectedRequests);

@@ -1,0 +1,161 @@
+{
+  "contract": "http-idempotency-replay-only",
+  "passed": true,
+  "attempts": 12000,
+  "liveServices": [
+    "eap-order"
+  ],
+  "orderJvmRestartedAfterSourceRun": true,
+  "targetRequestsPerSecond": 200,
+  "newUniqueOrders": 0,
+  "sourceRunId": "HTTP_IDEMPOTENCY_20261105_B_R3_UNIQUE_RETRY1",
+  "expectedResponseSource": "persisted original receipt joined by user/key/orderId; original HTTP bytes not captured",
+  "before": {
+    "order": {
+      "heads": 48000,
+      "events": 96000,
+      "outbox": 48000,
+      "receipts": 48000,
+      "receiptStorageBytes": 22896640,
+      "tradeApplications": 24000
+    },
+    "wallets": "3b1adee001d53863f770a658e278dfb1",
+    "matchTrades": 24000,
+    "marketSequence": "48000"
+  },
+  "after": {
+    "order": {
+      "heads": 48000,
+      "events": 96000,
+      "outbox": 48000,
+      "receipts": 48000,
+      "receiptStorageBytes": 22896640,
+      "tradeApplications": 24000
+    },
+    "wallets": "3b1adee001d53863f770a658e278dfb1",
+    "matchTrades": 24000,
+    "marketSequence": "48000"
+  },
+  "outcomeDeltas": {
+    "replayed": 12000.0
+  },
+  "beforeDebt": {
+    "eap-order": {
+      "contractVersion": 1,
+      "service": "eap-order",
+      "observedAt": "2026-11-05T05:32:53.298575Z",
+      "observationSuccess": true,
+      "snapshotAgeSeconds": 1,
+      "components": [
+        {
+          "work": "asset_reservation_result_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "trade_execution_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "cancellation_result_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "asset_reservation_released_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "event_outbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "orders_current_projection",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        }
+      ]
+    }
+  },
+  "afterDebt": {
+    "eap-order": {
+      "contractVersion": 1,
+      "service": "eap-order",
+      "observedAt": "2026-11-05T05:33:53.968729Z",
+      "observationSuccess": true,
+      "snapshotAgeSeconds": 2,
+      "components": [
+        {
+          "work": "asset_reservation_result_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "trade_execution_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "cancellation_result_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "asset_reservation_released_inbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "event_outbox",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        },
+        {
+          "work": "orders_current_projection",
+          "totalCount": 0,
+          "retryCount": 0,
+          "terminalCount": 0,
+          "oldestUnresolvedAgeSeconds": 0
+        }
+      ]
+    }
+  },
+  "driverExitStatus": 0,
+  "httpLatencyMs": {
+    "med": 2.175,
+    "p(90)": 3.3491000000000004,
+    "p(95)": 4.019199999999998,
+    "p(99)": 23.155759999999994,
+    "max": 141.847,
+    "avg": 2.9603882500000176,
+    "min": 0.845
+  },
+  "scriptSha256": "6c0b0218bb09760a0706bdd1d3b7964202df192d35f1024c3497c3b36b145abb",
+  "targetsSha256": "05f2a4c3bc39969cde88a64ee98ae558f0a316cfbd4b1622a3a3f3824c3c79d6",
+  "capacityClaimAllowed": false
+}

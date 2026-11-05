@@ -1,0 +1,644 @@
+{
+  "benchmarkSchemaVersion": 4,
+  "benchmarkContract": "external-http-matched-steady-state-chain",
+  "runId": "HTTP_IDEMPOTENCY_20261105_B_R1_NONE",
+  "marketId": "ENERGY-SPOT",
+  "runtimeProfile": "canonical",
+  "arrivalPattern": "shuffled",
+  "workloadSeed": 20260905,
+  "warmupSeconds": 60,
+  "measurementSeconds": 180,
+  "targetTotalOrderTps": 200,
+  "httpDriverMode": "external-k6",
+  "loadGeneratorMaxInFlight": null,
+  "workloadPreparationSeconds": 0.0000,
+  "expectedHttpOrders": 48000,
+  "expectedTrades": 24000,
+  "durableBuyOrders": 24000,
+  "durableSellOrders": 24000,
+  "pairableAcceptedTrades": 24000,
+  "expectedRemainingBuyOrders": 0,
+  "expectedRemainingSellOrders": 0,
+  "usersPerSide": 500,
+  "httpAccepted": 48000,
+  "sellHttpAccepted": 24000,
+  "buyHttpAccepted": 24000,
+  "http429": 0,
+  "http503": 0,
+  "httpOtherFailures": 0,
+  "unscheduledOrders": 0,
+  "trafficSendSeconds": 239.9899,
+  "totalHttpAcceptedTps": 200.01,
+  "httpLatencyP50UpperBoundMs": 1,
+  "httpLatencyP95UpperBoundMs": 10,
+  "httpLatencyP99UpperBoundMs": 50,
+  "steadyWindowStartSeconds": 60.5094,
+  "steadyWindowEndSeconds": 239.5044,
+  "steadyWindowObservedSeconds": 178.9950,
+  "steadySampleCount": 180,
+  "steadyAcceptedOrders": 35799,
+  "steadyCompletedTrades": 17902,
+  "steadyAcceptedOrderTps": 200.00,
+  "steadyCompletedTradeTps": 100.01,
+  "steadyOfferedLoadRatio": 1.0000,
+  "steadyCompletionTargetRatio": 1.0001,
+  "steadyCompletionToAcceptedRatio": 1.0001,
+  "steadyBacklogStart": 17,
+  "steadyBacklogEnd": 0,
+  "steadyMaxBacklog": 87,
+  "steadyBacklogSlopePerSecond": -0.0127,
+  "steadyOrderReservationInboxBacklogStart": 21,
+  "steadyOrderReservationInboxBacklogEnd": 26,
+  "steadyOrderReservationInboxBacklogMax": 73,
+  "steadyOrderReservationInboxBacklogSlopePerSecond": -0.0801,
+  "steadyOrderInboxBacklogStart": 21,
+  "steadyOrderInboxBacklogEnd": 26,
+  "steadyOrderInboxBacklogMax": 73,
+  "steadyOrderInboxBacklogSlopePerSecond": -0.0801,
+  "steadyOrderInboxOldestAgeMaxSeconds": 0,
+  "steadyOrderInboxTerminalDebtMax": 0,
+  "steadyWalletInboxBacklogStart": 42,
+  "steadyWalletInboxBacklogEnd": 21,
+  "steadyWalletInboxBacklogMax": 84,
+  "steadyWalletInboxBacklogSlopePerSecond": -0.0236,
+  "steadyWalletInboxOldestAgeMaxSeconds": 0,
+  "steadyWalletInboxTerminalDebtMax": 0,
+  "steadyMatchInboxBacklogStart": 0,
+  "steadyMatchInboxBacklogEnd": 0,
+  "steadyMatchInboxBacklogMax": 57,
+  "steadyMatchInboxBacklogSlopePerSecond": -0.0060,
+  "steadyMatchInboxOldestAgeMaxSeconds": 0,
+  "steadyMatchInboxTerminalDebtMax": 0,
+  "steadyDurableDebtObservationsHealthy": true,
+  "steadyDurableDebtComponents": {
+    "eap-matchEngine": {
+      "reservation_cleanup": {
+        "totalCount": {
+          "start": 16,
+          "end": 1,
+          "max": 19,
+          "slopePerSecond": 0.0009461789876433093,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "order_cancellation": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 0,
+          "slopePerSecond": 0.0,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "order_admission_inbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 57,
+          "slopePerSecond": -0.005977104976183631,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "trade_outbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 20,
+          "max": 29,
+          "slopePerSecond": 0.028536293714590658,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "reservation_reconciliation": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 0,
+          "slopePerSecond": 0.0,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      }
+    },
+    "eap-order": {
+      "cancellation_result_inbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 0,
+          "slopePerSecond": 0.0,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "asset_reservation_result_inbox": {
+        "totalCount": {
+          "start": 21,
+          "end": 26,
+          "max": 73,
+          "slopePerSecond": -0.08007491598293667,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "event_outbox": {
+        "totalCount": {
+          "start": 15,
+          "end": 30,
+          "max": 70,
+          "slopePerSecond": 0.027410842559741955,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "trade_execution_inbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 0,
+          "slopePerSecond": 0.0,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "asset_reservation_released_inbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 0,
+          "slopePerSecond": 0.0,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "orders_current_projection": {
+        "totalCount": {
+          "start": 14,
+          "end": 56,
+          "max": 157,
+          "slopePerSecond": -0.011969727110041713,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 1
+      }
+    },
+    "eap-wallet": {
+      "order_submission_inbox": {
+        "totalCount": {
+          "start": 42,
+          "end": 21,
+          "max": 59,
+          "slopePerSecond": -0.005290732692391874,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "trade_execution_inbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 27,
+          "slopePerSecond": -0.018286953607998604,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "cancellation_result_inbox": {
+        "totalCount": {
+          "start": 0,
+          "end": 0,
+          "max": 0,
+          "slopePerSecond": 0.0,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      },
+      "event_outbox": {
+        "totalCount": {
+          "start": 11,
+          "end": 0,
+          "max": 96,
+          "slopePerSecond": -0.11491339573896794,
+          "validSamples": 180
+        },
+        "maxRetryCount": 0,
+        "maxTerminalCount": 0,
+        "maxOldestUnresolvedAgeSeconds": 0
+      }
+    }
+  },
+  "minOfferedLoadRatio": 0.9500,
+  "minCompletionRatio": 0.9500,
+  "maxBacklogGrowthPerSecond": 2.0000,
+  "maxSteadyBacklog": 6000,
+  "maxInboxOldestAgeSeconds": 30,
+  "finalOrderSubmissionRows": 48000,
+  "finalWalletReservationRows": 48000,
+  "finalOrderConfirmationRows": 48000,
+  "finalOrderProjectionRows": 48000,
+  "finalOrderProjectionReservationSucceededRows": 48000,
+  "finalUserVisibleMatchedOrderRows": 48000,
+  "finalOrderProjectionCheckpoint": 96000,
+  "finalOrderEventStoreMaxPosition": 96000,
+  "finalOrderProjectionLagEvents": 0,
+  "orderReadModelConverged": true,
+  "matchAdmissionInboxRows": 48000,
+  "matchAdmissionInboxAppliedRows": 48000,
+  "matchAdmissionInboxNonAppliedRows": 0,
+  "finalOrderInboxBacklog": 0,
+  "finalOrderInboxOldestAgeSeconds": 0,
+  "finalOrderInboxTerminalDebt": 0,
+  "finalWalletInboxBacklog": 0,
+  "finalWalletInboxOldestAgeSeconds": 0,
+  "finalWalletInboxTerminalDebt": 0,
+  "finalMatchInboxBacklog": 0,
+  "finalMatchInboxOldestAgeSeconds": 0,
+  "finalMatchInboxTerminalDebt": 0,
+  "finalOrderOutboxActiveDebt": 0,
+  "finalOrderOutboxTerminalDebt": 0,
+  "finalWalletOutboxActiveDebt": 0,
+  "finalWalletOutboxTerminalDebt": 0,
+  "finalMatchOutboxActiveDebt": 0,
+  "finalMatchOutboxTerminalDebt": 0,
+  "finalMatchCleanupActiveDebt": 0,
+  "finalMatchCleanupTerminalDebt": 0,
+  "finalDurableDebtObservationsHealthy": true,
+  "finalDurableDebtComponents": {
+    "eap-matchEngine": {
+      "reservation_cleanup": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "order_cancellation": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "order_admission_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "trade_outbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "reservation_reconciliation": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      }
+    },
+    "eap-order": {
+      "cancellation_result_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "asset_reservation_result_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "event_outbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "trade_execution_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "asset_reservation_released_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "orders_current_projection": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      }
+    },
+    "eap-wallet": {
+      "order_submission_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "trade_execution_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "cancellation_result_inbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      },
+      "event_outbox": {
+        "totalCount": 0,
+        "retryCount": 0,
+        "terminalCount": 0,
+        "oldestUnresolvedAgeSeconds": 0
+      }
+    }
+  },
+  "finalMatchedOrderRows": 48000,
+  "finalMatchTradeRows": 24000,
+  "finalOrderTradeRows": 24000,
+  "finalWalletTradeRows": 24000,
+  "threeServiceTradeIdsEqual": true,
+  "matchTradeIdCount": 24000,
+  "orderTradeIdCount": 24000,
+  "walletTradeIdCount": 24000,
+  "tradeIdFingerprint": "c6fb731b6c79a9832750bb67ee2d9365be69c4e102abe5201f9689237e13b0f6",
+  "assetReconciliationPassed": true,
+  "initialBuyerAvailableAmount": 5024000,
+  "initialBuyerLockedAmount": 0,
+  "initialBuyerAvailableCurrency": 502400000,
+  "initialBuyerLockedCurrency": 0,
+  "initialSellerAvailableAmount": 5024000,
+  "initialSellerLockedAmount": 0,
+  "initialSellerAvailableCurrency": 502400000,
+  "initialSellerLockedCurrency": 0,
+  "finalBuyerAvailableAmount": 5048000,
+  "finalBuyerLockedAmount": 0,
+  "finalBuyerAvailableCurrency": 500000000,
+  "finalBuyerLockedCurrency": 0,
+  "finalSellerAvailableAmount": 5000000,
+  "finalSellerLockedAmount": 0,
+  "finalSellerAvailableCurrency": 504800000,
+  "finalSellerLockedCurrency": 0,
+  "remainingBuyOrders": 0,
+  "remainingSellOrders": 0,
+  "activeMatchReservations": 0,
+  "finalQueueBacklog": 0,
+  "finalDlqBacklog": 0,
+  "queueMetricsReadFailures": 0,
+  "finalQueues": {
+    "wallet.orderSubmitted.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.orderConfirmed.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.orderFailed.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "matchEngine.orderConfirmed.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "matchEngine.orderCancellationRequested.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.tradeExecuted.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "wallet.tradeExecuted.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.orderCancellationResult.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "wallet.orderCancellationResult.queue": {
+      "ready": 0,
+      "unacked": 0
+    },
+    "order.dlq": {
+      "ready": 0,
+      "unacked": 0
+    }
+  },
+  "fullConvergenceSeconds": 244.8710,
+  "fullConvergenceTradeTps": 98.01,
+  "sampleOutput": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-HTTP_IDEMPOTENCY_20261105_B_R1_NONE-samples.csv",
+  "validForSustainedCapacity": true,
+  "capacityInvalidReasons": [],
+  "benchmarkProvenance": {
+    "schemaVersion": 1,
+    "evidenceMode": "diagnostic",
+    "capturedAtStart": "2026-11-05T03:21:51Z",
+    "capturedAtEnd": "2026-11-05T03:27:19Z",
+    "sourceCleanAtStart": false,
+    "sourceCleanAtEnd": false,
+    "repositoriesStable": true,
+    "fingerprintsStable": true,
+    "fingerprintsComplete": true,
+    "sourceStable": true,
+    "sourceEligible": false,
+    "benchmarkContract": "external-http-matched-steady-state-chain",
+    "invalidReasons": [
+      "diagnostic_evidence_mode",
+      "source_repository_dirty_or_missing"
+    ],
+    "repositories": [
+      {
+        "name": "eap-infra",
+        "path": ".",
+        "available": true,
+        "commit": "d49664665310b50ceb75d8ba52886a0c1bf27a25",
+        "branch": "main",
+        "dirty": true,
+        "dirtyFileCount": 23,
+        "workingTreeSha256": "2e826511726bcad61e73dcab79b4749059c669da07563224ac4599d77ede805a",
+        "transactionPath": false
+      },
+      {
+        "name": "eap-common",
+        "path": "eap-common",
+        "available": true,
+        "commit": "30e86864b4b0fc327e3ff10b818bbca4a43b6dba",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "workingTreeSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "transactionPath": true
+      },
+      {
+        "name": "eap-order",
+        "path": "eap-order",
+        "available": true,
+        "commit": "ca2d6dba268447347a3c492c5066af94b603bb53",
+        "branch": "main",
+        "dirty": true,
+        "dirtyFileCount": 12,
+        "workingTreeSha256": "0652cba8278610d88610fc4574a8f21318371af86291daecf7641481e1cb2e70",
+        "transactionPath": true
+      },
+      {
+        "name": "eap-wallet",
+        "path": "eap-wallet",
+        "available": true,
+        "commit": "39f8844f5747853fe95463f35d63d0d75464ca14",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "workingTreeSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "transactionPath": true
+      },
+      {
+        "name": "eap-matchEngine",
+        "path": "eap-matchEngine",
+        "available": true,
+        "commit": "8e1066275a4985c3039a7121b70d498b2436ffe9",
+        "branch": "main",
+        "dirty": false,
+        "dirtyFileCount": 0,
+        "workingTreeSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "transactionPath": true
+      }
+    ],
+    "host": {
+      "os": "Darwin",
+      "osVersion": "27.0.1",
+      "architecture": "arm64",
+      "logicalCpus": 10,
+      "physicalMemoryBytes": 17179869184
+    },
+    "execution": {
+      "loadGeneratorPlacement": "co-located",
+      "serviceLaunchMode": "jar",
+      "diagnosticsLevel": "light",
+      "postgres": {
+        "synchronousCommit": "on",
+        "trackIoTiming": "on",
+        "trackWalIoTiming": "on"
+      }
+    },
+    "tooling": {
+      "java": "openjdk version \"21.0.10\" 2026-01-20 LTS",
+      "docker": "29.7.2",
+      "vegeta": "/Users/cfh00909120/Desktop/eap-workspace/scripts/load-test/http-matched-loadtest-lib.sh: line 107: vegeta: command not found",
+      "k6": "k6 v2.2.0 (commit/devel, go1.26.5, darwin/arm64)"
+    },
+    "fingerprints": {
+      "composeSha256": "2b8a56be1ad8881d8df7fe31eafe8ac1c89391b85c83e7814f4d8f716cc71843",
+      "runnerSha256": "fac702a1c3b02ccd61ada8439c87c476731133db2a87a9a2f206696942a1fcce",
+      "librarySha256": "ef0bd619f0b436f8479856d4c72bf09078976791db898ef44cb00396132f8452",
+      "k6BundleSha256": "62c8d20cba07cb75b1cc6b171c64830196ac9c2c68c54c50e7b995c91fc939c1"
+    },
+    "containers": [
+      {
+        "name": "eap-order-postgres-loadtest",
+        "configuredImage": "postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647",
+        "imageId": "sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647"
+      },
+      {
+        "name": "eap-wallet-postgres-loadtest",
+        "configuredImage": "postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647",
+        "imageId": "sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647"
+      },
+      {
+        "name": "eap-match-postgres-loadtest",
+        "configuredImage": "postgres@sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647",
+        "imageId": "sha256:f565573d74aedc9b218e1d191b04ec75bdd50c33b2d44d91bcd3db5f2fcea647"
+      },
+      {
+        "name": "eap-rabbitmq-loadtest",
+        "configuredImage": "rabbitmq@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281",
+        "imageId": "sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281"
+      },
+      {
+        "name": "eap-redis-loadtest",
+        "configuredImage": "redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99",
+        "imageId": "sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99"
+      }
+    ]
+  },
+  "provenanceInvalidReasons": [
+    "diagnostic_evidence_mode",
+    "source_repository_dirty_or_missing"
+  ],
+  "requiredFieldsMissing": [],
+  "requiredFieldsInvalid": [],
+  "capacityEvidenceInvalidReasons": [
+    "diagnostic_evidence_mode",
+    "insufficient_measurement_window",
+    "source_repository_dirty_or_missing"
+  ],
+  "capacityClaimAllowed": false,
+  "validForCapacityEvidence": false,
+  "externalOpenLoopDriver": true,
+  "externalDriver": "k6",
+  "httpIdempotencyMode": "none",
+  "loadGeneratorPlacement": "co-located",
+  "externalDriverPreAllocatedVUs": 200,
+  "externalDriverExitStatus": 0,
+  "externalScheduledRequests": 48000,
+  "externalScheduledRequestRate": 200,
+  "externalDroppedIterations": 0,
+  "externalOutOfRangeIterations": 0,
+  "externalResponseThroughput": 199.99984333345606,
+  "externalHttpSuccessRatio": 1,
+  "externalHttpLatencyMs": {
+    "average": 2.625888125000001,
+    "median": 1.259,
+    "p90": 3.634100000000001,
+    "p95": 6.148099999999996,
+    "p99": 31.195369999999986,
+    "maximum": 183.163
+  },
+  "externalDriverReport": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-HTTP_IDEMPOTENCY_20261105_B_R1_NONE-k6-summary.json",
+  "externalDriverTime": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-HTTP_IDEMPOTENCY_20261105_B_R1_NONE-k6-time.txt",
+  "externalDriverConsole": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-HTTP_IDEMPOTENCY_20261105_B_R1_NONE-k6-console.log",
+  "workloadManifest": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/http-matched-external-HTTP_IDEMPOTENCY_20261105_B_R1_NONE-manifest.json",
+  "remoteDriverMetadata": null,
+  "remoteDriverPreflight": null
+}

@@ -50,6 +50,7 @@ LOADTEST_SERVICE_LAUNCH_MODE="${LOADTEST_SERVICE_LAUNCH_MODE:-boot-run}"
 LOADTEST_SERVICE_JAVA_BIN="${LOADTEST_SERVICE_JAVA_BIN:-java}"
 LOADTEST_DRIVER_JAVA_BIN="${LOADTEST_DRIVER_JAVA_BIN:-java}"
 HTTP_LOAD_DRIVER="${HTTP_LOAD_DRIVER:-k6}"
+HTTP_IDEMPOTENCY_MODE="${HTTP_IDEMPOTENCY_MODE:-none}"
 VEGETA_CPUS="${VEGETA_CPUS:-2}"
 VEGETA_WORKERS="${VEGETA_WORKERS:-16}"
 VEGETA_MAX_WORKERS="${VEGETA_MAX_WORKERS:-4096}"
@@ -259,6 +260,14 @@ fi
 if [[ -z "${RESET_DATA_ON_PREPARE+x}" ]]; then
   RESET_DATA_ON_PREPARE=false
 fi
+if [[ "${HTTP_IDEMPOTENCY_MODE}" != "none" && "${HTTP_IDEMPOTENCY_MODE}" != "unique" ]]; then
+  echo "[ERROR] HTTP_IDEMPOTENCY_MODE must be none or unique." >&2
+  exit 2
+fi
+if [[ "${HTTP_IDEMPOTENCY_MODE}" != "none" && "${HTTP_LOAD_DRIVER}" != "k6" ]]; then
+  echo "[ERROR] HTTP_IDEMPOTENCY_MODE=unique requires HTTP_LOAD_DRIVER=k6." >&2
+  exit 2
+fi
 if [[ "${RESET_DATA_ON_PREPARE}" != "false" ]]; then
   echo "[ERROR] live-service reset is unsafe; use START_SERVICES=true so reset occurs before consumers start." >&2
   exit 2
@@ -375,6 +384,7 @@ echo "[INFO] external open-loop HTTP matched lifecycle"
 echo "[INFO] runId=${RUN_ID}, targetTotalOrderTps=${TARGET_ORDER_TPS}"
 echo "[INFO] warmupSeconds=${WARMUP_SECONDS}, measurementSeconds=${DURATION_SECONDS}"
 echo "[INFO] httpLoadDriver=${HTTP_LOAD_DRIVER}"
+echo "[INFO] httpIdempotencyMode=${HTTP_IDEMPOTENCY_MODE}"
 if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
   echo "[INFO] k6PreAllocatedVUs=${K6_PRE_ALLOCATED_VUS}, httpTimeout=${K6_HTTP_TIMEOUT}"
 else
@@ -456,6 +466,7 @@ else
     -e "EAP_BENCHMARK_CONTRACT=external-http-matched-steady-state-chain" \
     -e "EAP_TARGETS_FILE=${RUN_TARGETS}" \
     -e "EAP_TARGET_ORDER_TPS=${TARGET_ORDER_TPS}" \
+    -e "EAP_HTTP_IDEMPOTENCY_MODE=${HTTP_IDEMPOTENCY_MODE}" \
     -e "EAP_TOTAL_SECONDS=${TOTAL_SECONDS}" \
     -e "EAP_K6_PRE_ALLOCATED_VUS=${K6_PRE_ALLOCATED_VUS}" \
     -e "EAP_K6_HTTP_TIMEOUT=${K6_HTTP_TIMEOUT}" \
@@ -552,6 +563,7 @@ if [[ -f "${RUN_REPORT_JSON}" ]]; then
   if [[ "${HTTP_LOAD_DRIVER}" == "k6" ]]; then
     jq \
       --arg placement "${LOAD_GENERATOR_PLACEMENT}" \
+      --arg idempotencyMode "${HTTP_IDEMPOTENCY_MODE}" \
       --arg driverReport "${RUN_K6_SUMMARY}" \
       --arg driverTime "${RUN_K6_TIME}" \
       --arg driverConsole "${RUN_K6_CONSOLE}" \
@@ -568,6 +580,7 @@ if [[ -f "${RUN_REPORT_JSON}" ]]; then
       . + {
         externalOpenLoopDriver: true,
         externalDriver: "k6",
+        httpIdempotencyMode: $idempotencyMode,
         loadGeneratorPlacement: $placement,
         externalDriverPreAllocatedVUs: $preAllocatedVUs,
         externalDriverExitStatus: $driverExitStatus,

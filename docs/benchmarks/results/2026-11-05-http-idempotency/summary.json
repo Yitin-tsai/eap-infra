@@ -1,0 +1,692 @@
+{
+  "campaignId": "HTTP_IDEMPOTENCY_20261105_B",
+  "capacityClaimAllowed": false,
+  "analysisSha256": "15ec4c3c6a49b9c60c821a42e6f97a95c6363b3538b40c5f22d2889a299cecb3",
+  "excludedRuns": [
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R3_UNIQUE",
+      "reason": "confirmed host sleep / global clock interruption",
+      "monitorGapSeconds": 460.997,
+      "replacementRunId": "HTTP_IDEMPOTENCY_20261105_B_R3_UNIQUE_RETRY1",
+      "originalFailedResultRetained": true,
+      "powerEvidence": "/Users/cfh00909120/Desktop/eap-workspace/build/load-test-reports/HTTP_IDEMPOTENCY_20261105_B-R3-interrupted/power-events.txt"
+    }
+  ],
+  "sourceIdenticalAcrossArms": true,
+  "sourceSignature": [
+    [
+      "eap-infra",
+      "d49664665310b50ceb75d8ba52886a0c1bf27a25",
+      "2e826511726bcad61e73dcab79b4749059c669da07563224ac4599d77ede805a"
+    ],
+    [
+      "eap-common",
+      "30e86864b4b0fc327e3ff10b818bbca4a43b6dba",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "eap-order",
+      "ca2d6dba268447347a3c492c5066af94b603bb53",
+      "0652cba8278610d88610fc4574a8f21318371af86291daecf7641481e1cb2e70"
+    ],
+    [
+      "eap-wallet",
+      "39f8844f5747853fe95463f35d63d0d75464ca14",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    [
+      "eap-matchEngine",
+      "8e1066275a4985c3039a7121b70d498b2436ffe9",
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ]
+  ],
+  "fingerprints": {
+    "composeSha256": "2b8a56be1ad8881d8df7fe31eafe8ac1c89391b85c83e7814f4d8f716cc71843",
+    "runnerSha256": "fac702a1c3b02ccd61ada8439c87c476731133db2a87a9a2f206696942a1fcce",
+    "librarySha256": "ef0bd619f0b436f8479856d4c72bf09078976791db898ef44cb00396132f8452",
+    "k6BundleSha256": "62c8d20cba07cb75b1cc6b171c64830196ac9c2c68c54c50e7b995c91fc939c1"
+  },
+  "runs": [
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R1_NONE",
+      "mode": "none",
+      "allGatesPassed": true,
+      "acceptedUniqueOrders": 48000,
+      "receipts": 0,
+      "steadyAcceptedOrdersPerSecond": 200.0,
+      "steadyCompletedTradesPerSecond": 100.01,
+      "httpWholeRunMs": {
+        "average": 2.625888125000001,
+        "median": 1.259,
+        "p90": 3.634100000000001,
+        "p95": 6.148099999999996,
+        "p99": 31.195369999999986,
+        "maximum": 183.163
+      },
+      "httpSteadyInteriorMs": {
+        "count": 34000,
+        "average": 2.687805647058824,
+        "p50": 1.247,
+        "p95": 6.098199999999997,
+        "p99": 34.41028000000026,
+        "maximum": 183.163
+      },
+      "steadyWindow": {
+        "definition": "earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps",
+        "durationSeconds": 170.0,
+        "startEpochSeconds": 1793849046.136511,
+        "endEpochSeconds": 1793849216.136511
+      },
+      "commandPool": {
+        "sampleCount": 26,
+        "configuredSampleIntervalSeconds": 5,
+        "observedSampleIntervalSeconds": [
+          6.0,
+          8.0
+        ],
+        "sampledActivePeak": 1.0,
+        "sampledPendingPeak": 0.0,
+        "acquireAverageMs": 0.0019489723600283487,
+        "holdAverageMs": 1.5372371840302386,
+        "wholeRunTimeouts": 0.0
+      },
+      "dependencyPhaseAverageMs": {
+        "backpressure_check": 0.015617124209281703,
+        "market_sequence": 0.5899666497783033,
+        "rate_limit_check": 0.0029291861956843037
+      },
+      "finalDebtAllZero": true,
+      "maxInboxOldestAgeSeconds": {
+        "Order": 0,
+        "Wallet": 0,
+        "Match": 0
+      },
+      "sourceStable": true,
+      "sql": {
+        "synchronousCommit": "on",
+        "synchronousCommitSource": "command line",
+        "roleDatabaseOverrides": [],
+        "heads": 48000,
+        "submissions": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 0,
+        "receiptOrders": 0,
+        "receiptsWithoutOrder": 0
+      },
+      "artifactsDirectory": "r1_none"
+    },
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R1_UNIQUE",
+      "mode": "unique",
+      "allGatesPassed": true,
+      "acceptedUniqueOrders": 48000,
+      "receipts": 48000,
+      "steadyAcceptedOrdersPerSecond": 200.0,
+      "steadyCompletedTradesPerSecond": 99.97,
+      "httpWholeRunMs": {
+        "average": 5.764938083333319,
+        "median": 2.336,
+        "p90": 7.540300000000003,
+        "p95": 14.471099999999996,
+        "p99": 80.06278999999996,
+        "maximum": 480.979
+      },
+      "httpSteadyInteriorMs": {
+        "count": 34000,
+        "average": 4.374450235294117,
+        "p50": 2.07,
+        "p95": 9.63605,
+        "p99": 50.93047000000009,
+        "maximum": 290.666
+      },
+      "steadyWindow": {
+        "definition": "earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps",
+        "durationSeconds": 170.0,
+        "startEpochSeconds": 1793849381.0491266,
+        "endEpochSeconds": 1793849551.0491266
+      },
+      "commandPool": {
+        "sampleCount": 25,
+        "configuredSampleIntervalSeconds": 5,
+        "observedSampleIntervalSeconds": [
+          6.0,
+          9.0
+        ],
+        "sampledActivePeak": 5.0,
+        "sampledPendingPeak": 0.0,
+        "acquireAverageMs": 0.09319837057153436,
+        "holdAverageMs": 3.8180527696343156,
+        "wholeRunTimeouts": 0.0
+      },
+      "dependencyPhaseAverageMs": {
+        "backpressure_check": 0.00810550806252317,
+        "market_sequence": 0.3830633851476584,
+        "rate_limit_check": 0.0015979780372532668
+      },
+      "finalDebtAllZero": true,
+      "maxInboxOldestAgeSeconds": {
+        "Order": 0,
+        "Wallet": 0,
+        "Match": 0
+      },
+      "sourceStable": true,
+      "sql": {
+        "synchronousCommit": "on",
+        "synchronousCommitSource": "command line",
+        "roleDatabaseOverrides": [],
+        "heads": 48000,
+        "submissions": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 48000,
+        "receiptOrders": 48000,
+        "receiptsWithoutOrder": 0
+      },
+      "artifactsDirectory": "r1_unique"
+    },
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R2_UNIQUE",
+      "mode": "unique",
+      "allGatesPassed": true,
+      "acceptedUniqueOrders": 48000,
+      "receipts": 48000,
+      "steadyAcceptedOrdersPerSecond": 200.0,
+      "steadyCompletedTradesPerSecond": 99.89,
+      "httpWholeRunMs": {
+        "average": 4.705477458333332,
+        "median": 2.498,
+        "p90": 7.017100000000001,
+        "p95": 11.576449999999982,
+        "p99": 50.19365999999997,
+        "maximum": 253.706
+      },
+      "httpSteadyInteriorMs": {
+        "count": 34000,
+        "average": 4.202473794117647,
+        "p50": 2.42,
+        "p95": 9.850149999999998,
+        "p99": 40.53738000000028,
+        "maximum": 217.766
+      },
+      "steadyWindow": {
+        "definition": "earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps",
+        "durationSeconds": 170.0,
+        "startEpochSeconds": 1793849712.8186526,
+        "endEpochSeconds": 1793849882.8186526
+      },
+      "commandPool": {
+        "sampleCount": 25,
+        "configuredSampleIntervalSeconds": 5,
+        "observedSampleIntervalSeconds": [
+          6.0,
+          8.0
+        ],
+        "sampledActivePeak": 8.0,
+        "sampledPendingPeak": 0.0,
+        "acquireAverageMs": 0.008573272285898654,
+        "holdAverageMs": 3.7589417404129795,
+        "wholeRunTimeouts": 0.0
+      },
+      "dependencyPhaseAverageMs": {
+        "backpressure_check": 0.008704206692913387,
+        "market_sequence": 0.35718180179625986,
+        "rate_limit_check": 0.0019432155511811022
+      },
+      "finalDebtAllZero": true,
+      "maxInboxOldestAgeSeconds": {
+        "Order": 0,
+        "Wallet": 0,
+        "Match": 0
+      },
+      "sourceStable": true,
+      "sql": {
+        "synchronousCommit": "on",
+        "synchronousCommitSource": "command line",
+        "roleDatabaseOverrides": [],
+        "heads": 48000,
+        "submissions": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 48000,
+        "receiptOrders": 48000,
+        "receiptsWithoutOrder": 0
+      },
+      "artifactsDirectory": "r2_unique"
+    },
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R2_NONE",
+      "mode": "none",
+      "allGatesPassed": true,
+      "acceptedUniqueOrders": 48000,
+      "receipts": 0,
+      "steadyAcceptedOrdersPerSecond": 200.0,
+      "steadyCompletedTradesPerSecond": 100.21,
+      "httpWholeRunMs": {
+        "average": 2.1059716458333257,
+        "median": 1.12,
+        "p90": 2.865,
+        "p95": 4.183049999999998,
+        "p99": 16.552349999999986,
+        "maximum": 316.875
+      },
+      "httpSteadyInteriorMs": {
+        "count": 33999,
+        "average": 2.109300567663755,
+        "p50": 1.079,
+        "p95": 3.877099999999998,
+        "p99": 17.168039999999994,
+        "maximum": 316.875
+      },
+      "steadyWindow": {
+        "definition": "earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps",
+        "durationSeconds": 170.0,
+        "startEpochSeconds": 1793850044.1165695,
+        "endEpochSeconds": 1793850214.1165695
+      },
+      "commandPool": {
+        "sampleCount": 26,
+        "configuredSampleIntervalSeconds": 5,
+        "observedSampleIntervalSeconds": [
+          6.0,
+          7.0
+        ],
+        "sampledActivePeak": 1.0,
+        "sampledPendingPeak": 0.0,
+        "acquireAverageMs": 0.03901813518959516,
+        "holdAverageMs": 1.336172681199243,
+        "wholeRunTimeouts": 0.0
+      },
+      "dependencyPhaseAverageMs": {
+        "backpressure_check": 0.004833974877750611,
+        "market_sequence": 0.4434828590464548,
+        "rate_limit_check": 0.002791778514669926
+      },
+      "finalDebtAllZero": true,
+      "maxInboxOldestAgeSeconds": {
+        "Order": 0,
+        "Wallet": 0,
+        "Match": 0
+      },
+      "sourceStable": true,
+      "sql": {
+        "synchronousCommit": "on",
+        "synchronousCommitSource": "command line",
+        "roleDatabaseOverrides": [],
+        "heads": 48000,
+        "submissions": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 0,
+        "receiptOrders": 0,
+        "receiptsWithoutOrder": 0
+      },
+      "artifactsDirectory": "r2_none"
+    },
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R3_NONE",
+      "mode": "none",
+      "allGatesPassed": true,
+      "acceptedUniqueOrders": 48000,
+      "receipts": 0,
+      "steadyAcceptedOrdersPerSecond": 200.0,
+      "steadyCompletedTradesPerSecond": 99.93,
+      "httpWholeRunMs": {
+        "average": 3.2664558125000007,
+        "median": 1.503,
+        "p90": 4.900300000000003,
+        "p95": 9.279299999999987,
+        "p99": 38.57414999999999,
+        "maximum": 209.554
+      },
+      "httpSteadyInteriorMs": {
+        "count": 34000,
+        "average": 2.8111501764705884,
+        "p50": 1.365,
+        "p95": 7.549249999999997,
+        "p99": 32.8229500000004,
+        "maximum": 209.554
+      },
+      "steadyWindow": {
+        "definition": "earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps",
+        "durationSeconds": 170.0,
+        "startEpochSeconds": 1793850379.6235116,
+        "endEpochSeconds": 1793850549.6235116
+      },
+      "commandPool": {
+        "sampleCount": 25,
+        "configuredSampleIntervalSeconds": 5,
+        "observedSampleIntervalSeconds": [
+          6.0,
+          7.0
+        ],
+        "sampledActivePeak": 1.0,
+        "sampledPendingPeak": 0.0,
+        "acquireAverageMs": 0.002957226913813603,
+        "holdAverageMs": 1.769573170731707,
+        "wholeRunTimeouts": 0.0
+      },
+      "dependencyPhaseAverageMs": {
+        "backpressure_check": 0.031380864231438245,
+        "market_sequence": 0.5963008683206689,
+        "rate_limit_check": 0.0022096428331654923
+      },
+      "finalDebtAllZero": true,
+      "maxInboxOldestAgeSeconds": {
+        "Order": 0,
+        "Wallet": 0,
+        "Match": 0
+      },
+      "sourceStable": true,
+      "sql": {
+        "synchronousCommit": "on",
+        "synchronousCommitSource": "command line",
+        "roleDatabaseOverrides": [],
+        "heads": 48000,
+        "submissions": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 0,
+        "receiptOrders": 0,
+        "receiptsWithoutOrder": 0
+      },
+      "artifactsDirectory": "r3_none"
+    },
+    {
+      "runId": "HTTP_IDEMPOTENCY_20261105_B_R3_UNIQUE_RETRY1",
+      "mode": "unique",
+      "allGatesPassed": true,
+      "acceptedUniqueOrders": 48000,
+      "receipts": 48000,
+      "steadyAcceptedOrdersPerSecond": 200.0,
+      "steadyCompletedTradesPerSecond": 99.73,
+      "httpWholeRunMs": {
+        "average": 3.9454843958333368,
+        "median": 2.169,
+        "p90": 6.037,
+        "p95": 9.794199999999991,
+        "p99": 38.22690999999996,
+        "maximum": 215.162
+      },
+      "httpSteadyInteriorMs": {
+        "count": 34000,
+        "average": 3.665311705882353,
+        "p50": 2.07,
+        "p95": 8.55205,
+        "p99": 36.04266000000013,
+        "maximum": 215.162
+      },
+      "steadyWindow": {
+        "definition": "earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps",
+        "durationSeconds": 170.0,
+        "startEpochSeconds": 1793851841.3364801,
+        "endEpochSeconds": 1793852011.3364801
+      },
+      "commandPool": {
+        "sampleCount": 26,
+        "configuredSampleIntervalSeconds": 5,
+        "observedSampleIntervalSeconds": [
+          6.0,
+          8.0
+        ],
+        "sampledActivePeak": 2.0,
+        "sampledPendingPeak": 0.0,
+        "acquireAverageMs": 0.0011849043189762426,
+        "holdAverageMs": 3.4129217643747967,
+        "wholeRunTimeouts": 0.0
+      },
+      "dependencyPhaseAverageMs": {
+        "backpressure_check": 0.0035402014292491993,
+        "market_sequence": 0.3029154705254418,
+        "rate_limit_check": 0.0018626613687581545
+      },
+      "finalDebtAllZero": true,
+      "maxInboxOldestAgeSeconds": {
+        "Order": 0,
+        "Wallet": 0,
+        "Match": 0
+      },
+      "sourceStable": true,
+      "sql": {
+        "synchronousCommit": "on",
+        "synchronousCommitSource": "command line",
+        "roleDatabaseOverrides": [],
+        "heads": 48000,
+        "submissions": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 48000,
+        "receiptOrders": 48000,
+        "receiptsWithoutOrder": 0
+      },
+      "artifactsDirectory": "r3_unique_retry1"
+    }
+  ],
+  "aggregates": {
+    "none": {
+      "repeats": 3,
+      "medianSteadyP95Ms": 6.098199999999997,
+      "medianSteadyP99Ms": 32.8229500000004,
+      "steadyP95RangeMs": [
+        3.877099999999998,
+        7.549249999999997
+      ],
+      "steadyP99RangeMs": [
+        17.168039999999994,
+        34.41028000000026
+      ],
+      "medianConnectionHoldMs": 1.5372371840302386,
+      "medianConnectionAcquireMs": 0.002957226913813603,
+      "sampledActivePeak": 1.0,
+      "sampledPendingPeak": 0.0
+    },
+    "unique": {
+      "repeats": 3,
+      "medianSteadyP95Ms": 9.63605,
+      "medianSteadyP99Ms": 40.53738000000028,
+      "steadyP95RangeMs": [
+        8.55205,
+        9.850149999999998
+      ],
+      "steadyP99RangeMs": [
+        36.04266000000013,
+        50.93047000000009
+      ],
+      "medianConnectionHoldMs": 3.7589417404129795,
+      "medianConnectionAcquireMs": 0.008573272285898654,
+      "sampledActivePeak": 8.0,
+      "sampledPendingPeak": 0.0
+    }
+  },
+  "configuration": {
+    "targetUniqueOrdersPerSecond": 200,
+    "warmupSeconds": 60,
+    "measurementSeconds": 180,
+    "httpInteriorSeconds": [
+      65,
+      235
+    ],
+    "workloadSeed": 20260905,
+    "usersPerSide": 500,
+    "rateLimiterBackend": "local",
+    "postgresSynchronousCommitConfigured": "on",
+    "postgresSessionObservation": "server default + no role/database override + source audit; not direct command-session inspection",
+    "driverPlacement": "co-located",
+    "comparison": "same post-change revision, no-key versus new-key; not pre/post old revision"
+  },
+  "totals": {
+    "validComparisonRuns": 6,
+    "uniqueOrders": 288000,
+    "trades": 144000,
+    "replayAttempts": 12000
+  },
+  "replay": {
+    "contract": "http-idempotency-replay-only",
+    "passed": true,
+    "attempts": 12000,
+    "liveServices": [
+      "eap-order"
+    ],
+    "orderJvmRestartedAfterSourceRun": true,
+    "targetRequestsPerSecond": 200,
+    "newUniqueOrders": 0,
+    "sourceRunId": "HTTP_IDEMPOTENCY_20261105_B_R3_UNIQUE_RETRY1",
+    "expectedResponseSource": "persisted original receipt joined by user/key/orderId; original HTTP bytes not captured",
+    "before": {
+      "order": {
+        "heads": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 48000,
+        "receiptStorageBytes": 22896640,
+        "tradeApplications": 24000
+      },
+      "wallets": "3b1adee001d53863f770a658e278dfb1",
+      "matchTrades": 24000,
+      "marketSequence": "48000"
+    },
+    "after": {
+      "order": {
+        "heads": 48000,
+        "events": 96000,
+        "outbox": 48000,
+        "receipts": 48000,
+        "receiptStorageBytes": 22896640,
+        "tradeApplications": 24000
+      },
+      "wallets": "3b1adee001d53863f770a658e278dfb1",
+      "matchTrades": 24000,
+      "marketSequence": "48000"
+    },
+    "outcomeDeltas": {
+      "replayed": 12000.0
+    },
+    "beforeDebt": {
+      "eap-order": {
+        "contractVersion": 1,
+        "service": "eap-order",
+        "observedAt": "2026-11-05T05:32:53.298575Z",
+        "observationSuccess": true,
+        "snapshotAgeSeconds": 1,
+        "components": [
+          {
+            "work": "asset_reservation_result_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "trade_execution_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "cancellation_result_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "asset_reservation_released_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "event_outbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "orders_current_projection",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          }
+        ]
+      }
+    },
+    "afterDebt": {
+      "eap-order": {
+        "contractVersion": 1,
+        "service": "eap-order",
+        "observedAt": "2026-11-05T05:33:53.968729Z",
+        "observationSuccess": true,
+        "snapshotAgeSeconds": 2,
+        "components": [
+          {
+            "work": "asset_reservation_result_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "trade_execution_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "cancellation_result_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "asset_reservation_released_inbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "event_outbox",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          },
+          {
+            "work": "orders_current_projection",
+            "totalCount": 0,
+            "retryCount": 0,
+            "terminalCount": 0,
+            "oldestUnresolvedAgeSeconds": 0
+          }
+        ]
+      }
+    },
+    "driverExitStatus": 0,
+    "httpLatencyMs": {
+      "med": 2.175,
+      "p(90)": 3.3491000000000004,
+      "p(95)": 4.019199999999998,
+      "p(99)": 23.155759999999994,
+      "max": 141.847,
+      "avg": 2.9603882500000176,
+      "min": 0.845
+    },
+    "scriptSha256": "6c0b0218bb09760a0706bdd1d3b7964202df192d35f1024c3497c3b36b145abb",
+    "targetsSha256": "05f2a4c3bc39969cde88a64ee98ae558f0a316cfbd4b1622a3a3f3824c3c79d6",
+    "capacityClaimAllowed": false
+  },
+  "limitations": [
+    "dirty source, co-located, three repetitions, fixed target; no ceiling/SLA claim",
+    "HTTP p95/p99 aggregates are medians of three run-level percentiles",
+    "pool configured5s sampling actually6-9s; short waits may be missed",
+    "no slow-dependency injection, hot-key storm, live mixed replay or Redis limiter measurement",
+    "replay uses restarted Order only and compares against stored receipt; original HTTP response bytes not captured"
+  ],
+  "recommendation": "keep direct durable acceptance + outbox at measured comparison point; retain command inbox as a separate option when requirements or further evidence justify it"
+}

@@ -1,0 +1,47 @@
+{
+  "hostSleepConfirmed": true,
+  "monitorGapSeconds": 460.997,
+  "jvmClockLeapMessages": [
+    {
+      "serviceLog": "eap-matchEngine.log",
+      "line": "2026-11-05T11:59:55.863+08:00  WARN 61424 --- [eap-matchengine] [l-1:housekeeper] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=8m29s560ms)."
+    },
+    {
+      "serviceLog": "eap-matchEngine.log",
+      "line": "2026-11-05T12:01:56.120+08:00  WARN 61424 --- [eap-matchengine] [l-1:housekeeper] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=2m257ms)."
+    },
+    {
+      "serviceLog": "eap-wallet.log",
+      "line": "2026-11-05T11:59:45.671+08:00  WARN 60938 --- [eap-wallet] [l-1:housekeeper] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=8m29s564ms)."
+    },
+    {
+      "serviceLog": "eap-wallet.log",
+      "line": "2026-11-05T12:01:45.933+08:00  WARN 60938 --- [eap-wallet] [l-1:housekeeper] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=2m263ms)."
+    },
+    {
+      "serviceLog": "eap-order.log",
+      "line": "2026-11-05T11:59:50.434+08:00  WARN 61328 --- [eap-order] [ool:housekeeper] com.zaxxer.hikari.pool.HikariPool        : OrderCommandPool - Thread starvation or clock leap detected (housekeeper delta=8m29s565ms)."
+    },
+    {
+      "serviceLog": "eap-order.log",
+      "line": "2026-11-05T11:59:52.867+08:00  WARN 61328 --- [eap-order] [ool:housekeeper] com.zaxxer.hikari.pool.HikariPool        : OrderConsumerPool - Thread starvation or clock leap detected (housekeeper delta=8m29s559ms)."
+    },
+    {
+      "serviceLog": "eap-order.log",
+      "line": "2026-11-05T11:59:53.291+08:00  WARN 61328 --- [eap-order] [ool:housekeeper] com.zaxxer.hikari.pool.HikariPool        : OrderProjectionPool - Thread starvation or clock leap detected (housekeeper delta=8m29s562ms)."
+    },
+    {
+      "serviceLog": "eap-order.log",
+      "line": "2026-11-05T12:01:50.693+08:00  WARN 61328 --- [eap-order] [ool:housekeeper] com.zaxxer.hikari.pool.HikariPool        : OrderCommandPool - Thread starvation or clock leap detected (housekeeper delta=2m260ms)."
+    },
+    {
+      "serviceLog": "eap-order.log",
+      "line": "2026-11-05T12:01:53.124+08:00  WARN 61328 --- [eap-order] [ool:housekeeper] com.zaxxer.hikari.pool.HikariPool        : OrderConsumerPool - Thread starvation or clock leap detected (housekeeper delta=2m257ms)."
+    },
+    {
+      "serviceLog": "eap-order.log",
+      "line": "2026-11-05T12:01:53.549+08:00  WARN 61328 --- [eap-order] [ool:housekeeper] com.zaxxer.hikari.pool.HikariPool        : OrderProjectionPool - Thread starvation or clock leap detected (housekeeper delta=2m258ms)."
+    }
+  ],
+  "failedResultRetained": true
+}

@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-09-21
+> 更新日期：2026-11-05
 
 > 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -18,6 +18,16 @@
 10. **Order Saga 卡住不再只能靠人工猜。** warning-only detector 依 effective lifecycle state 與 stream-head progress time 找出長時間停在 `PENDING_ASSET_CHECK`／`CANCELLING` 的訂單，提供 bounded Actuator 明細、低基數 metrics 與 fail-closed 告警；它刻意不自動取消或釋放資產。
 11. **DLQ replay 有 owner-aware 安全邊界。** 目前只開放 exact Wallet／Order `TradeExecutedEvent` topology、明確 transient failure，且各 owner 的 business-state preflight 通過才可 direct replay。Order 不只查 recovery inbox，也查正常 happy path 的 trade application。MCP 在 publisher confirm 後、中央 audit 前 `SIGKILL` 的 live campaign 已以 Wallet route 證明同 actionId 可恢復，duplicate 最終只形成一筆 Wallet settlement。
 12. **可靠性主線已進入成果統合。** REL-107 R1～R5 已涵蓋核心 DB／Redis outage、consumer crash、worker lease、duplicate／亂序、Match outbox confirm ambiguity 與 MCP replay confirm ambiguity。其他 DLQ route、三 JVM 同場 crash 與中央 disposition 極小競態保留為已知邊界，不為了追求功能數量繼續擴張 control plane。
+13. **HTTP 買賣單加入可選的冪等契約。** `Idempotency-Key` 由 Order 的 command transaction 保存原始受理 response，與 event／outbox 一起提交。相同使用者、key 與內容可重送取得原結果；內容衝突或尚在處理中回 409。key 永久保留；未提供 key、MCP、取消及 TDA 不因此獲得此保證。詳見 [PLAT-201 規格與驗收](features/http-command-idempotency.zh-TW.md)。
+
+2026-11-05 的 Architect／Performance 評估保留 HTTP 直接 durable 受理＋outbox；尚無
+正式 keyed capacity 證據支持新增 command inbox。外部依賴等待、後續量測與重新評估條件見
+[ADR-007](adr/ADR-007-cda-http-order-intake-mode.zh-TW.md)。
+同日後續的 [HTTP 冪等性增量診斷](benchmarks/2026-11-05-http-idempotency-comparison.md)
+已在 200 unique orders/s 完成三輪各模式與完整 schema-v4 gate；新 key 增加延遲與
+connection hold，但此比較點未觀察到完成吞吐失敗，另有重啟 Order 後 12000 次 replay
+驗證。這不是乾淨 revision 容量基準，模式決策維持不變。
+本項於 2026-11-05 通過最終 QA／Reviewer 功能驗收，狀態為 Accepted。
 
 ## 現行能力與誠實邊界
 
@@ -91,7 +101,8 @@ warning-only detector 補上 Order Saga 卡住的可見性。`EAP-REL-106` 已�
 terminal recovery、owner-side replay policy、兩端 actionId idempotency、rate limit／audit，
 並把 shared DLQ 先持久化 quarantine。`EAP-REL-107` R1～R5 已驗證 DB／Redis outage、核心
 consumer crash、Match outbox confirm ambiguity、MCP replay confirm→central audit crash，並
-把 owner-specific preflight 擴充到 Order `TradeExecutedEvent`。目前先凍結可靠性主線，
-統一架構、驗證與版本文件；其他 DLQ route、三 JVM 同場 crash與中央
-disposition 極小競態明確延後。成果統合完成後，下一個建議的新工程題目是 HTTP command
-idempotency；Redis full-book rebuild 保留為後續大型 recovery 專題。
+把 owner-specific preflight 擴充到 Order `TradeExecutedEvent`。可靠性主線維持凍結，
+架構、驗證與版本文件已統合；其他 DLQ route、三 JVM 同場 crash 與中央
+disposition 極小競態明確延後。2026-10-29 已推進 PLAT-201 的 BUY／SELL HTTP
+idempotency 限定切片；後續先用最新程式與 schema-v4 gate 建立固定版本長窗基準，再評估
+Order reservation-result／projection 的改善。Redis full-book rebuild 保留為後續大型 recovery 專題。

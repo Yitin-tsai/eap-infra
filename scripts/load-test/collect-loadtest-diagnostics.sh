@@ -256,9 +256,9 @@ sample_all_dbs_hot_window() {
 
 sample_actuator_hot_window() {
   echo "# actuator hot-window"
-  local metric_pattern='^(hikaricp_connections_(active|idle|pending|max|min)|hikaricp_connections_(acquire|usage)_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|jvm_gc_pause_seconds_(count|sum|max)).*'
+  local metric_pattern='^(hikaricp_connections_(active|idle|pending|max|min)|hikaricp_connections_(acquire|usage)_seconds_(count|sum|max)|eap_order_http_idempotency_.*|eap_order_submission_phase_duration_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|jvm_gc_pause_seconds_(count|sum|max)).*'
   if [[ "${DIAGNOSTICS_LEVEL}" == "deep" ]]; then
-    metric_pattern='^(hikaricp_connections_(active|idle|pending|max|min)|hikaricp_connections_(acquire|usage)_seconds_(count|sum|max)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_outbox_.*).*'
+    metric_pattern='^(hikaricp_connections_(active|idle|pending|max|min)|hikaricp_connections_(acquire|usage)_seconds_(count|sum|max)|eap_order_http_idempotency_.*|eap_order_submission_phase_duration_seconds_(count|sum|max)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|match_engine_.*|trade_outbox_.*).*'
   fi
   for spec in \
     "wallet http://localhost:8081/eap-wallet/actuator/prometheus" \
@@ -590,7 +590,7 @@ snapshot_actuator() {
     for url in "$@"; do
       echo "# url=${url}"
       if curl -fsS "${url}" \
-        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_outbox_.*|match_engine_.*).*'; then
+        | grep -E '^(hikaricp_connections|hikaricp_connections_(active|idle|pending|max|min)|eap_order_http_idempotency_.*|eap_order_submission_phase_duration_seconds_(count|sum|max)|jvm_threads_live_threads|jvm_gc_pause_seconds_(count|sum|max)|process_cpu_usage|system_cpu_usage|process_uptime_seconds|executor_|eap_order_submission_append_duration_seconds_(count|sum|max)|eap_order_trade_apply_duration_seconds_(count|sum|max)|eap_order_trade_batch_total|eap_order_trade_batch_.*_total|eap_order_outbox_.*|eap_order_asset_reservation_.*|eap_wallet_order_submitted_.*|eap_wallet_trade_settlement_.*|eap_wallet_outbox_.*|trade_outbox_.*|match_engine_.*).*'; then
         return 0
       fi
     done

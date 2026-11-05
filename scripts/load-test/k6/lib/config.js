@@ -1,3 +1,5 @@
+import { validateIdempotencyMode } from './idempotency.js';
+
 function positiveInteger(name, defaultValue) {
   const raw = __ENV[name] || String(defaultValue);
   const parsed = Number(raw);
@@ -31,6 +33,7 @@ export function loadConfig() {
     benchmarkContract: __ENV.EAP_BENCHMARK_CONTRACT || 'external-http-matched-steady-state-chain',
     gracefulStop: __ENV.EAP_K6_GRACEFUL_STOP || '15s',
     httpTimeout: __ENV.EAP_K6_HTTP_TIMEOUT || '10s',
+    idempotencyMode: validateIdempotencyMode(__ENV.EAP_HTTP_IDEMPOTENCY_MODE || 'none'),
     maxP95Milliseconds: optionalPositiveNumber('EAP_K6_MAX_P95_MS'),
     preAllocatedVUs: positiveInteger(
       'EAP_K6_PRE_ALLOCATED_VUS',

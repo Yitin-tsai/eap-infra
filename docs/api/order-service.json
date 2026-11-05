@@ -157,6 +157,18 @@
                         "schema": {
                             "type": "string"
                         }
+                    },
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "\u53ef\u9078\u3001\u5927\u5c0f\u5beb\u654f\u611f\u3001\u540c\u4f7f\u7528\u8005\u6c38\u4e45\u4fdd\u7559\u7684\u4e0b\u55ae\u91cd\u9001\u8b58\u5225\u78bc\uff1b\u540c key \u9808\u4fdd\u6301 side\u3001price\u3001amount \u53ca\u539f\u59cb orderId \u76f8\u540c\u3002\u4e0d\u53ef\u91cd\u8907 header\u3002",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                        }
                     }
                 ],
                 "requestBody": {
@@ -175,6 +187,12 @@
                     },
                     "400": {
                         "description": "\u8acb\u6c42\u932f\u8aa4"
+                    },
+                    "409": {
+                        "description": "IDEMPOTENCY_KEY_REUSED\uff1a\u76f8\u540c key \u4e0d\u540c\u5167\u5bb9\uff1bIDEMPOTENCY_IN_PROGRESS\uff1a\u8655\u7406\u4e2d\uff0cRetry-After: 1\uff0c\u8acb\u4ee5\u76f8\u540c key\uff0f\u5167\u5bb9\u91cd\u9001\u3002"
+                    },
+                    "503": {
+                        "description": "IDEMPOTENCY_UNAVAILABLE\uff1a\u65b0 keyed request \u4e0d\u652f\u63f4\u76ee\u524d\u5beb\u5165\u6a21\u5f0f\uff0c\u6216\u539f\u6709 admission backpressure\u3002"
                     }
                 }
             }
@@ -204,6 +222,18 @@
                         "required": false,
                         "schema": {
                             "type": "string"
+                        }
+                    },
+                    {
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "description": "\u53ef\u9078\u3001\u5927\u5c0f\u5beb\u654f\u611f\u3001\u540c\u4f7f\u7528\u8005\u6c38\u4e45\u4fdd\u7559\u7684\u4e0b\u55ae\u91cd\u9001\u8b58\u5225\u78bc\uff1b\u540c key \u9808\u4fdd\u6301 side\u3001price\u3001amount \u53ca\u539f\u59cb orderId \u76f8\u540c\u3002\u4e0d\u53ef\u91cd\u8907 header\u3002",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "pattern": "^[A-Za-z0-9._:-]{1,128}$"
                         }
                     }
                 ],
@@ -243,6 +273,12 @@
                                 }
                             }
                         }
+                    },
+                    "409": {
+                        "description": "IDEMPOTENCY_KEY_REUSED\uff1a\u76f8\u540c key \u4e0d\u540c\u5167\u5bb9\uff1bIDEMPOTENCY_IN_PROGRESS\uff1a\u8655\u7406\u4e2d\uff0cRetry-After: 1\uff0c\u8acb\u4ee5\u76f8\u540c key\uff0f\u5167\u5bb9\u91cd\u9001\u3002"
+                    },
+                    "503": {
+                        "description": "IDEMPOTENCY_UNAVAILABLE\uff1a\u65b0 keyed request \u4e0d\u652f\u63f4\u76ee\u524d\u5beb\u5165\u6a21\u5f0f\uff0c\u6216\u539f\u6709 admission backpressure\u3002"
                     }
                 }
             }

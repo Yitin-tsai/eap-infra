@@ -1,0 +1,206 @@
+import datetime as dt
+import csv
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import statistics
+
+REPORTS = Path(__file__).resolve().parent
+CAMPAIGN = 'HTTP_IDEMPOTENCY_20261105_B'
+
+def timestamp(value):
+ return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+
+def quantile(values, q):
+ values = sorted(values)
+ position = (len(values) - 1) * q
+ lo, hi = math.floor(position), math.ceil(position)
+ return values[lo] + (values[hi] - values[lo]) * (position - lo)
+
+def metric(line):
+ match = re.match(r'^([a-zA-Z_:][\w:]*)(\{[^}]*\})?\s+(\S+)', line)
+ if not match:
+  return None
+ name, labels, value = match.groups()
+ try:
+  return name, dict(re.findall(r'(\w+)="([^"]*)"', labels or '')), float(value)
+ except ValueError:
+  return None
+
+def verify_result(result, entry):
+ return (result.get('benchmarkSchemaVersion') == 4
+    and result.get('validForSustainedCapacity') is True
+    and result.get('requiredFieldsMissing') == result.get('requiredFieldsInvalid') == []
+    and result.get('benchmarkProvenance', {}).get('sourceStable') is True
+    and result.get('externalDriverExitStatus') == 0
+    and result.get('externalDroppedIterations') == result.get('externalOutOfRangeIterations') == 0
+    and result.get('httpAccepted') == result.get('externalScheduledRequests') == 48000
+    and result.get('httpIdempotencyMode') == entry['mode']
+    and all(result.get(name) is True for name in (
+       'threeServiceTradeIdsEqual','assetReconciliationPassed','orderReadModelConverged',
+       'finalDurableDebtObservationsHealthy','steadyDurableDebtObservationsHealthy')))
+
+def extract(entry):
+ prefix = REPORTS / ('http-matched-external-' + entry['runId'])
+ result = json.loads(Path(str(prefix) + '-result.json').read_text())
+ gates_passed = verify_result(result, entry)
+ assert gates_passed, 'raw result gates failed: ' + entry['runId']
+ durations = []
+ first_iteration = float('inf')
+ with Path(str(prefix) + '-k6.jsonl').open() as stream:
+  for line in stream:
+   point = json.loads(line)
+   if point.get('type') != 'Point':
+    continue
+   if point['metric'] == 'iteration_duration':
+    first_iteration = min(first_iteration, timestamp(point['data']['time']) - point['data']['value'] / 1000)
+   elif point['metric'] == 'http_req_duration':
+    durations.append((timestamp(point['data']['time']), point['data']['value']))
+ assert len(durations) == 48000 and math.isfinite(first_iteration)
+ # A common interior window excludes warmup and a 5s margin at either edge.
+ start = first_iteration + entry['warmupSeconds'] + 5
+ end = first_iteration + entry['warmupSeconds'] + entry['durationSeconds'] - 5
+ steady = [value for when, value in durations if start <= when < end]
+ assert 33000 <= len(steady) <= 35000
+ samples = []
+ current = None
+ for line in Path(str(prefix) + '-diagnostics/runtime-samples.log').read_text().splitlines():
+  if line.startswith('## sample '):
+   when = timestamp(line.removeprefix('## sample '))
+   current = {'when': when, 'metrics': []} if start <= when < end else None
+   if current is not None:
+    samples.append(current)
+  elif current is not None:
+   parsed = metric(line)
+   if parsed is not None:
+    current['metrics'].append(parsed)
+ assert len(samples) >= 15
+
+ def value(sample, name, **wanted):
+  found = [v for n, labels, v in sample['metrics'] if n == name
+           and labels.get('application') == 'eap-order'
+           and all(labels.get(k) == v for k, v in wanted.items())]
+  assert len(found) == 1, (entry['runId'], name, wanted, found)
+  return found[0]
+
+ def timer_average(name, **labels):
+  count = value(samples[-1], name + '_count', **labels) - value(samples[0], name + '_count', **labels)
+  total = value(samples[-1], name + '_sum', **labels) - value(samples[0], name + '_sum', **labels)
+  return total * 1000 / count if count > 0 else None
+
+ pool = {'pool': 'OrderCommandPool'}
+ final_metrics = [metric(line) for line in Path(str(prefix) + '-order-final.prom').read_text().splitlines()]
+ timeouts = [v for item in final_metrics if item is not None for n, labels, v in [item]
+             if n == 'hikaricp_connections_timeout_total' and labels.get('pool') == 'OrderCommandPool']
+ with Path(str(prefix) + '-pool-samples.csv').open('w') as stream:
+  writer = csv.writer(stream)
+  writer.writerow(['epoch_seconds', 'active', 'pending', 'acquire_count', 'acquire_sum_seconds',
+                   'usage_count', 'usage_sum_seconds'])
+  for sample in samples:
+   writer.writerow([sample['when'], value(sample, 'hikaricp_connections_active', **pool),
+     value(sample, 'hikaricp_connections_pending', **pool),
+     value(sample, 'hikaricp_connections_acquire_seconds_count', **pool),
+     value(sample, 'hikaricp_connections_acquire_seconds_sum', **pool),
+     value(sample, 'hikaricp_connections_usage_seconds_count', **pool),
+     value(sample, 'hikaricp_connections_usage_seconds_sum', **pool)])
+ return {
+  'runId': entry['runId'], 'mode': entry['mode'], 'allGatesPassed': gates_passed,
+  'acceptedUniqueOrders': entry['sql']['submissions'], 'receipts': entry['sql']['receipts'],
+  'steadyAcceptedOrdersPerSecond': entry['steadyAcceptedOrderTps'],
+  'steadyCompletedTradesPerSecond': entry['steadyCompletedTradeTps'],
+  'httpWholeRunMs': entry['externalHttpLatencyMs'],
+  'httpSteadyInteriorMs': {'count': len(steady), 'average': statistics.fmean(steady),
+      'p50': quantile(steady, .5), 'p95': quantile(steady, .95), 'p99': quantile(steady, .99),
+      'maximum': max(steady)},
+  'steadyWindow': {'definition': 'earliest observed iteration start + warmup +5s through total -5s; HTTP completion timestamps',
+      'durationSeconds': end - start, 'startEpochSeconds': start, 'endEpochSeconds': end},
+  'commandPool': {'sampleCount': len(samples), 'configuredSampleIntervalSeconds': 5,
+      'observedSampleIntervalSeconds': [min(b['when'] - a['when'] for a, b in zip(samples, samples[1:])),
+                                        max(b['when'] - a['when'] for a, b in zip(samples, samples[1:]))],
+      'sampledActivePeak': max(value(s, 'hikaricp_connections_active', **pool) for s in samples),
+      'sampledPendingPeak': max(value(s, 'hikaricp_connections_pending', **pool) for s in samples),
+      'acquireAverageMs': timer_average('hikaricp_connections_acquire_seconds', **pool),
+      'holdAverageMs': timer_average('hikaricp_connections_usage_seconds', **pool),
+      'wholeRunTimeouts': timeouts[0] if len(timeouts) == 1 else None},
+  'dependencyPhaseAverageMs': {phase: timer_average('eap_order_submission_phase_duration_seconds', phase=phase)
+      for phase in ['backpressure_check', 'market_sequence', 'rate_limit_check']},
+  'finalDebtAllZero': all(c['totalCount'] == c['retryCount'] == c['terminalCount'] == 0
+      for service in result['finalDurableDebtComponents'].values() for c in service.values()),
+  'maxInboxOldestAgeSeconds': {service: result['steady' + service + 'InboxOldestAgeMaxSeconds']
+      for service in ['Order', 'Wallet', 'Match']},
+  'sourceStable': entry['sourceStable'], 'sql': entry['sql'],
+ }
+
+def main():
+ index = json.loads((REPORTS / (CAMPAIGN + '-index.json')).read_text())
+ entries = [r for r in index['runs'] if '_R' in r['runId']]
+ assert len(entries) == 6, 'paired campaign incomplete'
+ excluded = []
+ retry_id = CAMPAIGN + '_R3_UNIQUE_RETRY1'
+ retry_path = REPORTS / ('http-matched-external-' + retry_id + '-result.json')
+ if retry_path.exists():
+  previous = entries[-1]
+  assert previous['runId'] == CAMPAIGN + '_R3_UNIQUE' and previous['exitStatus'] != 0
+  retry = json.loads(retry_path.read_text())
+  expected = 48000
+  replacement = {**previous, 'runId': retry_id, 'exitStatus': 0,
+    'validForSustainedCapacity': retry['validForSustainedCapacity'],
+    'wallSeconds': timestamp(retry['benchmarkProvenance']['capturedAtEnd'])
+                 - timestamp(retry['benchmarkProvenance']['capturedAtStart']),
+    'externalHttpLatencyMs': retry['externalHttpLatencyMs'],
+    'steadyAcceptedOrderTps': retry['steadyAcceptedOrderTps'],
+    'steadyCompletedTradeTps': retry['steadyCompletedTradeTps'],
+    'sourceStable': retry['benchmarkProvenance']['sourceStable'],
+    'sourceSignature': [[r['name'],r['commit'],r['workingTreeSha256']]
+                        for r in retry['benchmarkProvenance']['repositories']],
+    'fingerprints': retry['benchmarkProvenance']['fingerprints'],
+    'sql': json.loads(Path(str(retry_path).replace('-result.json', '-sql.json')).read_text()),
+    'workloadCorrectnessPassed': all(retry.get(name) is True for name in (
+       'threeServiceTradeIdsEqual','assetReconciliationPassed','orderReadModelConverged',
+       'finalDurableDebtObservationsHealthy','steadyDurableDebtObservationsHealthy')),
+    'exactSchedulePassed': (retry['httpAccepted'] == retry['externalScheduledRequests'] == expected
+       and retry['externalDroppedIterations'] == retry['externalOutOfRangeIterations']
+           == retry['externalDriverExitStatus'] == 0
+       and retry['httpIdempotencyMode'] == 'unique')}
+  assert retry['benchmarkSchemaVersion'] == 4 and retry['validForSustainedCapacity'] is True
+  assert retry['requiredFieldsMissing'] == retry['requiredFieldsInvalid'] == []
+  sql = replacement['sql']
+  replacement['idempotencyInvariantPassed'] = (sql['heads'] == sql['submissions']
+      == sql['receipts'] == sql['receiptOrders'] == expected and sql['receiptsWithoutOrder'] == 0)
+  excluded.append({'runId': previous['runId'], 'reason': 'confirmed host sleep / global clock interruption',
+    'monitorGapSeconds': 460.997, 'replacementRunId': retry_id,
+    'originalFailedResultRetained': True,
+    'powerEvidence': str(REPORTS / (CAMPAIGN + '-R3-interrupted/power-events.txt'))})
+  entries[-1] = replacement
+ assert all(r['workloadCorrectnessPassed'] and r['exactSchedulePassed']
+            and r['idempotencyInvariantPassed'] and r['sourceStable'] for r in entries)
+ assert all(r['sourceSignature'] == entries[0]['sourceSignature']
+            and r['fingerprints'] == entries[0]['fingerprints'] for r in entries)
+ runs = [extract(entry) for entry in entries]
+ assert all(r['finalDebtAllZero'] for r in runs)
+ summary = {'campaignId': CAMPAIGN, 'capacityClaimAllowed': False,
+            'analysisSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'excludedRuns': excluded,
+            'sourceIdenticalAcrossArms': True, 'sourceSignature': entries[0]['sourceSignature'],
+            'fingerprints': entries[0]['fingerprints'], 'runs': runs, 'aggregates': {}}
+ for mode in ['none', 'unique']:
+  selected = [r for r in runs if r['mode'] == mode]
+  summary['aggregates'][mode] = {
+   'repeats': len(selected),
+   'medianSteadyP95Ms': statistics.median(r['httpSteadyInteriorMs']['p95'] for r in selected),
+   'medianSteadyP99Ms': statistics.median(r['httpSteadyInteriorMs']['p99'] for r in selected),
+   'steadyP95RangeMs': [min(r['httpSteadyInteriorMs']['p95'] for r in selected), max(r['httpSteadyInteriorMs']['p95'] for r in selected)],
+   'steadyP99RangeMs': [min(r['httpSteadyInteriorMs']['p99'] for r in selected), max(r['httpSteadyInteriorMs']['p99'] for r in selected)],
+   'medianConnectionHoldMs': statistics.median(r['commandPool']['holdAverageMs'] for r in selected),
+   'medianConnectionAcquireMs': statistics.median(r['commandPool']['acquireAverageMs'] for r in selected),
+   'sampledActivePeak': max(r['commandPool']['sampledActivePeak'] for r in selected),
+   'sampledPendingPeak': max(r['commandPool']['sampledPendingPeak'] for r in selected),
+  }
+ output = REPORTS / (CAMPAIGN + '-analysis.json')
+ output.write_text(json.dumps(summary, indent=2) + '\n')
+ print(json.dumps(summary['aggregates'], indent=2))
+
+if __name__ == '__main__':
+ main()

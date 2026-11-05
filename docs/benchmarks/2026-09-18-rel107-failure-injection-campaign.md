@@ -1,5 +1,9 @@
 # 2026-09-18 REL-107 failure-injection campaign R1–R5
 
+> 後續範圍決策（2026-09-21，2026-10-29 核對）：核心 R1～R5 已完成，其他 route／全鏈
+> 廣度明確延後，依[工程 backlog](../backlog.zh-TW.md)排程。下文「不完全關閉」描述原始
+> 完整範圍仍有未驗證案例，不代表核心 campaign 尚未執行，也不阻塞 PLAT-201。
+
 > 結論：目前已實作的 CDA durable inbox、DB outage circuit、worker lease、Redis
 > generation fence 與 recovery action idempotency，在本輪範圍內通過。沒有觀察到重複
 > trade、重複資產異動、遺失工作或未被 gate 看見的 debt。REL-107 仍不完全關閉，因為

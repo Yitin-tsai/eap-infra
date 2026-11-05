@@ -1,0 +1,137 @@
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[2]
+REPORTS = ROOT / 'build/load-test-reports'
+WORK = {
+ 'eap-order': {'asset_reservation_result_inbox', 'trade_execution_inbox', 'cancellation_result_inbox',
+               'asset_reservation_released_inbox', 'event_outbox', 'orders_current_projection'},
+ 'eap-wallet': {'order_submission_inbox', 'cancellation_result_inbox', 'trade_execution_inbox', 'event_outbox'},
+ 'eap-matchEngine': {'order_admission_inbox', 'trade_outbox', 'reservation_cleanup',
+                    'order_cancellation', 'reservation_reconciliation'},
+}
+BASES = {'eap-order': 'http://localhost:8080/eap-order',
+         'eap-wallet': 'http://localhost:8081/eap-wallet',
+         'eap-matchEngine': 'http://localhost:8082/match-engine'}
+
+def sql(container, database, query):
+ return subprocess.check_output(['docker', 'exec', container, 'psql', '-U', 'admin',
+     '-d', database, '-Atqc', query], text=True).strip()
+
+def fetch(url):
+ with urllib.request.urlopen(url, timeout=10) as response:
+  return response.read().decode()
+
+def state():
+ return {
+  'order': json.loads(sql('eap-order-postgres-loadtest', 'eap_order_db', """SELECT json_build_object(
+     'heads', (SELECT count(*) FROM order_service.order_stream_heads),
+     'events', (SELECT count(*) FROM order_service.order_event_store),
+     'outbox', (SELECT count(*) FROM order_service.order_event_outbox),
+     'receipts', (SELECT count(*) FROM order_service.http_order_idempotency),
+     'receiptStorageBytes', pg_total_relation_size('order_service.http_order_idempotency'),
+     'tradeApplications', (SELECT count(*) FROM order_service.order_trade_applications))""")),
+  'wallets': sql('eap-wallet-postgres-loadtest', 'eap_wallet_db', """SELECT md5(string_agg(
+     row_to_json(w)::text, '' ORDER BY row_to_json(w)::text)) FROM wallet_service.wallets w"""),
+  'matchTrades': int(sql('eap-match-postgres-loadtest', 'eap_match_db',
+                       'SELECT count(*) FROM match_engine.trade_executions')),
+  'marketSequence': subprocess.check_output(['docker', 'exec', 'eap-redis-loadtest',
+                   'redis-cli', '--raw', 'GET', 'seq:ENERGY-SPOT'], text=True).strip(),
+ }
+
+def outcomes():
+ result = {}
+ for line in fetch(BASES['eap-order'] + '/actuator/prometheus').splitlines():
+  if line.startswith('eap_order_http_idempotency_requests_total{'):
+   labels = dict(re.findall(r'(\w+)="([^"]*)"', line))
+   result[labels['outcome']] = float(line.rsplit(' ', 1)[1])
+ return result
+
+def debt(order_only=False):
+ result = {name: json.loads(fetch(base + '/actuator/durableDebt')) for name, base in BASES.items()
+           if not order_only or name == 'eap-order'}
+ for name, value in result.items():
+  assert value['contractVersion'] == 1 and value['service'] == name
+  assert value['observationSuccess'] is True and 0 <= value['snapshotAgeSeconds'] <= 15
+  assert {c['work'] for c in value['components']} == WORK[name]
+  assert len(value['components']) == len(WORK[name])
+  assert all(c[field] == 0 for c in value['components'] for field in (
+      'totalCount', 'retryCount', 'terminalCount', 'oldestUnresolvedAgeSeconds'))
+ return result
+
+def main():
+ parser = argparse.ArgumentParser()
+ parser.add_argument('--source-run-id', required=True)
+ parser.add_argument('--rate', type=int, default=200)
+ parser.add_argument('--seconds', type=int, default=60)
+ parser.add_argument('--order-only', action='store_true')
+ args = parser.parse_args()
+ source = REPORTS / ('http-matched-external-' + args.source_run_id)
+ prefix = REPORTS / (args.source_run_id + '-REPLAY')
+ count = args.rate * args.seconds
+ receipts = {}
+ for line in sql('eap-order-postgres-loadtest', 'eap_order_db', """SELECT json_build_object(
+       'userId', user_id, 'key', idempotency_key, 'response', response_body::jsonb)
+       FROM order_service.http_order_idempotency""").splitlines():
+  row = json.loads(line)
+  receipts[(row['userId'], row['key'])] = row['response']
+ targets = []
+ for line in Path(str(source) + '-targets.jsonl').open():
+  target = json.loads(line)
+  body = json.loads(base64.b64decode(target['body']))
+  user = body.get('bidder', body.get('seller'))
+  expected = receipts[(user, 'http-' + body['orderId'])]
+  assert expected['orderId'] == body['orderId']
+  target['expectedResponse'] = expected
+  targets.append(target)
+  if len(targets) == count:
+   break
+ assert len(targets) == count
+ target_path = Path(str(prefix) + '-targets.jsonl')
+ target_path.write_text(''.join(json.dumps(t) + '\n' for t in targets))
+ before = state()
+ counters_before = outcomes()
+ debt_before = debt(args.order_only)
+ env = dict(os.environ, EAP_TARGETS_FILE=str(target_path), EAP_TARGET_ORDER_TPS=str(args.rate),
+    EAP_TOTAL_SECONDS=str(args.seconds), EAP_HTTP_IDEMPOTENCY_MODE='unique',
+    EAP_RUN_ID=prefix.name, EAP_BENCHMARK_CONTRACT='http-idempotency-replay-only',
+    EAP_K6_SUMMARY_PATH=str(prefix) + '-summary.json', EAP_K6_REPORT_PATH=str(prefix) + '-report.md')
+ with Path(str(prefix) + '-console.log').open('w') as log:
+  run = subprocess.run(['k6', 'run', '--quiet', str(ROOT / 'scripts/load-test/k6/http-idempotency-replay.js')],
+                       env=env, stdout=log, stderr=subprocess.STDOUT, timeout=args.seconds + 60)
+ after = state()
+ counters_after = outcomes()
+ debt_after = debt(args.order_only)
+ deltas = {key: counters_after.get(key, 0) - counters_before.get(key, 0)
+           for key in set(counters_before) | set(counters_after)}
+ summary = json.loads(Path(str(prefix) + '-summary.json').read_text())
+ # Autovacuum may grow visibility-map/FSM files without changing business facts.
+ before_facts = {**before, 'order': {k: v for k, v in before['order'].items() if k != 'receiptStorageBytes'}}
+ after_facts = {**after, 'order': {k: v for k, v in after['order'].items() if k != 'receiptStorageBytes'}}
+ passed = (run.returncode == 0 and before_facts == after_facts and deltas.get('replayed') == count
+           and all(value == 0 for key, value in deltas.items() if key != 'replayed')
+           and summary['eapDriverConfig']['expectedUniqueOrders'] == 0)
+ result = {'contract': 'http-idempotency-replay-only', 'passed': passed, 'attempts': count,
+   'liveServices': ['eap-order'] if args.order_only else list(BASES),
+   'orderJvmRestartedAfterSourceRun': args.order_only,
+   'targetRequestsPerSecond': args.rate, 'newUniqueOrders': 0, 'sourceRunId': args.source_run_id,
+   'expectedResponseSource': 'persisted original receipt joined by user/key/orderId; original HTTP bytes not captured',
+   'before': before, 'after': after, 'outcomeDeltas': deltas, 'beforeDebt': debt_before,
+   'afterDebt': debt_after, 'driverExitStatus': run.returncode,
+   'httpLatencyMs': summary['metrics']['http_req_duration']['values'],
+   'scriptSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+   'targetsSha256': hashlib.sha256(target_path.read_bytes()).hexdigest(),
+   'capacityClaimAllowed': False}
+ Path(str(prefix) + '-result.json').write_text(json.dumps(result, indent=2) + '\n')
+ print(json.dumps(result, indent=2))
+ raise SystemExit(0 if passed else 1)
+
+if __name__ == '__main__':
+ main()

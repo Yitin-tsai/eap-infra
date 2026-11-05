@@ -6,7 +6,9 @@ EAP is an independently built, event-driven electricity market backend. It suppo
 
 The project is designed around three questions: which service owns each business fact, how a trade remains correct under retries and partial failures, and how an engineering claim can be verified with durable evidence. It is not a CRUD demo or a benchmark-only project.
 
-> **Latest current-version evidence (2026-09-04):** after Wallet trade settlement and Match admission moved onto durable inboxes, the schema-v3 k6 long-window gate passed one diagnostic seed at `199.99 accepted orders/s` and `100.02 completed trades/s`. All `192,000` HTTP orders converged into `96,000` exact three-service trades; assets, CQRS, Redis, RabbitMQ, DLQ, inbox, outbox, and cleanup checks passed. This is a dirty-worktree, co-located, single-seed diagnostic lower bound—not a release-pinned capacity claim or production SLA. See the [current-version guide](docs/current-version-guide.zh-TW.md) and [campaign report](docs/benchmarks/2026-09-04-current-reliability-full-chain.md).
+> **HTTP idempotency accepted (2026-11-05):** CDA BUY/SELL supports an optional `Idempotency-Key`; the original acceptance receipt commits with the Order event and outbox. Six same-version schema-v4 comparisons at 200 unique orders/s completed 288,000 orders and 144,000 trades; a restarted Order JVM also replayed 12,000 committed requests without new business effects. New keys increased median run-level steady HTTP p95 from 6.10ms to 9.64ms. These are co-located dirty-source diagnostics, not a capacity ceiling or SLA. See the [contract](docs/features/http-command-idempotency.zh-TW.md), [comparison](docs/benchmarks/2026-11-05-http-idempotency-comparison.md) and [intake decision](docs/adr/ADR-007-cda-http-order-intake-mode.zh-TW.md).
+
+> **Latest long-window evidence (2026-09-04):** after Wallet trade settlement and Match admission moved onto durable inboxes, the schema-v3 k6 long-window gate passed one diagnostic seed at `199.99 accepted orders/s` and `100.02 completed trades/s`. All `192,000` HTTP orders converged into `96,000` exact three-service trades; assets, CQRS, Redis, RabbitMQ, DLQ, inbox, outbox, and cleanup checks passed. This is a dirty-worktree, co-located, single-seed diagnostic lower bound—not a release-pinned capacity claim or production SLA. See the [current-version guide](docs/current-version-guide.zh-TW.md) and [campaign report](docs/benchmarks/2026-09-04-current-reliability-full-chain.md).
 
 > **Reliability gate update (2026-09-15):** schema v4 now consumes a single versioned durable-debt contract from Order, Wallet, and MatchEngine. Inbox, outbox, cleanup, cancellation, reconciliation, projection, and DLQ debt—as well as stale or missing telemetry—must all converge before a run can be called business-complete. A short full-chain smoke passed this wiring; it does not replace the long-window capacity evidence above. See the [durable-debt SLO](docs/durable-debt-slo.zh-TW.md).
 >
@@ -40,7 +42,7 @@ There is no distributed transaction across the services. A service that must pub
 ## CDA Business Flow
 
 1. A client submits a BUY or SELL order through the Order HTTP API.
-2. Order validates the command, appends the order event, and writes an outbox record atomically.
+2. Order validates the command, appends the order event, and writes an outbox record atomically. When an `Idempotency-Key` is supplied, its acceptance receipt commits in the same transaction; retries return the original result.
 3. Wallet consumes the submitted order, reserves the required asset, and publishes `OrderAssetReservationSucceededEvent` through its outbox.
 4. MatchEngine durably stores that fact in its admission inbox, then a leased worker admits the order into a Redis sorted-set order book and performs atomic matching with Lua.
 5. A match commits the `TradeExecuted` fact, trade outbox, and any required reservation-cleanup task in the MatchEngine database.
@@ -69,6 +71,7 @@ TDA is implemented as a separate market mode that collects confirmed stepped bid
 
 | Failure or consistency risk | Current control |
 | --- | --- |
+| HTTP acceptance succeeds but the response is lost | Optional `Idempotency-Key`, payload conflict detection, and a receipt committed with the initial Order facts |
 | Database commit succeeds but event publication fails | Transactional outbox and retryable relay |
 | RabbitMQ redelivers an event | Database-backed idempotency and unique constraints |
 | Consumer stops before acknowledgement | Durable intake or durable local effect commits before manual/container acknowledgement |
@@ -112,7 +115,8 @@ Start with the [documentation map](docs/README.md) for the current source-of-tru
 benchmark-evidence, generated-artifact, and archive boundaries.
 
 - [Performance report](docs/performance-report.md): current claims, definitions, limitations, and bottleneck history.
-- [Latest current-version campaign](docs/benchmarks/2026-09-04-current-reliability-full-chain.md): strict 200 diagnostic pass with three-service inbox age/debt and final outbox/cleanup gates.
+- [HTTP idempotency comparison](docs/benchmarks/2026-11-05-http-idempotency-comparison.md): accepted contract, same-version keyed/unkeyed costs, restarted Order replay, and explicit evidence limits.
+- [Latest long-window diagnostic](docs/benchmarks/2026-09-04-current-reliability-full-chain.md): strict 200 diagnostic pass with three-service inbox age/debt and final outbox/cleanup gates.
 - [Benchmark taxonomy](docs/benchmarks/load-test-taxonomy.md): what each workload measures and what it cannot claim.
 - [Historical canonical mixed short-window boundary](docs/benchmarks/2026-08-14-canonical-mixed-short-window-boundary.md): the earlier CDA short-window knee and its limits; not current-version capacity.
 - [624 sustained evidence](docs/benchmarks/2026-08-18-release-pinned-624-sustained-candidate.md): two valid 15-minute seeds supporting the previous lower-bound step.

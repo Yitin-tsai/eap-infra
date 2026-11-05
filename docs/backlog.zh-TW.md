@@ -1,6 +1,6 @@
 # EAP Engineering Backlog
 
-> 更新日期：2026-09-21
+> 更新日期：2026-11-05
 
 > 本頁是跨 Order、Wallet、MatchEngine 的唯一優先順序入口。各 feature ticket
 > 保存設計與驗收細節；若 ticket 內的排列與本頁不同，以本頁為準。
@@ -12,16 +12,16 @@
 3. 只有在目前版本通過完整正確性關卡後，才繼續最佳化吞吐量。
 4. TDA、read replica 與平台型功能保留為後續學習題，不搶占 CDA 可靠性工作。
 
-## 目前里程碑：先統合成果，不再擴張可靠性範圍
+## 目前里程碑：可靠性成果已統合，HTTP 下單冪等性切片已完成
 
 核心 CDA 的 durable intake、錯誤分類、DB outage recovery、Saga timeout 可見性、
 terminal recovery control plane 與 REL-107 R1～R5 failure injection 已形成完整證據鏈。
 2026-09-21 起先凍結這條主線，統一架構、驗證與版本文件；不為了把
 shared DLQ 的每一條 route 打勾而繼續增加 owner preflight。
 
-下一個新工程題目預設是 `EAP-PLAT-201` HTTP command idempotency。它直接補上「DB 已提交、
-但 HTTP response 遺失，client 不知道是否該重送」的交易入口缺口，範圍比 Redis full-book
-rebuild 小，也更容易形成可重用的 API contract。`EAP-MATCH-202` 保留為後續較大型的
+2026-09-24 已提交架構與版本導覽統合，2026-10-29 再校正過時的狀態入口及效能報告待辦。
+`EAP-PLAT-201` 已完成 HTTP 買／賣單冪等性的限定實作與驗收，補上「DB 已提交、
+但 HTTP response 遺失，client 不知道是否該重送」的交易入口缺口。`EAP-MATCH-202` 保留為後續較大型的
 recovery 專題；沒有新的故障證據或產品需求前，不先做 read replica、TDA parity 或更多
 平台功能。
 
@@ -319,7 +319,7 @@ deterministic owner-state 與真實 transport evidence，不冒充第二次 proc
 
 ### EAP-PLAT-201：HTTP idempotency contract
 
-**建議：下一個新工程題目。**
+**狀態：Accepted；限定實作於 2026-10-29 完成，量測與最終 QA／Reviewer 驗收於 2026-11-05 完成。**
 
 - 由 client 提供穩定 idempotency key。
 - DB commit 後 response 遺失時，可查回第一次結果而不是產生新的 sequence／timestamp
@@ -327,9 +327,25 @@ deterministic owner-state 與真實 transport evidence，不冒充第二次 proc
 - 驗收必須包含同 key 同 payload、同 key 不同 payload、commit 後 response 中斷、並行重送
   與過期策略；不能只在 Controller 放一個 cache。
 
+本次接受的切片是 CDA BUY／SELL HTTP：user＋key ledger 與 command event／outbox 同交易，
+成功重送直接回原始 response，衝突／並行分別回 409；未提供 key 保留原有路徑。
+key 永久保留、不過期、不自動重用；MCP／cancel／TDA 與實驗寫入模式不納入。
+規格、測試與限制見 [PLAT-201](features/http-command-idempotency.zh-TW.md)。
+Order 一般 test task 實際執行 157 項全通過（另外 70 項 integration cases 依 task 分流
+skipped）；本次專屬 PostgreSQL task 的 12 項全部通過，Reviewer 無 blocker。
+既有其他 integration suites、完整 JVM restart 與新版容量壓測未在本輪重跑。
+
+2026-11-05 後續完成 [HTTP 冪等性增量成本量測](benchmarks/2026-11-05-http-idempotency-comparison.md)：
+無 key／全新 key 各三輪，200 unique orders/s、60s＋180s，完整 schema-v4 gate 通過；
+另重啟 Order JVM 後 replay 12000 次，沒有新增業務效果。新 key 的延遲與 connection hold
+成本已量出，暫不新增 command inbox。此為同版 dirty-source 診斷，仍須另做乾淨 revision
+的正式容量基準與慢依賴量測，不能改標為 SLA／ceiling 證據。
+最終 QA 判定 ACCEPT、Reviewer 判定 Approve，無阻擋項目；保留直接受理＋outbox。
+Order 實作已提交為 `f58b521`；本次 infra 提交保存量測工具、API 文件與驗收證據。
+
 ### EAP-MATCH-202：Redis order book durable rebuild
 
-- 先完成 EAP-REL-101 的 fail-closed gate，再設計 durable open-order facts、rebuild
+- EAP-REL-101 的 fail-closed gate 已完成；後續仍須設計 durable open-order facts、rebuild
   checkpoint、generation 切換與驗證。
 - 不把 PostgreSQL 做成每次撮合都同步鏡像 Redis 的第二本 order book。
 
@@ -377,15 +393,18 @@ REL-001 → REL-002 → REL-003
                      ├─ REL-103 ✓ → REL-104 ✓ → REL-105 ✓ → REL-106 ✓
                      └─ REL-107 R1～R5 ✓（其餘廣度延後）
 
-目前先統合架構、驗證與版本文件
-下一個新工程題目：PLAT-201
+架構、驗證與版本文件已統合；過時入口已校正
+PLAT-201：CDA BUY／SELL HTTP 限定切片 ✓
+後續效能題目：新版 schema-v4 基準 → PERF-203
 大型 recovery 題目：MATCH-202
 TDA、read replica 與進階 scaling 保持延後
 ```
 
 ## 目前下一件事
 
-**先完成成果統合，再開始新的功能 ticket。**
+**PLAT-201 限定切片已驗收；後續以新版 schema-v4 建立固定版本基準。**
+
+無 key 與帶 key 的 workload 應分別標示；既有不帶 key 的壓測不能證明新增 ledger 路徑的容量。
 
 目前不把以下項目排入近期實作：
 
@@ -396,5 +415,6 @@ TDA、read replica 與進階 scaling 保持延後
   evidence 保留，不把未執行案例寫成已證明。
 - Redis 任意 open book 的自動 rebuild、TDA reliability parity、read replica 與進階 scaling。
 
-成果統合完成後，優先評估 `EAP-PLAT-201`；若要繼續深挖故障恢復，再啟動
+後續效能工作先建立固定版本基準與 stage timing，再決定 `EAP-PERF-203` 的單一變因；
+若要繼續深挖故障恢復，再啟動
 `EAP-MATCH-202`，而不是先擴大 control plane 功能面。
