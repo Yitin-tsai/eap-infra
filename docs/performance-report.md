@@ -2,15 +2,44 @@
 
 This report is the canonical current EAP capacity summary. The append-only experiment history is frozen in [archive/performance/2026-06-global-loadtest-2000-tps.md](archive/performance/2026-06-global-loadtest-2000-tps.md).
 
-## Latest Reliability Diagnostic - 2026-09-04
+## Latest Diagnostic - 2026-11-05: HTTP Idempotency Cost
 
-The current source materially differs from the release-pinned revision that supported
+The accepted CDA BUY/SELL HTTP contract supports optional `Idempotency-Key` receipt
+replay while retaining direct durable acceptance and asynchronous downstream work.
+Six same-version keyed/unkeyed runs passed the full schema-v4 business-complete gate
+at `200 unique orders/s`, each with `60s` warm-up plus `180s` steady traffic. Across
+the six runs, `288000` orders converged into `144000` exact three-service trades.
+
+| Median of three per-run statistics | No key | Unique key |
+| --- | ---: | ---: |
+| Steady HTTP p95 / p99 | `6.10 / 32.82 ms` | `9.64 / 40.54 ms` |
+| Mean command connection hold | `1.54 ms` | `3.76 ms` |
+| Sampled command pool pending peak | `0` | `0` |
+
+This measured the same modified source with and without keys, not an old/new revision
+A/B. A separate `12000`-request replay phase after an actual Order JVM restart returned
+persisted original receipts without new business effects. A host-sleep-interrupted
+run remains recorded as failed and excluded; its same-source retry supplies the sixth
+valid run. Pool sampling can miss short waits, and replay latency is not comparable
+to the three-service full-chain phase.
+
+The measured source was a dirty worktree and the driver was co-located. PostgreSQL was
+configured with `synchronous_commit=on`; this was not directly queried on the command
+JDBC session. These repeated short diagnostics do not establish a clean revision-pinned
+long-window capacity, ceiling, or SLA. See the [November 5 report](benchmarks/2026-11-05-http-idempotency-comparison.md)
+for source fingerprints, per-run gates, costs, and limits; the [version guide](current-version-guide.zh-TW.md)
+separates accepted commits from measured source. The next capacity task remains a
+clean-revision schema-v4 long-window baseline with keyed and unkeyed workloads distinct.
+
+## Historical Long-Window Diagnostic - 2026-09-04 (Schema v3)
+
+The September 4 source materially differed from the release-pinned revision that supported
 the historical `648 accepted orders/s` class. Wallet reservation/cancellation intake,
 Wallet trade settlement, Order reservation results, and Match order admission now use
 service-owned durable inboxes; Order also exposes separate execution and
 asset-reservation state. Historical capacity remains valid only for its recorded commits.
 
-A current-worktree k6 run used the same seed as the preceding baseline, a `60s` warm-up
+A k6 run of that day's worktree used the same seed as the preceding baseline, a `60s` warm-up
 plus `900s` measurement window, shuffled balanced HTTP BUY/SELL traffic, and the
 then-current schema-v3 three-service verification:
 
@@ -40,9 +69,10 @@ reads the versioned owner-local `DurableDebtSnapshot` from Order, Wallet, and Ma
 fails closed when a snapshot is stale or unavailable, and requires every inbox, outbox,
 cleanup, cancellation, reconciliation, and projection component to converge to zero.
 Prometheus uses the same component semantics for continuous count, oldest-age, retry,
-terminal, and observation-health alerts. A short schema-v4 full-chain smoke passed these
-correctness gates; it is not a new capacity measurement and does not replace the table
-above. The cancellation correctness runner now applies the same schema-v4 final gate;
+terminal, and observation-health alerts. The September wiring smoke and November 5
+repeated schema-v4 comparison passed these correctness gates, but neither is a clean
+revision-pinned long-window capacity replacement for this historical table. The
+cancellation correctness runner now applies the same schema-v4 final gate;
 `REL103_CANCELLATION_SCHEMA_V4_R1` converged its open, partial-fill, and bounded race
 scenarios with zero final Queue/DLQ, active-reservation, projection, and 15-component
 durable debt. It is likewise correctness evidence only.
@@ -50,7 +80,7 @@ durable debt. It is likewise correctness evidence only.
 ### Historical Cancellation-Revision Diagnostic - 2026-08-24
 
 The following paragraph is version-specific history and is not evidence for the
-current Wallet-trade-inbox revision. The CDA cancellation redesign kept per-order state in MatchEngine and added only a
+November revision. The CDA cancellation redesign kept per-order state in MatchEngine and added only a
 cancellation-application idempotency row when Wallet actually releases assets. Normal
 Wallet order reservation and trade settlement do not maintain a cancellation projection.
 Cancellation adds one intent check to the existing Redis admission Lua, but normal
@@ -69,9 +99,10 @@ the post-redesign revision until a new commit-pinned benchmark passes the same g
 ### Additional Historical Reliability Checkpoints
 
 The 2026-09-01, 2026-09-02, and 2026-09-03 sections below are intermediate regression
-history; the 2026-09-04 section above supersedes them as current-worktree status.
+history; September 4 superseded them as the latest long-window diagnostic at that time.
+November 5 is the later short schema-v4 comparison, with its distinct scope above.
 
-The newer 2026-09-01 Wallet durable-inbox worktree materially changes that current
+The 2026-09-01 Wallet durable-inbox worktree materially changed the preceding
 diagnostic picture. A canonical `60s + 900s` shuffled mixed-HTTP run passed at
 `400.00 accepted orders/s`, `199.96 steady completed trades/s`, and `199.45`
 full-lifecycle trades/s, with exact convergence across `192000` trades and no final
@@ -93,7 +124,7 @@ still failed, but a ready-only Order trade-inbox claim improved it from `181.87`
 `218.67 trades/s` and reduced Match-to-Order p95 lag from `10.314s` to `4.471s`.
 All `56000` orders eventually converged into `28000` exact three-service trades with
 zero final inbox debt, queue debt, asset discrepancy, book remainder, or reservation debt. This short dirty-worktree
-campaign does not replace the release-pinned capacity claim; it establishes a current
+campaign does not replace the release-pinned capacity claim; it established a then-current
 diagnostic passing point at 400 and rejects 500. See the
 [Match／Order inbox regression report](benchmarks/2026-09-02-match-and-order-inbox-regression.md).
 The affected path was not technical-failure retry: `25746/28000` trades entered
@@ -132,9 +163,15 @@ The current benchmark suite is split into contracts:
 
 The project intentionally does not report accepted order throughput as completed trading throughput.
 
-## Current Worktree Diagnostic - 2026-08-07
+## Historical Worktree Diagnostic - 2026-08-07
 
-The latest canonical shuffled mixed HTTP regression retained the current short-window lower-bound class without increasing the public capacity claim:
+The dated experiments below retain their original workload, numbers, and decisions.
+References to a current setting, boundary, or next optimization within an experiment
+describe its tested revision. Use the November 5 summary and Next Measurement Plan
+for current evidence and work; do not transfer an older throughput or bottleneck to
+the accepted code without a new measurement.
+
+The August 7 canonical shuffled mixed HTTP regression retained that revision's short-window lower-bound class without increasing the public capacity claim:
 
 - `700.00 offered / 699.98 accepted orders/s`;
 - `346.12 same-window trades/s`;
@@ -555,7 +592,7 @@ verification and polluted the convergence clock; the runner now verifies
 before stopping diagnostics. This is evidence of a lower-cost, more accurate
 high-rate driver, not CPU isolation or a higher EAP capacity claim.
 
-## Current-Worktree Vegeta Unattended Validation - 2026-08-20
+## Historical Worktree Vegeta Unattended Validation - 2026-08-20
 
 An approximately 11-hour unattended session then ran 25 canonical shuffled
 mixed-HTTP full-chain workloads with jar-launched services and the co-located
@@ -1342,9 +1379,9 @@ evidence, not a replacement for the release-pinned sustained boundary.
 - The latest full HTTP staircase publishes HTTP histogram upper bounds but not end-to-end per-trade p95/p99 latency.
 - The full HTTP boundary stages are 15 seconds, not 30-minute soak claims.
 - The load generator, services, and containers share one machine. A separate load-generator host is still required to remove shared-CPU interference from a production-style capacity claim.
-- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The later two-seed 648 class is the highest release-pinned historical boundary for those commits; the current 2026-09-04 reliability worktree instead has a one-seed strict diagnostic lower bound at 200 with all three service inboxes gated. An earlier 650 probe and later 700 provenance run remain rejected historical evidence.
-- The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The later full HTTP 30-minute 900 orders/s run failed because the Order event outbox accumulated durable debt; a lower-rate passing soak remains pending.
-- One current-code schema-v2 100K run now passes all correctness gates, but its `613.33 trades/s` completion rate is below the historical 100K result. Repeat runs are required before treating either value as sustained capacity.
+- A historical revision has a clean 15-minute `700 orders/s` mixed soak, but the 2026-08-11 release-pinned repeat failed the sustained completion and backlog gates despite exact final convergence. The later two-seed 648 class is the highest release-pinned historical boundary for those commits. September 4 supplied a one-seed schema-v3 diagnostic at 200; November 5 supplied repeated short schema-v4 keyed/unkeyed diagnostics at 200. Neither establishes clean revision-pinned capacity for the accepted November code.
+- The earlier seeded 15-minute repeat produced `2/3` valid samples and one `19`-trade correctness miss. Match reservation convergence was implemented afterward and passed a 120k correctness run. The subsequent full HTTP 30-minute 900 orders/s attempt failed on Order outbox debt. Its lower-rate soak was pending at that checkpoint; later dated lower-rate campaigns are separate evidence, not a repair of the failed run.
+- The historical 2026-08-04 schema-v2 100K run passed its correctness gates at `613.33 trades/s`. It is version-specific correctness evidence, not validation of the accepted November code or sustained capacity.
 - The 2026-08-11 700 recheck and the accepted, rejected, and inconclusive 2026-08-13 600 attempts have published result JSON files. Several older result artifacts remain local and should be attached to a release or otherwise published.
 - Atomic MatchEngine incoming-order redelivery protection has historical RabbitMQ duplicate, SIGKILL/redelivery, and PostgreSQL/Redis crash-window evidence. The [REL-107 R1–R5 campaign](benchmarks/2026-09-18-rel107-failure-injection-campaign.md) subsequently completed live Match outbox confirm-before-SENT and MCP replay confirm-before-audit crash tests. This does not claim a separate projection-replay process-crash campaign or a simultaneous three-JVM full-HTTP crash test.
 - RabbitMQ publisher-confirm stalls, resource alarms, PostgreSQL crash recovery, and shared-host CPU saturation can invalidate capacity comparisons. The harness now samples broker alarms and preserves failure artifacts, but a separate load-generator host remains required for production-style capacity evidence.
@@ -1418,13 +1455,16 @@ Before pushing for higher completed TPS, the next public-quality benchmark shoul
 5. Repeat the same canonical contract from a separate load-generator CPU domain or host before attributing the same-host boundary to application code.
 6. Retain the published [REL-107 fault report](benchmarks/2026-09-18-rel107-failure-injection-campaign.md) and its explicit scope. A new benchmark must identify the tested revisions and any new failure coverage rather than treating completed fault campaigns as pending or extrapolating to untested scenarios.
 
-The concrete public benchmark runbook is [docs/benchmarks/2026-07-public-benchmark.md](benchmarks/2026-07-public-benchmark.md).
+Current execution contracts and lifecycle instructions are in the
+[benchmark taxonomy](benchmarks/load-test-taxonomy.md) and
+[load-test runbook](../scripts/load-test/README.md). The
+[July public benchmark record](benchmarks/2026-07-public-benchmark.md) is historical.
 
 ## Interview-Safe Claim
 
-Latest current-version full HTTP lifecycle wording:
+Current capability with separately dated diagnostic evidence:
 
-> I independently built a Java/Spring Boot electricity trading backend covering order intake, balance checks, matching, trade recording, settlement, and durable asynchronous recovery. After moving Wallet trade settlement and Match admission onto durable inboxes, a dirty-worktree k6 diagnostic sustained one 15-minute seed at `199.99 accepted orders/s` and `100.02 completed trades/s`. All `192,000` orders converged into `96,000` exact three-service trade IDs with reconciled assets, a caught-up query projection, and zero final inbox, outbox, cleanup, queue, DLQ, book, or reservation debt. I present this as a same-host single-seed diagnostic lower bound, not a release-pinned capacity claim or production SLA. An older release-pinned revision supported 648 orders/s across two seeds, which remains version-specific historical evidence.
+> I independently built a Java/Spring Boot electricity trading backend with durable asynchronous recovery and optional HTTP order idempotency. On November 5, six same-version keyed/unkeyed diagnostics at 200 unique orders/s passed the full schema-v4 gate for 288,000 orders and 144,000 trades. The keyed path added measurable HTTP and connection-hold costs; a separate 12,000-request replay after an Order JVM restart added no business effects. These were same-host dirty-source diagnostics, not clean revision-pinned capacity or an SLA. Separately, September 4 has one historical 15-minute schema-v3 seed at 199.99 accepted orders/s and 100.02 completed trades/s; an older release-pinned revision supported 648 orders/s across two seeds. Both remain version-specific history.
 
 Sequential diagnostic wording, when the benchmark distinction is relevant:
 

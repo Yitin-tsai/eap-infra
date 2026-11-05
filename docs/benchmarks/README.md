@@ -1,13 +1,22 @@
 # Benchmark Evidence Guide
 
-Current reliability entry:
+Latest diagnostic entry (2026-11-05):
+[HTTP idempotency cost comparison](2026-11-05-http-idempotency-comparison.md).
+Six same-version keyed/unkeyed runs at 200 unique orders/s passed schema-v4 gates,
+with a separate restarted-Order replay phase. This is dirty-source short diagnostic
+evidence, not a clean revision-pinned long-window capacity baseline.
+
+Reliability fault-coverage entry:
 [2026-09-18 REL-107 failure-injection campaign](2026-09-18-rel107-failure-injection-campaign.md).
 It validates DB outage, JVM crash, Redis generation fencing, worker leases, duplicate／late events,
 recovery response loss, live publisher-confirm/local-commit crashes in both Match outbox and MCP
 replay control paths, DLQ fail-closed behavior, owner-aware Wallet／Order trade DLQ replay
 slices, and the remaining per-route ownership and full-book rebuild gaps.
-The current long-window performance baseline remains the
-[2026-09-04 reliability-version full-chain campaign](2026-09-04-current-reliability-full-chain.md).
+The latest retained 15-minute full-chain diagnostic is the historical
+[2026-09-04 reliability-version campaign](2026-09-04-current-reliability-full-chain.md),
+measured on that day's worktree with schema v3 and `synchronous_commit=off`.
+It is not a capacity baseline for the accepted November code. See the
+[version guide](../current-version-guide.zh-TW.md) for the documentation review baseline.
 
 This directory separates benchmark definitions, human decisions, and machine-readable
 evidence. A high TPS number is not published merely because a runner emitted JSON.

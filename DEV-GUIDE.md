@@ -100,13 +100,13 @@ GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle \
 
 ```bash
 # 隨機混合 HTTP 階梯測試
-START_ORDER_TPS=700 END_ORDER_TPS=1100 STEP_ORDER_TPS=100 \
-STAGE_WARMUP_SECONDS=30 STAGE_DURATION_SECONDS=60 \
+START_ORDER_TPS=100 END_ORDER_TPS=300 STEP_ORDER_TPS=100 \
+STAGE_WARMUP_SECONDS=60 STAGE_DURATION_SECONDS=180 \
 WORKLOAD_SEED=20260807 DIAGNOSTICS_LEVEL=light \
 bash scripts/load-test/run-http-matched-staircase.sh
 
-# 30 分鐘隨機混合 HTTP 穩態測試
-TARGET_ORDER_TPS=300 WARMUP_SECONDS=60 DURATION_SECONDS=1800 \
+# 15 分鐘隨機混合 HTTP 穩態診斷起點
+TARGET_ORDER_TPS=200 WARMUP_SECONDS=60 DURATION_SECONDS=900 \
 WORKLOAD_SEED=20260807 DIAGNOSTICS_LEVEL=light \
 bash scripts/load-test/run-http-matched-steady-state.sh
 
@@ -117,6 +117,12 @@ bash scripts/load-test/run-matched-trade-completion-10k.sh
 ```
 
 完整 HTTP 容量 runner 固定使用 CDA 隨機混合 BUY/SELL 與各服務自己的 `application-loadtest.yml`。使用者數以各 side 的實際送出順序輪替，避免製造不合理的單一使用者瞬間突發。買賣 phase 順序、worker 數與 runtime profile 不再是公開容量開關；這些 runner 不驗證 TDA。
+
+上面的速率是實驗設定，不是已證明的現行容量。2026-11-05 的有／無 key 比較只量到
+200 unique orders/s、每輪 180 秒穩態；乾淨 revision 的 schema-v4 長窗基準仍待建立。
+要保留 HTTP key 的比較口徑，使用[外部 open-loop runner](scripts/load-test/README.md)
+的 `HTTP_IDEMPOTENCY_MODE=none|unique`，不要把未帶 key 的結果套用到 keyed 路徑。
+正式容量證據另須符合[provenance 與完成 gate](docs/benchmarks/load-test-taxonomy.md)。
 
 ## 診斷層級
 

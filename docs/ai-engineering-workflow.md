@@ -292,9 +292,23 @@ Wallet 實驗移除事件監聽器外層的明確資料庫交易。在 30K 隔�
 
 採用前，品質驗證補上取消先於成交、成交先於取消、重複與衝突事件、多次部分成交及 match/cancel 競態。跨三服務 HTTP 生命週期的 open、partial 與 10 次 race 情境全部通過，接著以 `648 orders/s` 執行 `60s + 900s` 隨機混合 HTTP 長窗回歸；`622080` 筆訂單收斂為三服務一致的 `311040` 筆交易，steady completion 為 `323.87 trades/s`、完整流程為 `322.44 trades/s`，所有最終債務歸零。
 
-這輪來源仍有未提交修改且使用 diagnostic evidence mode，因此只證明目前工作樹通過完整長窗回歸，不能宣稱移除投影帶來 TPS 提升，也不取代既有 release-pinned 容量邊界。這個案例呈現 AI 輔助審查的另一個價值：人工可以推翻看似保守的設計，AI 再協助重建反例、測試與證據，而不是讓既有實作替自己辯護。完整紀錄見[取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
+這輪來源當時有未提交修改且使用 diagnostic evidence mode，因此只證明該工作樹通過完整長窗回歸，不能宣稱移除投影帶來 TPS 提升，也不取代既有 release-pinned 容量邊界。這個案例呈現 AI 輔助審查的另一個價值：人工可以推翻看似保守的設計，AI 再協助重建反例、測試與證據，而不是讓既有實作替自己辯護。完整紀錄見[取消責任與回歸報告](benchmarks/2026-08-24-cancellation-ownership-and-regression.md)。
 
-後續 2026-09 可靠性改版再次證明相同原則：三服務加入 durable inbox 後，舊 648 數字不再代表目前寫入路徑；而且壓測發現 Rabbit queue 已歸零時，Order inbox 仍可累積數萬筆。工具補上 service-owned debt gate 後，原本顯示通過的 300 被人工審查推翻；Wallet trade inbox 加入後又先把舊 200 降級成 baseline。2026-09-04 再以三服務 inbox backlog／age／terminal debt、final outbox／cleanup 及 schema fail-closed gate 重跑，才恢復單一 seed 的 200 orders/s 診斷下界。這是「程式與驗證工具都要被 review，而且證據要隨版本重建」的最新案例。
+後續 2026-09 可靠性改版再次證明相同原則：三服務加入 durable inbox 後，舊 648 數字不再代表後續寫入路徑；而且壓測發現 Rabbit queue 已歸零時，Order inbox 仍可累積數萬筆。工具補上 service-owned debt gate 後，原本顯示通過的 300 被人工審查推翻；Wallet trade inbox 加入後又先把舊 200 降級成 baseline。2026-09-04 再以三服務 inbox backlog／age／terminal debt、final outbox／cleanup 及 schema fail-closed gate 重跑，才恢復單一 seed 的 200 orders/s 診斷下界。這是「程式與驗證工具都要被 review，而且證據要隨版本重建」的九月歷史案例。
+
+## 近期案例五：HTTP 冪等性成本與入口模式決策（2026-11-05）
+
+人工提出 HTTP 是否也應先寫 command inbox，Architect／Performance 先比較受理語意與
+交易成本，再以相同修改後程式的有／無 key 各三輪量測驗證。每輪 `200 unique orders/s`、
+`60s + 180s`，六輪共 `288000` 單／`144000` 筆成交通過完整 schema-v4 gate；新 key 增加
+HTTP 延遲與 connection hold，但此比較點未觀察到完成吞吐失敗，決策保留直接 durable
+acceptance＋outbox。這不是舊／新 revision A/B，也不是正式容量證據。
+
+主機休眠中斷的一輪保留為失敗，另以相同 source 重跑；Order JVM 重啟後的 `12000` 次
+既有 key replay 另列獨立階段，沒有把其延遲混入三服務負載。QA／Reviewer 最後接受限定
+HTTP 契約，保留慢依賴與乾淨 revision 長窗基準為後續工作。方法與限制見
+[增量診斷](benchmarks/2026-11-05-http-idempotency-comparison.md)與
+[ADR-007](adr/ADR-007-cda-http-order-intake-mode.zh-TW.md)。
 
 ## 一致性、效能、監測與決策
 

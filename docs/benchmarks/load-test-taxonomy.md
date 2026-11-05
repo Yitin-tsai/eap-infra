@@ -210,8 +210,10 @@ Order URL must be reachable from both hosts and cannot use `localhost`.
 `START_SERVICES=true` may still start the EAP services on the orchestrator host.
 Use `START_SERVICES=false` and point the HTTP, JDBC, Redis, and RabbitMQ endpoints
 at an already running stack when service lifecycle is managed elsewhere. In that
-case, setup resets benchmark state by default; set `RESET_DATA_ON_PREPARE=false`
-only when the operator has already provided an equivalent clean baseline.
+case, the caller must provide an already isolated, verified `READY` generation and
+use `RESET_DATA_ON_PREPARE=false` (the default). The runner never resets a live
+runtime and rejects `RESET_DATA_ON_PREPARE=true`; reset belongs before consumer
+startup under `START_SERVICES=true`. See the [load-test runbook](../../scripts/load-test/README.md).
 
 Remote driver placement isolates HTTP generation from the service host; it does
 not by itself prove multi-node service scaling, database scaling, or failover.
@@ -302,14 +304,16 @@ gates.
 ## Next Benchmark Work
 
 1. Keep `648 accepted orders/s` only as the two-seed historical boundary for its
-   release-pinned commits. The 2026-09-04 Wallet-trade-inbox worktree has a one-seed
-   strict diagnostic lower bound at 200 orders/s; the boundary above 200 has not been
-   rerun on this exact version.
+   release-pinned commits. The 2026-09-04 worktree has a one-seed schema-v3 long-window
+   diagnostic at 200 orders/s. November 5 added six same-version schema-v4 keyed/unkeyed
+   short diagnostics at 200 unique orders/s and restarted-Order replay. Neither
+   campaign establishes clean revision-pinned capacity for the accepted November code.
 2. Schema v4 now reads the versioned Order, Wallet, and Match durable-debt snapshots
    and rejects unavailable, stale, incomplete, terminal, or non-zero final work even
    when RabbitMQ is empty. Preserve this gate in every full-chain contract; a short
-   wiring smoke cannot replace a release-pinned long-window campaign.
-3. After the higher-priority DB-outage design, measure Order reservation-result worker timing, batch size, oldest age, scheduler,
+   wiring smoke or repeated short comparison cannot replace a release-pinned long-window campaign.
+3. REL-104 DB-outage recovery is complete. After establishing a clean-revision schema-v4
+   baseline, measure Order reservation-result worker timing, batch size, oldest age, scheduler,
    PostgreSQL wait/WAL, and projection work before changing concurrency. Use a short
    250/300 same-seed A/B for an accepted optimization, then repeat multiple 15-minute
    seeds before promoting a new release-pinned boundary.

@@ -1,6 +1,6 @@
 # 事件驅動一致性的五個核心問題
 
-> 文件狀態：依 2026-08-27 workspace 的 CDA 架構與實作整理。本文負責解釋設計觀念；每個事件在 Order、Wallet、MatchEngine 的實際處理與失敗路徑，請搭配 [CDA 訂單事件完整生命週期](order-event-lifecycle.zh-TW.md) 閱讀。
+> 文件狀態：2026-11-05 依[文件核對基線](current-version-guide.zh-TW.md)更新 CDA 冪等性與故障恢復語意。本文負責解釋設計觀念；每個事件在 Order、Wallet、MatchEngine 的實際處理與失敗路徑，請搭配 [CDA 訂單事件完整生命週期](order-event-lifecycle.zh-TW.md) 閱讀。
 
 ## 怎麼閱讀，才能把記憶找回來
 
@@ -291,7 +291,7 @@ EAP 使用的 identity 依業務事實而不同：
 | --- | --- | --- | --- |
 | state 與 outbox 同一 transaction，outbox insert 失敗 | local rollback | 尚未提交 | 整筆交易不成立，讓原操作重做 |
 | broker 暫時不可用，outbox 保留 `PENDING` | retry | producer fact 與發布意圖 | 反覆嘗試傳遞同一事實，不反轉業務 |
-| Trade 早於 Order confirmation 抵達 | defer／reconcile | Match trade 已成立；Order prerequisite 未齊 | durable inbox 等 prerequisite 後再向前套用 |
+| Trade 早於 Order confirmation 抵達 | 直接套用；真正缺 submission 時才 defer／reconcile | Match trade 已成立，可推導 reservation success | submission head 存在就套用 command state；缺失才由 durable inbox 等 prerequisite，不能等 query projection |
 | Redis 已 reserve，但 Match trade DB 尚未 commit 就失敗 | technical compensation／failure recovery | 沒有 durable trade | 把 Match 自己暫時拿走的 reservation 放回 order book |
 | Match trade 已 commit，Redis cleanup 尚未完成 | roll-forward reconciliation | durable trade 已成立 | 依 durable trade 完成 cleanup，不撤銷成交 |
 | 取消成功後 Wallet 釋放 unmatched remainder | business compensation | 原資產 reservation 與取消結果已成立 | 以新、冪等且可稽核的 application 釋放未成交鎖定額 |
@@ -361,7 +361,7 @@ Wallet reservation 的具體改善計畫、依賴與 Definition of Done 已記�
   `TradeExecutedEvent` transient route 加入 bounded-context owner preflight 與
   direct-to-owner-queue replay；其餘 route 仍不把「可看見」誤說成「可安全重播」。
 - Order／Wallet／Match 的 technical terminal inbox／outbox 已能經 REL-106 受控交回 owner worker；永久 invariant、identity conflict 與未 allowlist 的 shared-DLQ case 仍只能 park／resolve，不能繞過 owner policy 強制重播。
-- client 在「commit 後、HTTP response 前」斷線時仍有結果不確定性；完整解法需要 client-visible idempotency key 與第一次 response 保存。
+- CDA BUY／SELL HTTP 已接受可選 `Idempotency-Key`：原始受理 response 與初始 Order 事實／outbox 同交易永久保存，commit 後 response 遺失可沿用相同 key／payload 取得原 receipt。未帶 key、MCP、取消與 TDA 不在此契約內；詳見 [PLAT-201](features/http-command-idempotency.zh-TW.md)。
 - CQRS projection 有 checkpoint 與 repair，但仍需要明確的 lag SLO／告警；query service 遇到資料庫例外目前回空集合，也可能讓 read-side 故障看起來像「沒有訂單」。
 
 ## 建議的外部閱讀順序

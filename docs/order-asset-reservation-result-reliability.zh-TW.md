@@ -1,6 +1,6 @@
 # Order 驗資結果：Durable Inbox、錯誤重試與 Crash Recovery
 
-> 更新日期：2026-08-31
+> 更新日期：2026-11-05（現行狀態與證據入口核對；日期化測試保留原受測版本）
 >
 > 實作範圍：CDA 的 `OrderAssetReservationSucceededEvent／OrderFailedEvent → Order lifecycle`
 
@@ -356,7 +356,9 @@ cd eap-order
 曾在 Rabbit queue 為 0 時累積至少 51K／53K，即使最終收斂也不能算持續容量。
 2026-09-04 在 Wallet trade inbox 加入後，用聚合 Order inbox gate 重跑 200 orders/s：
 最大 backlog `291`、slope `+0.0079/s`、oldest age max `1s`、terminal debt `0`，且最終
-debt 歸零。詳見[最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。
+debt 歸零。詳見[2026-09-04 歷史長窗報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。
+後續 [2026-11-05 schema-v4 比較](benchmarks/2026-11-05-http-idempotency-comparison.md)
+另有無 key／全新 key 各三輪全鏈診斷；現行乾淨 revision 長窗容量仍待重建。
 
 ## 設計摘要
 

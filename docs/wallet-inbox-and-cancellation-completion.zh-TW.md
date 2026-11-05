@@ -1,6 +1,6 @@
 # Wallet Durable Inbox 與取消訂單最終確認
 
-> 更新日期：2026-09-04
+> 更新日期：2026-11-05（現行狀態與證據入口核對；日期化測試保留原受測版本）
 >
 > 適用範圍：CDA `OrderSubmittedEvent`、`TradeExecutedEvent`、`OrderCancellationResultEvent`、`OrderAssetReservationReleasedEvent`
 >
@@ -229,13 +229,13 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 - Wallet 發出資產釋放事實，Order 不再於 Match 決策一到就過早標成 `CANCELLED`。
 - Order 能吸收 release/cancellation-result 的跨 queue 亂序。
 
-### 尚未解決
+### 已補齊能力與剩餘限制
 
 - **Wallet DB 在 inbox insert 前長時間不可用**：REL-104 已用 service-local circuit、consumer pause 與 backoff probe 保留未 ACK delivery，DB 恢復後自動 resume；poison／schema error 不應被 connectivity circuit 無限重試，仍進 DLQ。
 - **Saga timeout 與 age SLO**：REL-105 已能針對 Order 的 `PENDING_ASSET_CHECK`／`CANCELLING` 提供 warning-only 候選與告警；REL-106 可將候選 park／resolve 並保存 audit，但仍不會自動決定補償。
 - **DLQ recovery control plane**：REL-106 已提供 Wallet terminal inbox／outbox 的 inspect、dry-run、rate-limited owner-side replay 與 audit；REL-107 僅為 Wallet trade 補上 exact owner route 與 inbox preflight，reservation／cancellation 等 shared-DLQ route 仍只 quarantine。
-- **Wallet trade failure campaign**：`TradeExecutedEvent` 已納入同一套 durable inbox，但尚未完成真實 Rabbit delivery 下的 60 秒 DB outage、process kill 與恢復測試；目前證據是 PostgreSQL transaction／lease integration test。
-- **Metrics 成本**：目前 inbox status gauge 會查詢資料庫；可用於學習與開發驗證，未來需評估降低 scrape query amplification 並補 oldest-age alert。
+- **Wallet trade failure campaign**：REL-104 已驗證真實 Rabbit delivery 下的 60 秒 DB outage；REL-107 R1～R5 再驗證核心 process kill、duplicate／late event 與 ambiguity recovery。範圍見[故障報告](benchmarks/2026-09-18-rel107-failure-injection-campaign.md)；三 JVM 同場 HTTP crash 與其他 DLQ route 仍未驗證。
+- **Metrics 成本**：REL-103 已由 owner scheduler 每 5 秒查詢固定 durable work，Actuator／Prometheus 只讀 snapshot，並有 oldest-age／terminal／observation health 告警；production 歷史資料量下的查詢成本仍待評估，見 [Durable Debt SLO](durable-debt-slo.zh-TW.md)。
 - **事件命名遷移**：後續已將語意不清的 `OrderConfirmedEvent` 改名為 `OrderAssetReservationSucceededEvent`；`OrderSubmittedEvent` 與 `OrderFailedEvent` 仍保留。新 release contract 使用明確的過去式事實名稱 `OrderAssetReservationReleasedEvent`。
 
 ## 驗收證據
@@ -267,8 +267,10 @@ Order 新增 `order_service.order_asset_reservation_released_inbox`，以 `cance
 
 本機可讀報告位於 `build/load-test-reports/http-cancellation-CANCELLATION_LIFECYCLE_20260901_WALLET_INBOX_R1-result-report.md`。`build/` 是可重建的測試輸出，不是版本控制下的文件來源；本頁才是此次設計與證據摘要。
 
-後續三服務 inbox 與 Order 雙狀態整合後的正常交易回歸，請以
-[2026-09-04 最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)為準；本頁的取消生命週期數據是 correctness evidence，不是目前 mixed-flow 容量。
+三服務 inbox 與 Order 雙狀態整合後的歷史正常交易回歸，見
+[2026-09-04 長窗報告](benchmarks/2026-09-04-current-reliability-full-chain.md)；十一月有／無 key
+的 schema-v4 診斷另見 [2026-11-05 比較](benchmarks/2026-11-05-http-idempotency-comparison.md)。
+本頁的取消生命週期數據是 correctness evidence，不是目前 mixed-flow 容量。
 
 ## 設計摘要
 

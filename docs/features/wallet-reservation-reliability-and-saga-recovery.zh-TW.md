@@ -4,7 +4,7 @@
 >
 > 建立日期：2026-08-27
 >
-> 最近更新：2026-09-18
+> 最近更新：2026-11-05（現行狀態與證據入口核對）
 >
 > 範圍：CDA `OrderSubmittedEvent → Wallet reservation → OrderAssetReservationSucceededEvent／OrderFailedEvent`，並延伸至 `OrderCancellationResultEvent → Wallet release → OrderAssetReservationReleasedEvent → Order final cancellation`。不把所有 consumer 一次改造成通用框架。
 
@@ -24,14 +24,14 @@
 - `message_id` 已由 UUID 改為 `VARCHAR(80)`，讓 UUID order／cancellation identity 與原生字串 `tradeId` 使用同一套 inbox，而不製造雜湊後的假 identity；same trade ID／different payload 會永久隔離。
 - 金額乘法改用 exact arithmetic；overflow 是永久 invalid event，不會把截斷後的數字寫進資產。
 - 受控 PostgreSQL 競態測試覆蓋不同命令競爭同一 Wallet：初始 100、第一筆鎖定 80 後，第二筆 80 必須拒絕，最終固定為 available 20／locked 80；另驗證四種負數寫入均被 database 拒絕。
-- Wallet trade inbox 加入後，2026-09-04 以三服務 inbox backlog／oldest age／terminal debt 與 final outbox／cleanup gate 重跑 200 orders/s、15 分鐘量測並通過；三服務各 `96000` 筆 trade 完全一致，Wallet inbox max `389`、oldest age max `1s`、terminal debt `0`，最終 debt 歸零。現況以[最新全鏈報告](../benchmarks/2026-09-04-current-reliability-full-chain.md)為準，不能沿用舊 648 或中間版本 400。
+- Wallet trade inbox 加入後，2026-09-04 以三服務 inbox backlog／oldest age／terminal debt 與 final outbox／cleanup gate 重跑 200 orders/s、15 分鐘量測並通過；三服務各 `96000` 筆 trade 完全一致，Wallet inbox max `389`、oldest age max `1s`、terminal debt `0`，最終 debt 歸零。這是[九月歷史長窗](../benchmarks/2026-09-04-current-reliability-full-chain.md)，不能沿用舊 648 或中間版本 400；後續功能與證據以[現行導覽](../current-version-guide.zh-TW.md)為準。
 
 後續狀態：
 
 - inbox commit 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 consumer pause／service-local circuit 完成；poison 仍進 DLQ。
 - Order warning-only Saga timeout detector 與 oldest-age alert 已由 REL-105／REL-103 完成；自動 prerequisite recovery／補償未完成。
 - REL-106 已完成 terminal inbox／outbox 的 inspect、classify、dry-run、rate-limited owner-side replay 與 action audit；REL-107 只為 Wallet trade 補上 owner-aware conditional DLQ replay，reservation／cancellation route 仍只提供 persist-before-ACK quarantine 與 park／resolve。
-- 60 秒 DB outage、consumer process kill、duplicate／late event 的真實 Rabbit failure-injection campaign；目前只有 PostgreSQL transaction／lease integration evidence。
+- REL-104／107 已完成真實 Rabbit delivery 下的 60 秒 DB outage、核心 consumer process kill、duplicate／late event 與 confirm ambiguity campaign；範圍見[REL-107 報告](../benchmarks/2026-09-18-rel107-failure-injection-campaign.md)，三 JVM 同場 HTTP crash 與其他 DLQ route 仍未驗證。
 
 詳細實作與驗收數據見 [Wallet Inbox 與取消訂單最終確認](../wallet-inbox-and-cancellation-completion.zh-TW.md)。以下 Current Baseline 保留的是改造前問題背景；Target／task list 同時記錄已完成與剩餘工作。
 
@@ -81,7 +81,7 @@ EAP 已具備 choreography-based Saga 的結構：
 
 因此後續文件的精確說法應是：
 
-> EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／trade／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；CDA intake DB outage 可 pause/resume，Order 也能 warning-only 偵測卡住 Saga。REL-106 已提供 terminal inbox／outbox 的受控 owner-side replay 與 action audit；仍未完成的是 shared DLQ 安全 redrive 與跨服務自動補償決策。
+> EAP 已實作 CDA choreography Saga 的主要業務步驟、local transaction、outbox、冪等與部分補償。Order 驗資結果、Wallet reservation／trade／cancellation-result 與 Match admission 已有各服務擁有的 durable inbox；CDA intake DB outage 可 pause/resume，Order 也能 warning-only 偵測卡住 Saga。REL-106 已提供 terminal inbox／outbox 的受控 owner-side replay 與 action audit；REL-107 只開放 Wallet／Order exact trade route 的 conditional DLQ replay，其他 route 與跨服務自動補償決策仍未完成。
 
 不得再使用下列說法：
 
@@ -334,7 +334,7 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 - [x] Inbox terminal state、business idempotency、reservation／rejection與 result outbox 保持單一 local transaction。
 - [x] Intake 前 DB connectivity outage 不會被誤 ACK，也不會在數秒內把合法流量全部變成 DLQ debt。
 - [x] 三服務 60 秒 DB outage 可自動恢復，transient DLQ delta 為 0。
-- [ ] consumer process kill 的完整跨服務 campaign 仍待 REL-107；既有 lease reclaim／redelivery integration tests 不冒充完整 campaign。
+- [x] REL-107 R1～R5 已完成核心 consumer process kill、duplicate／late event 與 confirm ambiguity campaign；範圍以[故障報告](../benchmarks/2026-09-18-rel107-failure-injection-campaign.md)為準，不代表三 JVM 同場 HTTP crash 或全部 DLQ route 都已驗證。
 - [x] duplicate、identity conflict、late release event、lost lease 與 local outbox atomicity 測試通過。
 - [x] 已涵蓋流程的 available／locked asset 與 terminal result invariants 通過。
 - [x] inbox status count、identity conflict 與 oldest unresolved age 已有低成本快照 metrics；Prometheus 對 permanent failure 與 age 提供告警；conditional read-only admin endpoint 可依 status／message type 檢視 attempt、lease 與 error，且不回傳 payload。
@@ -348,6 +348,6 @@ Wallet durable inbox、分類、lease worker 與 failure tests 可以進入設�
 
 目前可使用的敘述：
 
-> 將 Wallet 驗資、成交與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。後續以 consumer circuit 補上 intake DB outage、以 Order warning-only timeout detector 找出卡住 Saga，並建立受保護的 terminal recovery control plane；shared DLQ redrive 與完整 process-kill campaign 仍是 production gap。
+> 將 Wallet 驗資、成交與取消結果從 listener 直接處理改造成 durable inbox＋lease worker，以錯誤分類、exponential backoff、jitter、owner fencing、冪等與 transactional outbox 支援已落盤工作的一般 crash recovery；取消訂單再以 Wallet 資產釋放事實驅動 Order 從 `CANCELLING` 成為 `CANCELLED`。後續以 consumer circuit 補上 intake DB outage、以 Order warning-only timeout detector 找出卡住 Saga，並建立受保護的 terminal recovery control plane。REL-107 已驗證核心 process crash 與 Wallet／Order trade conditional DLQ replay；其他 route 與三 JVM 同場 HTTP crash 仍是未驗證邊界。
 
 可以引用已完成 campaign 的「三服務 60 秒 DB outage 可自動恢復、transient DLQ delta 為 0」，但必須附上測試範圍與日期；MCP replay confirm→central audit 的真實 process crash 也已通過。仍不得宣稱「完整 DLQ 自動恢復」，因為只有 Wallet／Order trade 開放 conditional replay，其他 route 仍待逐一補上 owner preflight。

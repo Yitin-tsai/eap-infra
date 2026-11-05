@@ -333,7 +333,8 @@ key 永久保留、不過期、不自動重用；MCP／cancel／TDA 與實驗寫
 規格、測試與限制見 [PLAT-201](features/http-command-idempotency.zh-TW.md)。
 Order 一般 test task 實際執行 157 項全通過（另外 70 項 integration cases 依 task 分流
 skipped）；本次專屬 PostgreSQL task 的 12 項全部通過，Reviewer 無 blocker。
-既有其他 integration suites、完整 JVM restart 與新版容量壓測未在本輪重跑。
+其他既有 integration suites 未在十月本輪重跑；後續已另驗證 Order JVM 重啟後 replay。
+三服務同場 crash／restart 與乾淨 revision 長窗容量仍未驗證。
 
 2026-11-05 後續完成 [HTTP 冪等性增量成本量測](benchmarks/2026-11-05-http-idempotency-comparison.md)：
 無 key／全新 key 各三輪，200 unique orders/s、60s＋180s，完整 schema-v4 gate 通過；
@@ -341,7 +342,7 @@ skipped）；本次專屬 PostgreSQL task 的 12 項全部通過，Reviewer 無 
 成本已量出，暫不新增 command inbox。此為同版 dirty-source 診斷，仍須另做乾淨 revision
 的正式容量基準與慢依賴量測，不能改標為 SLA／ceiling 證據。
 最終 QA 判定 ACCEPT、Reviewer 判定 Approve，無阻擋項目；保留直接受理＋outbox。
-Order 實作已提交為 `f58b521`；本次 infra 提交保存量測工具、API 文件與驗收證據。
+Order 實作提交為 `f58b521`；infra `bf00dcb` 保存量測工具、API 文件與驗收證據。
 
 ### EAP-MATCH-202：Redis order book durable rebuild
 

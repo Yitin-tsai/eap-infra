@@ -58,6 +58,18 @@ graph TD
 
 This is the current business-completion and capacity-test path. All public completed-trade TPS values in this repository refer to this CDA flow unless a report explicitly defines another workload.
 
+CDA BUY/SELL HTTP acceptance commits the initial Order fact and outbox synchronously;
+Rabbit publication, Wallet processing, matching, settlement, and projection continue
+asynchronously. There is no HTTP command inbox. An optional `Idempotency-Key` adds a
+durable original-response receipt to the same command transaction. The caller reuses
+the key and payload for HTTP retries; the separate `orderId` identifies the order
+through later operations. Matching user/key/content replays the original HTTP 200
+receipt; conflicting content or an in-progress command returns 409. Receipts are
+retained permanently. No-header, MCP, TDA, and cancellation requests do not gain this
+HTTP-key guarantee; cancellation has its own `cancellationId` lifecycle. See the
+[accepted HTTP contract](features/http-command-idempotency.zh-TW.md) and
+[intake-mode decision](adr/ADR-007-cda-http-order-intake-mode.zh-TW.md).
+
 ## Timed Double Auction Flow
 
 TDA accepts stepped bids during an auction session and clears them as a batch on a MatchEngine schedule:

@@ -2,14 +2,14 @@
 
 > 狀態：**Accepted（2026-11-05，CDA BUY／SELL HTTP 限定功能）**。最終 QA：ACCEPT；
 > Reviewer：Approve，無阻擋項目。保留直接 durable acceptance＋outbox；正式容量／SLA
-> 驗證另列後續工作。Order 實作已提交為 `f58b521`；量測工具與文件隨本次 infra 提交保存，尚未 push。
+> 驗證另列後續工作。Order 實作提交為 `f58b521`；量測工具、驗收與證據保存於 infra `bf00dcb`。
 
 > 2026-10-29：Architect／Performance 接受限定範圍；實作、157 項一般測試與 12 項 PostgreSQL
 > 整合測試通過，Reviewer 無阻擋項目；當時的受測來源為尚未提交的工作樹。
 
 ## 問題與目標
 
-Order 已提交訂單、event store 與 outbox，但 HTTP response 遺失時，client 目前無法
+本功能要解決的原始問題：Order 已提交訂單、event store 與 outbox，但 HTTP response 遺失時，client 原先無法
 使用穩定 request key 取得第一次結果。重送會再次配置 market sequence／timestamp；
 即使指定相同 orderId，也不等於具備 HTTP 重送契約。
 
@@ -54,7 +54,9 @@ header、狀態碼、買賣兩路與未提供 key 的相容性。完成後由唯
 使用者隔離沿用 request 中的 bidder／seller UUID；本項沒有把既有未驗證的 ID_TOKEN
 升級成 authentication，也不宣稱 client 自報的 UUID 是已認證身分。
 
-## 效能與驗證邊界
+## 效能成本與 2026-10-29 測試邊界
+
+以下測試限制描述十月功能驗證；十一月後續真實全鏈負載與 Order JVM restart 證據見下節。
 
 - 兩次 `SET LOCAL` 也有成本：新 keyed submission 相較原 append 多 5 次 SQL 執行
   （包含 receipt INSERT）與 1 筆 row；replay 4 次 SQL、busy 3 次。沒有 key 不增加 ledger SQL。
@@ -68,9 +70,9 @@ header、狀態碼、買賣兩路與未提供 key 的相容性。完成後由唯
   實際依賴故障行為不在這輪測試證據內。
 - Response loss 是在 Controller 已完成／DB 已 commit 後，以 servlet filter 注入 IOException；
   它證明無成功回應的重送能查回原 receipt，未宣稱實際 socket disconnect 或 JVM crash campaign。
-- 新 service instance／舊 receipt 測試證明不依賴記憶體 cache；尚未執行整個應用 JVM 的 restart。
+- 當日的新 service instance／舊 receipt 測試證明不依賴記憶體 cache；當日尚未執行整個應用 JVM 的 restart。2026-11-05 已另完成 Order JVM restart 後 replay，未擴及全系統 crash。
 
-## 最終驗證
+## 2026-10-29 功能測試
 
 在 `eap-order` 執行：
 
@@ -95,7 +97,8 @@ GRADLE_USER_HOME=/Users/cfh00909120/Desktop/eap-workspace/.cache/gradle ./gradle
 
 2026-11-05 由 Architect／Performance 分別評估後，保留目前直接提交 Order 初始事實、
 outbox 與 receipt 的模式。既有結果 inbox 的原則是可靠移交處理責任，不代表 HTTP
-必須再增加 command inbox。keyed connection 持有期間的外部依賴等待仍待真實負載驗證。
+必須再增加 command inbox。評估當時尚待補上 keyed connection 持有期間的真實負載量測；
+同日後續已完成下述固定比較點，慢依賴／故障時的等待行為仍待另測。
 完整比較、量測決策點與改採 command inbox 的前置契約見
 [ADR-007：CDA HTTP 下單受理模式](../adr/ADR-007-cda-http-order-intake-mode.zh-TW.md)。
 
@@ -121,7 +124,8 @@ schema-v4 全鏈比較，以及 Order JVM 重啟後的獨立 12000 次 replay；
 
 Order 實作、migration、測試及服務 README：
 [`f58b521`](https://github.com/Yitin-tsai/eap-order/commit/f58b521225a208d9f3c3243dae48adb8da5fe20c)。
-根目錄的 API snapshot、量測工具、ADR、驗收與精簡證據隨本次 infra commit 保存。
+根目錄的 API snapshot、量測工具、ADR、驗收與精簡證據保存於 infra
+[`bf00dcb`](https://github.com/Yitin-tsai/eap-infra/commit/bf00dcb3138369e9e45496702cd10471ffd7b9b2)。
 
 2026-10-29 與 2026-11-05 的原始結果仍保留當時的 base revision、dirty 狀態與 working-tree
 fingerprint。提交後只更新文件版本入口，不把已執行的工作樹診斷改標成新 commit 的乾淨版本

@@ -1,6 +1,6 @@
 # CDA 訂單事件完整生命週期與失敗復原
 
-> 文件狀態：依 2026-09-01 workspace 實作核對。本文只描述連續雙向競價（CDA）的現況；TDA 有不同的事件可靠性缺口，不能套用本文保證。
+> 文件狀態：2026-11-05 依[文件核對基線](current-version-guide.zh-TW.md)更新 HTTP 冪等性、trade prerequisite 與 REL-104～107 恢復語意。本文只描述連續雙向競價（CDA）的現況；TDA 有不同的事件可靠性缺口，不能套用本文保證。
 
 這份文件回答的不只是「訂單怎麼成交」，而是四個更重要的問題：每個服務擁有哪一段事實、失敗可能發生在哪裡、系統靠什麼重試並收斂，以及哪些事情目前仍需要人工處理。EAP 的 CDA 不是跨三個資料庫的 ACID transaction，也不是 exactly-once messaging；它採用每個服務的本地 ACID、transactional outbox、冪等 consumer、持久化 retry state 與外部一致性核對，建立可恢復的 at-least-once 流程。
 
@@ -78,7 +78,7 @@ flowchart LR
 
 1. HTTP 下單、取消命令，或 Wallet／Match 的 integration fact 進入 Order application service。
 2. application service 不直接改 `orders_current`，而是建立 `OrderSubmissionRequestedV1`、`OrderMatchedV1` 等 Order domain event。
-3. `OrderEventAppender` 以 expected aggregate version、event identity 與 row lock 保護併發；一筆 local transaction 寫入 `order_event_store`，並更新 `order_stream_heads`／`order_matching_state` 供下一個命令快速檢查 owner、remaining amount、status。需要通知其他 bounded context 時同時寫 `order_event_outbox`。
+3. `OrderEventAppender` 以 expected aggregate version、event identity 與 row lock 保護併發；一筆 local transaction 寫入 `order_event_store` 與 `order_stream_heads`，後續狀態轉換按需建立／更新 `order_matching_state` 供命令檢查 owner、remaining amount、status。需要通知其他 bounded context 時同時寫 `order_event_outbox`。
 4. event stream 是 Order 的歷史依據；stream head／matching state 是 command-side 的目前狀態捷徑，不是提供 UI 查詢的 read model。
 
 `order_matching_state` 之所以存在，是因為取消或套用成交不能每次都 replay 完整 event stream 才取得 remaining amount，也不能依賴可能落後的 query projection 來做正確性決策。Command side 要用與 event append 同一 transaction 內維護的狀態判斷不變量。
@@ -188,10 +188,12 @@ sequenceDiagram
 1. Controller 驗證 DTO；endpoint 另外示範 user-based rate limit。下單服務在寫入前檢查 Wallet queue backpressure，避免已知下游過載時繼續無限制接單。
 2. Order 取得每個 market 的單調 `marketSequence`，建立 `OrderSubmissionRequestedV1` domain event 與 `OrderSubmittedEvent` integration event。
 3. `OrderEventAppender` 鎖定／建立 stream head，檢查 expected version 與 event identity。
-4. order event、command-side matching state、stream head 與 `order_event_outbox` 在同一筆 Order DB transaction／CTE 中寫入。
+4. 初始 order event、stream head 與 `order_event_outbox` 在同一筆 Order DB transaction／CTE 中寫入；`order_matching_state` 可在後續處理按需建立，不是初始提交必寫的一列。有 key 時，原始 response receipt 也在同一個外層 command transaction 提交。
 5. commit 成功才算 Order 接受命令。相同 event ID 且 payload 相同是 idempotent replay；相同 identity 卻不同 payload 是衝突，不會靜默覆蓋。
 
-如果 outbox insert 在這一步失敗，整筆 local transaction rollback；不會留下「已接受訂單但 outbox row 缺失」的半套 commit。HTTP 明確回失敗時，client 可以提供相同 `orderId` 重試。若 connection 在 commit 後、response 前中斷，client 無法只靠 HTTP 判斷第一次是否成功；目前雖會偵測相同 order identity，但重試時重新配置的 market sequence／timestamp 可能形成 payload conflict。完整的 client-visible idempotency contract 應保存 request identity 與第一次 response，這是目前仍可補強的邊界。
+如果 outbox insert 在這一步失敗，整筆 local transaction rollback；不會留下「已接受訂單但 outbox row 缺失」的半套 commit。CDA BUY／SELL HTTP 可提供 `Idempotency-Key`：以 request 的使用者 UUID＋key 保存 request identity 與原始 HTTP 200 receipt，與初始 Order 事實／outbox 同交易提交，並保護並行請求。呼叫程式在逾時或 response 遺失後沿用同 key／payload，即可取得原 receipt；內容衝突或同 key 尚在處理中回 409。key 永久保留，不代表使用者手動輸入，也不是 TCP 重傳識別碼。
+
+`orderId` 識別訂單資源；key 識別這次建立命令。原先未帶 `orderId` 的重試不能改填 server 回傳的 ID，否則 request identity 會不同。未提供 key 時不保證 HTTP 去重，即使重用 orderId 也可能因重新配置的 sequence／timestamp 形成 payload conflict。MCP、取消與 TDA 不在這項 HTTP-key 契約內，詳見 [PLAT-201](features/http-command-idempotency.zh-TW.md)。HTTP 同步完成的是初始 durable acceptance；relay 與後續業務處理仍非同步，沒有另設 HTTP command inbox。
 
 ### 階段 1：Order outbox 發布 `OrderSubmittedEvent`
 
@@ -214,7 +216,7 @@ lease worker 再以 `FOR UPDATE SKIP LOCKED` claim 到期 row。預設每 100 ms
 4. 有足夠資產時建立 `OrderAssetReservationSucceededEvent` outbox；錢包不存在、餘額不足或電量不足時，不修改資產並建立 `OrderFailedEvent` outbox。
 5. 程式要求新 business claim 恰好產生一筆 result outbox，並以 lease owner fencing 把 inbox 標成 `APPLIED`；任一步失敗都 rollback。
 
-技術錯誤由 Wallet-owned retry state 處理，而不是在 listener 內反覆執行業務：`DataAccessException` 與 unknown failure 最多 20 attempts，250 ms 起始、最高 30 秒的 exponential backoff 並加入 bounded jitter；永久 identity／input／integrity error 直接成為 `FAILED_PERMANENT`。只有 inbox 尚未寫入而 Wallet DB 已不可用時，才仍落回 Spring Rabbit 3 attempts／DLQ 的 transport window。
+技術錯誤由 Wallet-owned retry state 處理，而不是在 listener 內反覆執行業務：`DataAccessException` 與 unknown failure 最多 20 attempts，250 ms 起始、最高 30 秒的 exponential backoff 並加入 bounded jitter；永久 identity／input／integrity error 直接成為 `FAILED_PERMANENT`。inbox commit 前的 DB connectivity outage 則由 REL-104 分類，保留未 ACK delivery、開啟 service-local circuit 並暫停 consumer；DB probe 成功後分批恢復，不把合法事件送入 DLQ。poison／schema 等非 connectivity failure 仍依 broker retry／reject policy 處理。
 
 「資產不足」是業務結果，不是技術例外，因此正常 commit 並透過 outbox 發布 `OrderFailedEvent`。Order 收到後先把結果寫入統一 durable inbox，再由 lease worker append `OrderAssetReservationFailedV1` 並把 inbox 標為 `APPLIED`；流程在未進入 MatchEngine 前終止。
 
@@ -399,14 +401,14 @@ EAP 內有五個不同的 retry owner：HTTP client、service 內的小範圍 re
 - worker 以 `SKIP LOCKED`、owner 與 30 秒 lease claim；domain event append 與 inbox `APPLIED` 在同一 consumer transaction，worker crash 前未 commit 會一起 rollback，claim 後 crash 則由 lease expiry 接手。
 - transient database error 記為 `FAILED_RETRYABLE`，最多 20 attempts，250 ms 起始、最高 30 秒 exponential backoff 並加入 bounded jitter；identity／state conflict 直接成為 `FAILED_PERMANENT`。
 - 相同 order/result/payload 是 duplicate；同一 order 出現 confirmed／failed 或不同 payload，會保存 conflicting payload 與 incident。若原 result 已 `APPLIED`，不假裝 rollback 已成立的 Order fact。
-- inbox 尚未寫入前若 Order DB 完全不可用，目前仍交給 Spring listener retry／DLQ；這個 intake window 仍需 consumer pause 或 delayed retry queue，不能把 durable inbox 的保證誇大到 commit 前。
+- inbox commit 前若 Order DB connectivity failure，REL-104 在短 retry 後開 service-local circuit，保留 source delivery 並暫停 CDA consumers，再以 backoff＋jitter probe 恢復；poison／schema error 才依既有 reject／DLQ policy 處理。
 
 #### MatchEngine confirmation consumer
 
-- 一般 container ACK 仍存在，但 ACK 邊界已提前成「`order_admission_inbox` insert commit 成功」，不再等待完整撮合。Match DB 在此 commit 前故障時 listener 會拋錯，仍由 Rabbit short retry／DLQ 保護 intake window。
+- 一般 container ACK 仍存在，但 ACK 邊界已提前成「`order_admission_inbox` insert commit 成功」，不再等待完整撮合。Match DB 在此 commit 前發生 connectivity failure 時 listener 拋錯，由 REL-104 circuit 保留 source delivery、暫停／probe 恢復，不把合法事件耗盡到 DLQ。
 - inbox 以 `order_id` 為 message identity，另以 `market_id + market_sequence` 建 unique constraint；保存 payload、SHA-256 hash、schema version、attempt、next retry、owner、lease、error 與 conflicting payload。
 - lease worker 使用 `FOR UPDATE SKIP LOCKED` claim。預設有界並行度 16、batch 100、poll 100 ms、lease 30 秒；只依 executor 可用 permit claim，不建立無界的待執行 queue。
-- transient PostgreSQL／Redis error 進 `FAILED_RETRYABLE`；既有 Redis admission claim 未 stale或 reservation 尚未收斂時進 `PENDING_PREREQUISITE`；兩者最多 20 attempts，以 250 ms 到 30 秒 exponential backoff 加 jitter 重試。invalid event／constraint conflict 與耗盡的 retry 進 `FAILED_PERMANENT`。
+- transient PostgreSQL／Redis error 進 `FAILED_RETRYABLE`，最多 20 次 technical attempts；既有 Redis admission claim 未 stale 或 reservation 尚未收斂時進 `PENDING_PREREQUISITE`，不消耗 technical budget。重試以 250 ms 到 30 秒 exponential backoff 加 jitter 排程；invalid event／constraint conflict 與耗盡的 technical retry 進 `FAILED_PERMANENT`，長期 prerequisite 由 age／debt 告警揭露。
 - 相同 identity／payload 的 duplicate 正常 ACK；相同 order 或 market sequence 的不同 payload 保存 conflict，不靜默覆寫。operator endpoint 預設關閉，只允許重開 `RETRY_EXHAUSTED_*` 技術失敗，不會 generic replay identity conflict。
 - worker crash 後由 lease expiry 接手。若 Match effect 已成功、但 inbox 尚未標 `APPLIED` 就 crash，redelivery 仍由 `IncomingOrderProcessingStore` 的 Redis processing／completed guard、per-order recovery lock 與 durable trade identity 吸收，不會把同一 order 重複 admission。
 - processor 不再在 listener thread 內輪詢 30 秒。遇到 fresh `PROCESSING` 或 active reservation 會立即拋出 prerequisite-not-ready，保存 delay 後再試，避免占住 Rabbit consumer。
@@ -444,17 +446,17 @@ Match inbox 的 schema、crash window、operator retry 與限制另見 [Match �
 
 #### Match trade outbox
 
-Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 秒 exponential backoff、最高 300 秒。它同時發布 `TradeExecutedEvent` 與 cancellation result。broker confirm 後、標 `SENT` 前的 crash 仍會造成 duplicate；第 10 次失敗則為 `FAILED`，目前沒有完整公開 recovery API。
+Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 秒 exponential backoff、最高 300 秒。它同時發布 `TradeExecutedEvent` 與 cancellation result。broker confirm 後、標 `SENT` 前的 crash 仍會造成 duplicate；第 10 次失敗則為 `FAILED`。REL-106 已提供受保護、owner-enforced 的單筆 technical recovery；它是操作控制面，不是無限制公開 replay API，永久矛盾仍 fail closed。
 
 #### Order trade consumer
 
 - JSON 無法解析：manual NACK、不 requeue，直接 DLQ。
 - 正常可套用：buyer／seller 的 event append、`trade_id` application 與 command state 在本地 transaction 完成，再 ACK。
-- confirmation projection 尚未就緒：先把完整 payload 寫為 `PENDING_PREREQUISITE`，成功後 ACK Rabbit；reconciler 再重排，所以不會用 broker hot-loop 等跨 queue 順序。
+- 真正缺少 submission head：先把完整 payload 寫為 `PENDING_PREREQUISITE`，成功後 ACK Rabbit；reconciler 再重排。Wallet confirmation 或 query projection 落後不構成此 prerequisite；durable trade 可推導 reservation success 並直接套用 command state，晚到 confirmation 不能降回 `OPEN`。
 - 其他暫時技術錯誤：先寫 `FAILED_RETRYABLE` inbox，再 ACK；reconciler 預設每 100 ms claim、lease 30 秒，以 100 ms 起始、最高 10 秒的 exponential delay，技術錯誤最多 20 attempts 後 `FAILED_PERMANENT`。
 - Prerequisite 不足目前不套用 20 次上限，而是持續 `PENDING_PREREQUISITE` 重排。這避免合法 late event 被過早判死，但需要 age／lag 告警，否則缺失的上游事件會永久佔 debt。
 - 業務矛盾：batch fallback 成逐筆處理，只把衝突 event 標為 `FAILED_PERMANENT`，其他合法 trade 繼續；不拿相同矛盾做 20 次 retry。
-- 只有當 inbox 狀態也寫不下來時才 `requeue=true`。這保住訊息不遺失，但仍可能 hot-loop，是需要 broker delayed retry／受控 backoff 的 intake 邊界；confirmation listener 已先完成 durable inbox 改造，不再用相同的 apply-failure requeue 路徑。
+- 當 inbox 也無法寫入且原因為 DB connectivity outage 時，由 REL-104 保留未 ACK delivery、暫停 local consumer 並以 backoff＋jitter probe 恢復；不靠無限 hot requeue 等待資料庫。非 connectivity 失敗仍依 listener 的 retry／reject policy 處理。
 
 #### Wallet trade consumer
 
@@ -464,7 +466,7 @@ Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 �
 - 新 settlement 保存 inbox payload hash；只有相同 `trade_id` 且 hash 相同才算 business duplicate，舊資料沒有 hash 或 hash 不同都不會被靜默接受。
 - transient DB／unknown technical failure 進 durable `FAILED_RETRYABLE`，最多 20 attempts，250 ms 起始、最高 30 秒並有 jitter；expired lease 可由其他 instance reclaim。
 - 缺 wallet、locked asset 不足屬 `PERMANENT_ASSET_INVARIANT`；事件欄位不合法或 exact arithmetic overflow 屬永久 invalid event，不進無意義 retry。
-- 只有 inbox 自己尚未寫入且 Wallet DB 不可用時才依賴 Spring listener 3 attempts／DLQ；delayed transport retry／consumer pause 尚未完成。
+- inbox commit 前 Wallet DB connectivity outage 由 REL-104 consumer circuit 保留 source delivery、暫停與 probe 恢復；非 connectivity poison 仍走既有短 retry／DLQ。
 
 ### 取消分支 A：Order 接受取消命令與發布 request
 
@@ -476,7 +478,7 @@ Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 �
 
 ### 取消分支 B：MatchEngine 競爭判定
 
-1. Listener 是一般 container ACK。`coordinator.request` exception 會走 Rabbit 3 attempts，耗盡後 DLQ。
+1. Listener 是一般 container ACK。`coordinator.request` 的 DB connectivity exception 由 REL-104 circuit 保留未 ACK delivery 並暫停／恢復 consumer；其餘例外仍依 Rabbit 短 retry／DLQ policy 處理。
 2. 先在 PostgreSQL 建立冪等 `PENDING` decision，再寫 Redis cancellation intent。若 process 在兩者之間 crash，broker redelivery 與 scheduled reconciler 都能從 PENDING 重建 intent。
 3. cancel Lua 沒贏過 active reservation 時不猜結果，decision 留在 PENDING。Reconciler 預設每 250 ms 掃描、初始 delay 1 秒、batch 50、lease 30 秒；retry delay 從 250 ms 指數增加，最高 30 秒。
 4. cancellation reconciliation 現在把 prerequisite waiting 與 technical failure 拆成不同 counter／起始時間。等待 admission、reservation、snapshot 或 runtime ready 不消耗 20 次 technical budget，但會保存原因並依等待次數告警；Redis／DB 暫時故障 bounded retry，耗盡後 `FAILED_TERMINAL`；order-book detail／identity invariant 直接 terminal，不再無限碰撞。
@@ -489,7 +491,7 @@ Match relay 預設每 500 ms poll、confirm timeout 5 秒、最多 10 次，1 �
 
 #### Order
 
-- listener 先驗證 envelope，再把 payload 以 `cancellation_id` 存入 durable inbox；相同 ID 不同 payload 會丟 identity conflict。receive transaction 失敗才交給 Rabbit 3 attempts／DLQ，成功後 container ACK。
+- listener 先驗證 envelope，再把 payload 以 `cancellation_id` 存入 durable inbox；相同 ID 不同 payload 會丟 identity conflict。receive transaction 成功後 container ACK；DB connectivity failure 由 REL-104 circuit 保留未 ACK delivery 並暫停／恢復 consumer，其餘失敗依短 retry／DLQ policy 處理。
 - reconciler 預設每 500 ms claim、lease 30 秒。若 trade 尚未把 remaining amount 降到 Match 宣告的 `cancelledAmount`，標 `PENDING_PREREQUISITE` 並以 100 ms 起始、最高 10 秒重排；這個 prerequisite 分支目前持續等待，不套用技術錯誤的 20-attempt 上限。
 - 其他技術錯誤最多 20 attempts 後 `FAILED_PERMANENT`。`CANCELLED` 結果成功後 append `OrderCancellationAcceptedV1`、狀態為 `CANCELLING`；`ALREADY_MATCHED` 是可接受終止。`NOT_OPEN` 是需要調查的一致性 debt。
 - Wallet release event 使用另一張 durable inbox。預設每 100 ms claim、lease 30 秒；若 cancellation accepted 尚未可見就進 `PENDING_PREREQUISITE`，條件成立後才 append `OrderCancellationCompletedV1` 並成為 `CANCELLED`。
@@ -507,10 +509,10 @@ trade 與 cancellation result 即使亂序，兩邊都以不同 identity 寫入�
 
 | Retry owner | 目前參數 | 耗盡後 | 主要考量／缺口 |
 | --- | --- | --- | --- |
-| HTTP client | rate limit window；backpressure 建議 5 秒後 | request 未 accepted，或 commit 結果不確定 | 需要穩定 idempotency key 與第一次 response contract |
-| Spring Rabbit simple listener | 3 attempts；1 秒起始、倍增、最高 10 秒；不預設 requeue | shared DLQ | 同一設定同時套 transient 與 permanent exception，分類仍粗 |
-| Order asset reservation result inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | confirmed／failed 共用 `order_id` terminal guard；intake DB outage 仍需 delayed retry／consumer pause |
-| Wallet message inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | 驗資／成交／取消共用機制；locked asset 不足直接是 permanent invariant，intake DB outage 仍需 transport recovery |
+| HTTP client | rate limit window；backpressure 建議 5 秒後 | request 未 accepted，或 commit 結果不確定 | BUY／SELL 可選 key 已保存原 response；重試沿用相同 key／payload，busy 409 建議 1 秒後 |
+| Spring Rabbit simple listener | 非 connectivity failure 最多 3 attempts；1 秒起始、倍增、最高 10 秒；不預設 requeue | shared DLQ | REL-104 將 CDA pre-intake connectivity failure 交 local circuit 保留／暫停／probe；不將其送 DLQ |
+| Order asset reservation result inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | confirmed／failed 共用 `order_id` terminal guard；intake DB outage 已有 REL-104 recovery |
+| Wallet message inbox | poll 100 ms、lease 30 秒；技術錯誤最多 20 attempts；250 ms 起始、最高 30 秒且有 jitter | `FAILED_PERMANENT` | 驗資／成交／取消共用機制；locked asset 不足直接是 permanent invariant，intake DB outage 已有 REL-104 recovery |
 | Order／Wallet／Match outbox | 最多 10 次；約 1 秒 exponential backoff，最高 300 秒 | `FAILED` | REL-106 可用 fingerprint＋actionId 單筆重設為 `PENDING`，仍由 owner relay 發布 |
 | Order trade inbox | poll 100 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，以 durable-debt oldest-age SLO 偵測 stuck |
 | Order cancellation inbox | poll 500 ms、lease 30 秒；技術錯誤 20 attempts；100 ms 至 10 秒 backoff | `FAILED_PERMANENT` | prerequisite 無上限，以 durable-debt oldest-age SLO 偵測 stuck |
@@ -528,7 +530,10 @@ graph TD
     operation["Business operation"] --> localTx{"Local transaction succeeds"}
     localTx -->|"No"| appRetry["Targeted in-service retry"]
     appRetry --> brokerRetry["Rabbit listener retry"]
-    brokerRetry --> dlq["DLQ after retry exhaustion"]
+    brokerRetry --> failureClass{"Pre-intake DB connectivity outage"}
+    failureClass -->|"Yes"| circuit["Local consumer circuit: pause and probe"]
+    circuit -->|"DB recovered"| operation
+    failureClass -->|"No"| dlq["DLQ after retry exhaustion"]
     localTx -->|"Yes with outbox"| relay["Outbox relay"]
     relay --> confirm{"Broker confirm and routed"}
     confirm -->|"No"| outboxRetry["Backoff and retry"]
@@ -544,7 +549,8 @@ graph TD
 | PostgreSQL transaction | 同一服務內部分成功 | state、idempotency、outbox／application 一起 commit 或 rollback | 跨服務原子提交 |
 | Redis Lua | 同一 order book key 的競爭 | match、cancel、admission fence 原子判定 | PostgreSQL 與 Redis 的單一 ACID transaction |
 | service-owned retry | 已 durable intake 的暫時衝突 | Wallet／Order reconciler 保存狀態，以 lease、backoff、jitter 重試 | 永久 schema／資料錯誤；intake 前 DB outage 由另一層 consumer circuit 處理 |
-| Rabbit listener retry | consumer 暫時失敗 | 預設 3 次，之後 dead-letter | DLQ 自動判讀與安全 replay |
+| Rabbit listener retry | consumer 尚未接管時的短暫失敗 | 非 connectivity error 預設 3 次，之後 dead-letter | DLQ 自動判讀與安全 replay |
+| service-local consumer circuit | CDA intake commit 前 DB connectivity outage | 短 retry 後暫停 consumer，保留 source delivery；single-flight backoff＋jitter probe 後 resume | poison、已 durable intake 的 worker retry、TDA 與自動業務補償 |
 | idempotency | duplicate publish／redelivery | order ID、event ID、trade ID、cancellation ID unique guards | 相同 ID 卻不同 payload；這會被當成 conflict |
 | durable inbox／reconciler | out-of-order 或長於 broker retry 的失敗 | Order reservation result、trade、cancellation result、Wallet release，以及 Wallet reservation／trade／cancellation 有持久化狀態、lease、backoff | TDA 與其他非核心 listener 並未自動擁有同等 inbox 保證 |
 | external verifier | 找出整體尚未收斂 | 比對 durable IDs、asset、queue 與 debt | 自動修復所有未知 bug |
@@ -557,7 +563,7 @@ ACK 規則也需要精確表達：Order 的 confirmation／trade batch listener 
 | --- | --- | --- | --- | --- |
 | Rollback | Wallet settlement 任一 row-count invariant 失敗 | local transaction 尚未 commit | 只讓這次本地變更全部不成立 | 已實作 |
 | Retry | outbox publish、暫時 DB lock conflict、Rabbit redelivery | 同一操作仍可安全重做 | 依原方向再做一次，不反轉已成立事實 | 已實作；technical terminal work 可由 REL-106 受控交回 owner worker |
-| Defer | Order trade／cancellation／release inbox，或 Wallet cancellation inbox 等 prerequisite | 必要事實只是尚未抵達 | 保存 payload，等順序收斂後套用 | 已實作；durable-debt age SLO 與 Order lifecycle timeout detector 可發現長期未收斂，operator 可 park／resolve，但不自動決定補償 |
+| Defer | Order trade 缺 submission、cancellation 缺前置 trade、release 缺 cancellation accepted | 必要事實只是尚未抵達 | 保存 payload，等順序收斂後套用；Wallet locked asset 不足是 permanent invariant，不等待 | 已實作；durable-debt age SLO 與 Order lifecycle timeout detector 可發現長期未收斂，operator 可 park／resolve，但不自動決定補償 |
 | Reconciliation | reservation／cleanup worker 比對 Redis 與 durable trade | crash 留下跨資源中間狀態 | 以 authority 的 durable fact 決定 roll forward 或恢復暫存狀態 | 局部 reservation 已實作；Redis 全毀重建未完成 |
 | Business compensation | Wallet 依 `CANCELLED` 釋放 unmatched locked asset | 先前 reservation 已成立，但剩餘訂單合法終止 | 新增一筆冪等、可稽核的釋放效果 | 已實作 |
 | Reversal | 未來若需沖銷錯誤 trade | durable trade 已成立後才發現業務錯誤 | 需要新的反向交易 | 未實作，也不屬於目前取消訂單 |
@@ -585,7 +591,7 @@ row 保持 `PENDING`；relay poll 後重試。服務重啟不會遺失它。
 3. 修正 code／configuration 後，以有 idempotency key 的受控 replay 或 backfill 建立事件。
 4. 再次核對下游 durable facts、資產、queue、DLQ 與 retry debt。
 
-REL-106 已為 Order／Wallet／Match 的 technical terminal inbox／outbox 與 Match cleanup 提供受保護的 inspect、dry-run、fingerprint 驗證、rate limit、owner-side replay 與 action audit。它不允許中央服務直接改 owner schema，也不會把 permanent invariant 或 identity conflict 強制改回 `PENDING`。REL-107 只讓 allowlisted transient Wallet trade dead letter 在 owner preflight 後 direct replay；其他 shared-DLQ case 仍只能 park／resolve，避免用無限 retry 掩蓋 poison event。
+REL-106 已為 Order／Wallet／Match 的 technical terminal inbox／outbox 與 Match cleanup 提供受保護的 inspect、dry-run、fingerprint 驗證、rate limit、owner-side replay 與 action audit。它不允許中央服務直接改 owner schema，也不會把 permanent invariant 或 identity conflict 強制改回 `PENDING`。REL-107 只讓 allowlisted transient Wallet／Order `TradeExecutedEvent` dead letter 在各 owner 的 business-state preflight 後 direct replay；其他 shared-DLQ case 仍只能 park／resolve，避免用無限 retry 掩蓋 poison event。
 
 ## Saga Pattern：目前真正實作的是什麼
 
@@ -617,8 +623,8 @@ graph LR
 - 沒有中央 Saga orchestrator 或單一 global saga status；任何服務都不能單獨宣稱三服務已完成。
 - 沒有跨服務 exactly-once；提供的是 at-least-once delivery 加上 effectively-once local state transition。
 - Order 已能找出長時間停在驗資或取消中的候選，但沒有跨服務 end-to-end timeout authority，也不會僅憑時間自動決定補償。
-- shared DLQ 已能 persist-before-ACK quarantine、分類與審核；Wallet trade 已用
-  `x-death.queue`、exact topology allowlist 與 durable-inbox preflight 開放 conditional replay，
+- shared DLQ 已能 persist-before-ACK quarantine、分類與審核；Wallet／Order trade 已用
+  `x-death.queue`、exact topology allowlist 與各 owner business-state preflight 開放 conditional replay，
   其餘 route 因 owner／business preflight 尚未證明而維持 fail closed。各服務 inbox insert
   前的 dependency-wide DB outage 則由 REL-104 保留未 ACK delivery 並暫停 consumer。
 - Order／Wallet／Match terminal inbox、outbox 與 Match cleanup 已對齊共同 recovery contract；
@@ -635,7 +641,7 @@ graph LR
 | --- | --- | --- | --- |
 | Order event／outbox insert | 尚未 commit | 整筆 rollback，HTTP retry | client 取得失敗，無 accepted order |
 | Order outbox publish | Order fact 已 commit | relay backoff、重啟後續跑 | outbox `FAILED`，需告警與受控處理 |
-| Wallet inbox insert 時 DB outage | broker message 未 ACK | Spring listener 短期 retry | shared DLQ；仍缺 delayed retry／consumer pause |
+| Wallet inbox insert 時 DB connectivity outage | broker message 未 ACK | REL-104 短 retry 後開 local circuit、暫停 consumer、單一 backoff＋jitter probe | delivery 留在 durable source queue；DB 恢復後分批 resume，持續故障需告警 |
 | Wallet worker lock／DB transient | 訊息已在 durable inbox | `FAILED_RETRYABLE`、backoff＋jitter、lease reclaim | 20 attempts 後 `FAILED_PERMANENT` |
 | Wallet 資產不足 | reservation 不成立 | commit `OrderFailedEvent` outbox | 這是正常終止，不是 DLQ |
 | Wallet outbox publish | reservation／failure fact 已 commit | relay 最多 10 次 | `FAILED`；admin 預設關閉 |

@@ -4,7 +4,7 @@
 >
 > 建立日期：2026-08-31
 >
-> 最近更新：2026-09-03
+> 最近更新：2026-11-05（現行狀態與證據入口核對）
 
 > 範圍：CDA Wallet `OrderAssetReservationSucceededEvent／OrderFailedEvent → Order lifecycle`。不包含 Wallet intake、Trade 與 Cancellation inbox 重構。
 
@@ -69,7 +69,7 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 - `eap_durable_debt_items{service="eap-order",work="asset_reservation_result_inbox",class="total|retry|terminal"}` 暴露 actionable debt 與 identity conflict。
 - `eap_durable_debt_oldest_age_seconds{service="eap-order",work="asset_reservation_result_inbox"}` 暴露最舊未解決年齡。
 - Actuator endpoint `orderAssetReservationResultInbox` 預設關閉；啟用後可查 status count。
-- Admin retry 只接受沒有 identity conflict 的 `FAILED_PERMANENT`；矛盾業務事實不可一鍵 replay。
+- Admin retry 只接受 owner policy 分類通過的 technical retry-exhausted `FAILED_PERMANENT`；schema、identity、invariant 等永久矛盾不可一鍵 replay。
 
 ## Verified Failure Windows
 
@@ -81,23 +81,23 @@ PENDING／FAILED_RETRYABLE／expired IN_PROGRESS
 - expired worker lease 可由另一個 owner reclaim。
 - lease lost 時 domain event append 與 inbox status 原子 rollback。
 
-## Remaining Gaps
+## Follow-up Status and Remaining Gaps
 
 1. **Inbox commit 前 Order DB outage（後續已完成）**：REL-104 已採 consumer pause／service-local circuit，60 秒 outage 恢復且 transient DLQ delta 為 0。
 2. **Order Saga timeout detector（後續已完成）**：REL-105 已掃描長時間 `PENDING_ASSET_CHECK`／`CANCELLING`，只告警、不自動改變業務狀態。
-3. **Outbox terminal recovery**：Order outbox 十次失敗後仍缺少完整 inspect／rate-limited replay／audit。
+3. **Outbox terminal recovery（後續已完成）**：REL-106 已提供受保護的 inspect／dry-run／rate-limited owner-side replay／audit；不允許 generic replay permanent invariant 或 identity conflict。
 4. **Trade identity conflict**：既有 trade inbox 仍需補 same-ID/different-payload guard。
 5. **Cancellation classification**：既有 cancellation inbox 仍需一致的 transient／permanent taxonomy 與 jitter。
-6. **真實 process-kill test**：目前已驗證 transaction rollback 與 lease reclaim；仍需在 Rabbit＋PostgreSQL end-to-end 測試中直接 kill consumer JVM。
+6. **真實 process-kill test（核心 campaign 已完成）**：REL-107 R1～R5 已涵蓋核心 consumer crash、worker lease 與 publisher-confirm ambiguity。三 JVM 同場 HTTP crash 與其他 DLQ route 仍未驗證；不能把有限 campaign 當成所有失敗情境保證。
 
 ## Next Tasks
 
 - [x] OAR-201：實作 intake DB outage 的 consumer pause 或 delayed retry queue。
 - [x] OAR-202：新增 `PENDING_ASSET_CHECK` warning detector，不自動改變訂單狀態。
 - [x] OAR-203：補 oldest inbox age、outbox terminal 與 stuck Saga alert。
-- [ ] OAR-204：建立受控 outbox／DLQ inspect、replay 與 audit。
-- [ ] OAR-301：Rabbit＋PostgreSQL consumer kill／DB outage failure-injection campaign。
-- [x] OAR-302：完成 current-worktree full-lifecycle correctness／throughput 回歸；Wallet trade inbox 加入後的最新版結果與三服務 durable-debt gate 見 [2026-09-04 全鏈報告](../benchmarks/2026-09-04-current-reliability-full-chain.md)。
+- [x] OAR-204：REL-106 完成最小 terminal recovery／quarantine／audit；REL-107 開放 Wallet／Order exact trade conditional DLQ replay，其餘 route 保持 fail closed。
+- [x] OAR-301：REL-104／107 完成核心 Rabbit＋PostgreSQL consumer kill／DB outage failure-injection campaign；範圍與未測邊界見[REL-107 報告](../benchmarks/2026-09-18-rel107-failure-injection-campaign.md)。
+- [x] OAR-302：完成當時 worktree 的 full-lifecycle correctness／throughput 回歸；Wallet trade inbox 加入後的歷史結果與三服務 durable-debt gate 見 [2026-09-04 全鏈報告](../benchmarks/2026-09-04-current-reliability-full-chain.md)。後續功能與證據版本以[現行導覽](../current-version-guide.zh-TW.md)為準。
 
 ## Claim Boundary
 

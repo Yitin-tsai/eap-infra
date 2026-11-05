@@ -44,6 +44,10 @@ dirty source、同機、每模式三輪及固定比較點不構成正式容量�
 - 五個 repo 的 commit／完整 working-tree fingerprint、compose／runner／library／k6 bundle
   在各輪前後及跨有效輪次一致。原始指紋保存在 summary，不因後續新增文件而改寫。
 
+受測來源與驗收提交不同：summary 保存的是 infra base `d496646` 與 Order base `ca2d6db`
+加上各自 dirty working-tree fingerprint。後續 Order 實作提交為 `f58b521`，工具／驗收／
+證據提交為 infra `bf00dcb`；沒有對這兩個乾淨提交重跑本 campaign，原始 provenance 不改寫。
+
 ## 逐輪結果
 
 | Run | HTTP p95 ms | HTTP p99 ms | connection hold ms | steady trades/s |

@@ -2,7 +2,25 @@
 
 > 更新日期：2026-11-05
 
-> 定位：這是本次可靠性大改版的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
+> 定位：這是現行 CDA 可靠性與 HTTP 冪等契約的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
+
+## 文件核對基線（2026-11-05）
+
+下表記錄本輪文件核對所依據的功能／工具提交，不是會隨後續文件提交自動更新的 HEAD 清單。
+各 repository 獨立版本管理；量測的受測版本仍以各結果的 provenance 為準。
+
+| Repository | 核對基線 | 範圍 |
+| --- | --- | --- |
+| eap-infra | `bf00dcb` | HTTP 冪等性驗收、量測工具、API snapshot 與證據 |
+| eap-order | `f58b521` | CDA BUY／SELL HTTP 冪等性與原始 receipt |
+| eap-common | `30e8686` | 共用事件與 owner replay preflight 契約 |
+| eap-wallet | `39f8844` | Wallet durable processing 與 broker replay preflight |
+| eap-matchEngine | `8e10662` | Match reliable processing 與 outbox confirm crash 驗證 |
+| eap-mcp | `9f13026` | owner-aware broker replay 控制面 |
+| eap-ai-client | `2cd8228` | 選用 AI client 的控制面定位 |
+
+2026-10-29／11-05 測試與診斷是在提交前的工作樹執行；後來提交程式與證據，
+不等於已對上述乾淨提交重跑。請分開閱讀「功能已驗收」、「受測來源」與「容量宣稱」。
 
 ## 先記住這個版本改了什麼
 
@@ -11,7 +29,7 @@
 3. **Order 把兩種狀態拆開。** `status` 表示執行生命週期，`assetReservationStatus` 表示 Wallet reservation 進度。`TradeExecutedEvent` 若先到，可以證明 reservation 曾成功並直接推進成交，晚到的成功事件不能把 `MATCHED` 降回 `OPEN`。
 4. **取消訂單有真正的完成語意。** MatchEngine 取得未成交剩餘量後，Order 只進入 `CANCELLING`；Wallet 實際釋放資產並發布 `OrderAssetReservationReleasedEvent`，Order 才進入 `CANCELLED`。
 5. **CQRS projection 被納入使用者可見正確性。** Command-side 成交不等待 read model，但壓測最後必須驗證 `orders_current` 數量、reservation／execution 狀態與 checkpoint lag。
-6. **壓測不再只看 RabbitMQ。** schema v4 從三服務的同一份 `DurableDebtSnapshot` 讀取 inbox、outbox、cleanup、cancellation、reconciliation 與 projection 的 total／retry／terminal／oldest age；Rabbit queue 歸零但任一 service-owned work 未完成，或 snapshot stale／不可讀，都會 fail closed。2026-09-04 的 200 orders/s 長窗仍是 schema v3 的歷史容量證據；schema v4 已通過短全鏈 correctness smoke，但尚未用來更新容量數字。
+6. **壓測不再只看 RabbitMQ。** schema v4 從三服務的同一份 `DurableDebtSnapshot` 讀取 inbox、outbox、cleanup、cancellation、reconciliation 與 projection 的 total／retry／terminal／oldest age；Rabbit queue 歸零但任一 service-owned work 未完成，或 snapshot stale／不可讀，都會 fail closed。2026-09-04 的 200 orders/s 長窗是 schema v3 的歷史診斷；2026-11-05 已有六輪 schema-v4 全鏈有／無 key 比較，仍未建立乾淨 revision 長窗容量基準。
 7. **Match 本地 recovery 不再用無上限 retry 掩蓋 poison state。** Cancellation prerequisite 與 technical attempt 分開；reservation invalid payload／ownership conflict 有 durable terminal issue；cleanup lease 使用 owner＋claim token fencing。
 8. **Durable debt 有統一的可觀測契約。** 各服務每 5 秒用獨立 scheduler 查一次本地權威 table；Actuator 與 Prometheus 只讀記憶體 snapshot。觀測失敗會保留上次值，但同時標記失敗與 stale，不能把舊的 0 誤判成完成。
 9. **Inbox commit 前的 DB outage 不再把合法事件灌進 DLQ。** Order、Wallet、MatchEngine 的 CDA consumer 會把 connectivity failure 與 poison 分開；DB outage 經短期 retry 後開啟 service-local circuit、停止自己的 listener，讓未 ACK 訊息留在 durable source queue，再用單一 backoff＋jitter probe 確認 DB 恢復並分批啟動 listener。
@@ -37,18 +55,30 @@ connection hold，但此比較點未觀察到完成吞吐失敗，另有重啟 O
 | Saga | CDA choreography、取消 remainder compensation、多段 retry、inbox commit 前 DB outage 自動恢復，以及 Order warning-only timeout detection 已實作 | 跨服務 timeout 自動判斷補償、所有 DLQ／terminal debt 自動修復 |
 | CQRS | Order event store 是事實來源；`orders_current` 可重建並為查詢塑形；API 回傳 execution／reservation 雙狀態 | 強 read-your-write、獨立 read replica 已完成 |
 | 撮合 | Redis Lua 維持單一 market 內的撮合／取消互斥，PostgreSQL 保存成交與 recovery task | Redis 全量遺失可自動重建並無縫開放 |
-| 效能 | 新版 Wallet trade inbox 加入後，以 dirty-worktree 單一 seed 在完整 gate 下通過 `200 orders/s`、`100.02 trades/s` 長窗，且沒有觀察到相對同 seed baseline 的巨大退化 | 把單次本機結果當成精確 ceiling、release-pinned capacity 或 production SLA；200 以上尚未重測 |
+| 效能 | 2026-11-05 同版有／無 key 各三輪，在 `200 unique orders/s` 通過 schema-v4 gate 並量出入口成本；2026-09-04 另有 schema-v3 單 seed、15 分鐘歷史診斷 | 把短診斷或舊版本長窗當成現行 release-pinned capacity、精確 ceiling 或 production SLA；現行 200 以上尚未重測 |
 
 ## 目前版本的驗證摘要
 
-2026-09-04 以與前一版相同 seed、`60s + 900s`、k6 open-loop 與 shuffled
-BUY／SELL workload 重跑目前程式：
+### 2026-11-05：HTTP 冪等性驗收與 schema-v4 增量診斷
+
+- BUY／SELL 可選 key 契約已 Accepted；一般測試實際執行 157 項、指定 PostgreSQL 整合測試 12 項，全數通過。
+- 無 key／全新 key 各三輪，每輪 `60s + 180s`、`200 unique orders/s`；共 `288000` 單／`144000` 筆成交，完整 schema-v4 gate 通過。
+- 各輪穩態 p95 的中位數為無 key `6.10 ms`、全新 key `9.64 ms`；command connection 平均持有時間的跨輪中位數為 `1.54/3.76 ms`。
+- 另在 Order JVM 重啟後 replay `12000` 次既有 key，回傳原 receipt 且沒有新增業務效果；不是三 JVM 同場 crash／restart 驗證。
+- 受測來源為同版 dirty worktree，driver 同機；三個 PostgreSQL configured `synchronous_commit=on`，未直接查詢 command JDBC session。這不是乾淨 revision 長窗容量或 SLA 證據。
+
+方法、受測指紋、保留的休眠失敗與重跑見[2026-11-05 增量診斷](benchmarks/2026-11-05-http-idempotency-comparison.md)。
+
+### 2026-09-04：歷史長窗診斷（schema v3）
+
+當日以與前一版相同 seed、`60s + 900s`、k6 open-loop 與 shuffled
+BUY／SELL workload 重跑當時的工作樹：
 
 - `192000/192000` HTTP accepted，steady `199.99 orders/s`、`100.02 trades/s`，三服務各 `96000` trades 且 ID set 完全一致。
 - Order／Wallet／Match inbox max 為 `291/389/95`，oldest age max `1/1/0s`，terminal debt max 全為 `0`；最終 inbox、outbox 與 cleanup debt 全為 `0`。
 - 資產、Order execution／reservation 雙狀態、CQRS checkpoint、Redis order book／reservation、Rabbit 與 DLQ 全數通過。
 - k6 HTTP p95／p99 為 `4.72/32.89 ms`；相同 seed baseline 是 `15.89/74.98 ms`，但各只有一輪，不把差值宣稱成效能提升。
-- 五個 repo 的 commit 與 working-tree content fingerprint 在測試前後一致；來源仍未提交、driver 與服務同機、PostgreSQL `synchronous_commit=off`，因此只能說 current-worktree diagnostic lower bound。
+- 五個 repo 的 commit 與 working-tree content fingerprint 在測試前後一致；當時來源未提交、driver 與服務同機、PostgreSQL `synchronous_commit=off`，因此只能說該工作樹的 diagnostic lower bound，不能套用到十一月程式。
 
 完整方法、數字與限制見[2026-09-04 全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)；
 [2026-09-03 報告](benchmarks/2026-09-03-current-version-full-chain.md)保留為加入 Wallet trade inbox 前的比較基準。
@@ -59,7 +89,7 @@ BUY／SELL workload 重跑目前程式：
 
 1. 本文件。
 2. [中文 README](../README.zh-TW.md)的 CDA 流程與可靠性表。
-3. [最新全鏈壓測報告](benchmarks/2026-09-04-current-reliability-full-chain.md)的結論與結果表。
+3. [2026-11-05 全鏈增量診斷](benchmarks/2026-11-05-http-idempotency-comparison.md)的結論與結果表；需要歷史長窗背景時再看[2026-09-04 報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。
 
 ### 想完整恢復設計記憶
 
@@ -103,6 +133,6 @@ terminal recovery、owner-side replay policy、兩端 actionId idempotency、rat
 consumer crash、Match outbox confirm ambiguity、MCP replay confirm→central audit crash，並
 把 owner-specific preflight 擴充到 Order `TradeExecutedEvent`。可靠性主線維持凍結，
 架構、驗證與版本文件已統合；其他 DLQ route、三 JVM 同場 crash 與中央
-disposition 極小競態明確延後。2026-10-29 已推進 PLAT-201 的 BUY／SELL HTTP
-idempotency 限定切片；後續先用最新程式與 schema-v4 gate 建立固定版本長窗基準，再評估
+disposition 極小競態明確延後。PLAT-201 的 BUY／SELL HTTP idempotency 限定切片已於
+2026-11-05 Accepted；後續先用已提交程式與 schema-v4 gate 建立固定版本長窗基準，再評估
 Order reservation-result／projection 的改善。Redis full-book rebuild 保留為後續大型 recovery 專題。

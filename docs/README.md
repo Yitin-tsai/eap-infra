@@ -24,10 +24,10 @@ generated build files, and raw benchmark runs are not authoritative documentatio
 | Wallet reliability design record | [`features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md`](features/wallet-reservation-reliability-and-saga-recovery.zh-TW.md) | Original Wallet inbox and retry plan; current status is tracked by the backlog and latest-version guide |
 | Engineering workflow | [`ai-engineering-workflow.md`](ai-engineering-workflow.md) | Current role boundaries, evidence gates, and human decisions |
 | Performance claims | [`performance-report.md`](performance-report.md) | Canonical current capacity claims and limitations |
-| Latest full-chain campaign | [`benchmarks/2026-09-04-current-reliability-full-chain.md`](benchmarks/2026-09-04-current-reliability-full-chain.md) | Current Wallet／Match inbox path: strict 200 diagnostic pass, three-service inbox age/debt, final outbox/cleanup checks, and claim limits |
+| Historical 15-minute full-chain diagnostic | [`benchmarks/2026-09-04-current-reliability-full-chain.md`](benchmarks/2026-09-04-current-reliability-full-chain.md) | September worktree, schema-v3 strict 200 diagnostic, three-service inbox age/debt and final outbox/cleanup; not current-code capacity |
 | API contracts | [`api/`](api/) | Reviewed OpenAPI snapshots for public service contracts |
 | HTTP order idempotency | [`features/http-command-idempotency.zh-TW.md`](features/http-command-idempotency.zh-TW.md) / [`ADR-007`](adr/ADR-007-cda-http-order-intake-mode.zh-TW.md) | Accepted BUY/SELL contract, committed Order revision, original-response replay, transaction boundary and intake-mode decision |
-| HTTP idempotency cost comparison | [`benchmarks/2026-11-05-http-idempotency-comparison.md`](benchmarks/2026-11-05-http-idempotency-comparison.md) | Same-version keyed/unkeyed diagnostic, restarted Order replay, retained interruption and explicit capacity limits |
+| Latest full-chain diagnostic (2026-11-05) | [`benchmarks/2026-11-05-http-idempotency-comparison.md`](benchmarks/2026-11-05-http-idempotency-comparison.md) | Same-version schema-v4 keyed/unkeyed comparison, restarted Order replay, retained interruption; not revision-pinned long-window capacity |
 | Benchmark methods | [`benchmarks/load-test-taxonomy.md`](benchmarks/load-test-taxonomy.md) | Workload definitions and claim boundaries |
 | Benchmark campaigns | [`benchmarks/`](benchmarks/) | Human-readable dated experiment reports |
 | Published evidence | [`benchmarks/results/`](benchmarks/results/) | Minimal reviewed artifacts that support committed reports |

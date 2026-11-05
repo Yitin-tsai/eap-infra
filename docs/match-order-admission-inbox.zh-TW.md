@@ -1,5 +1,7 @@
 # Match 訂單入簿 Durable Inbox 與錯誤恢復
 
+> 現行狀態與證據入口核對：2026-11-05；基線見[版本導覽](current-version-guide.zh-TW.md)。日期化測試保留原受測版本。
+
 ## 結論先講
 
 Wallet 完成資產保留後，現在發布的 integration event 是
@@ -93,7 +95,8 @@ stateDiagram-v2
 | worker claim 後 crash | lease 到期後另一 worker reclaim | Rabbit 已 ACK，但 PostgreSQL inbox 仍保存工作 |
 | processor 成功後、標 `APPLIED` 前 crash | reclaim 後重送 processor；Redis guard 吸收 duplicate | 這是不可消除的 at-least-once crash window |
 
-預設最多 20 attempts，delay 從 250 ms 指數增加、上限 30 秒並加入 bounded jitter。load-test
+Technical failure 預設最多 20 attempts；`PENDING_PREREQUISITE` 不消耗 technical budget，
+長期等待仍會形成 age／debt 告警。delay 從 250 ms 指數增加、上限 30 秒並加入 bounded jitter。load-test
 profile 將初始 delay 降為 100 ms。`worker-concurrency` 預設 16，load-test 是 32；scheduler 只會依
 可用 permit claim，避免無界 executor queue 把大量 row 提前租走。
 
@@ -148,8 +151,10 @@ runners 也新增 inbox row、APPLIED row 與 non-APPLIED debt gate；queue 清�
 business complete。reset path 會清除 Match inbox workload data，避免跨 run duplicate 或資料累積
 污染下一輪結果。
 
-2026-09-04 最新長窗中，Match admission inbox 在 200 orders/s 的最大 backlog `95`、
+2026-09-04 歷史長窗中，Match admission inbox 在 200 orders/s 的最大 backlog `95`、
 slope `+0.0020/s`、oldest age max `0s`、terminal debt `0`，最終全數 `APPLIED`；Match
 durable trades 也和 Order／Wallet 完全一致。較早 300／400 的瓶頸曾出現在 Order
-reservation-result worker，但目前版本尚未重跑更高邊界。完整版本與限制見
-[最新全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。
+reservation-result worker；不能直接外推到後來版本。完整版本與限制見
+[2026-09-04 報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。後續
+[2026-11-05 schema-v4 比較](benchmarks/2026-11-05-http-idempotency-comparison.md)已在
+200 unique orders/s 完成六輪有／無 key 診斷，仍未重跑現行更高邊界或乾淨 revision 長窗。

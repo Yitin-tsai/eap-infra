@@ -1,6 +1,6 @@
 # Wallet 成交結算 Durable Inbox 與 Crash Recovery
 
-> 更新日期：2026-09-04
+> 更新日期：2026-11-05（現行狀態與證據入口核對；日期化測試保留原受測版本）
 >
 > 適用範圍：CDA `TradeExecutedEvent → Wallet settlement`
 >
@@ -84,7 +84,8 @@ debt 持續 30 秒即告警。DB 暫時不可用時保留最後一次 snapshot�
 `GET /internal/inbox/messages?status=FAILED_RETRYABLE&messageType=TRADE_EXECUTED&limit=50`
 檢視 message identity、attempt、next retry、lease owner／expiry 與 error。端點預設關閉、
 上限 100 筆、只讀，且刻意不回傳 payload；production profile 即使誤設 property 也不會
-註冊 controller。它用來診斷 WRR-106，不提供 replay，受控重播仍屬 WRR-301。
+註冊 controller。它用來診斷 WRR-106，本身不提供 replay；受控重播已由 REL-106 的
+owner recovery contract 與控制面提供，永久 invariant／identity conflict 仍不可重播。
 
 ## ACK 與 transaction 邊界
 
@@ -98,7 +99,10 @@ Rabbit delivery
   → Rabbit ACK
 ```
 
-若 insert 或 commit 失敗，listener 拋出 exception，不應 ACK。這個窗口仍由 Rabbit listener retry／DLQ 負責；durable inbox 無法在自己的 database 完全不可用時保存工作。
+若 insert 或 commit 失敗，listener 拋出 exception，不應 ACK。DB connectivity failure
+由 REL-104 circuit 在短 retry 後暫停 consumers，以 backoff＋jitter probe 恢復，讓工作留在
+durable source queue；poison／schema error 仍走 reject／DLQ。inbox 本身無法在 database
+完全不可用時保存工作，因此不能把此恢復能力歸因於 inbox insert。
 
 ### Durable settlement
 
@@ -160,7 +164,7 @@ refundCurrency = originalLockedCurrency - dealCurrency
 
 | Crash 時點 | Durable 狀態 | 恢復結果 |
 | --- | --- | --- |
-| inbox insert 前 | Rabbit 尚未 ACK | broker redelivery；長時間 DB outage 仍可能耗盡短期 retry 進 DLQ |
+| inbox insert 前 | Rabbit 尚未 ACK | connectivity outage 由 REL-104 保留 source delivery、暫停 consumer 並 probe 恢復；非 connectivity poison 仍依 retry／DLQ policy |
 | inbox commit 後、ACK 前 | inbox `PENDING` 已存在 | redelivery 命中 same-payload duplicate；仍只有一筆工作 |
 | ACK 後、worker claim 前 | inbox `PENDING` | worker 稍後 claim |
 | claim commit 後、settlement 前 | inbox `IN_PROGRESS` | lease 到期後其他 worker reclaim |
@@ -199,11 +203,13 @@ integration 1 test，皆為 0 failure／0 error。其中 `WalletTradeExecutedInb
 `WalletCancellationSettlementOrderingPostgresIT` 同時覆蓋 BUY／SELL 取消先到、成交先到與
 併發到達，兩種資產路徑都收斂到相同最終餘額。
 
-另外，最新版完整 HTTP k6 長窗以 `60s + 900s`、`200 orders/s` 驗證新增寫入路徑：
+另外，2026-09-04 的歷史完整 HTTP k6 長窗以 `60s + 900s`、`200 orders/s` 驗證當時新增寫入路徑：
 `192000/192000` 訂單接受、三服務各 `96000` 筆 trade ID 相同、Wallet inbox max
 `389`、oldest age max `1s`、terminal debt `0`，資產與所有 final debt 收斂。詳見
 [2026-09-04 全鏈報告](benchmarks/2026-09-04-current-reliability-full-chain.md)。這仍不是完整
-Rabbit／service process failure-injection，也不是 release-pinned capacity 上限。
+Rabbit／service process failure-injection，也不是 release-pinned capacity 上限。後續
+[2026-11-05 比較](benchmarks/2026-11-05-http-idempotency-comparison.md)另完成六輪
+schema-v4 全鏈診斷；兩者受測來源、長度與 gate 版本不同，不能合併成現行容量證據。
 
 ## 成本與限制
 
@@ -216,15 +222,16 @@ Rabbit／service process failure-injection，也不是 release-pinned capacity �
 
 這是用 write amplification 換取 ACK 後可恢復、可觀測 retry debt 與 worker crash 接手。完整壓測必須分開量 Rabbit intake rate、Wallet inbox apply rate、oldest pending age、settlement rate 與最終三服務 trade-ID／asset reconciliation，不能把 queue 清空或 inbox insert TPS 當成 business-complete TPS。
 
-目前仍未完成：
+已完成的恢復能力與後續限制：
 
 - inbox insert 前 Wallet DB 長時間 connectivity outage 已由 REL-104 的 service-local circuit／consumer pause 處理；poison message 仍走 DLQ；
 - oldest-age 與 permanent-debt metric／基本告警已存在，200 orders/s 長窗未觸發；正式 SLO 仍需多 seed、故障注入與 production-like 環境校準；
 - terminal inbox 已接入 REL-106 的 classify、dry-run、rate-limited owner-side replay 與 audit；
   REL-107 的 shared-DLQ 切片只在 exact route、transient failure 與 Wallet inbox preflight 都
   通過時 direct replay 回本 queue；其他 Wallet route 尚未開放；
-- 真實 Rabbit delivery 下的 60 秒 DB outage 已由 REL-104 驗證；process kill、duplicate、
-  late event 與 ambiguous recovery response 仍待 REL-107 campaign；
+- 真實 Rabbit delivery 下的 60 秒 DB outage 已由 REL-104 驗證；REL-107 R1～R5 已補上核心
+  process kill、duplicate、late event、ambiguous recovery response 與 MCP confirm→audit crash。
+  範圍見[故障報告](benchmarks/2026-09-18-rel107-failure-injection-campaign.md)，仍不涵蓋所有 DLQ route 或三 JVM 同場 HTTP crash；
 - 200 orders/s 以上的邊界搜尋與 clean revision release-pinned 重跑。
 
 ## 設計摘要

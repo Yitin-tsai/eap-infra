@@ -62,6 +62,15 @@ graph TD
 
 這是目前定義 business-complete 的主要路徑。壓測 workload、版本與數字由個別 benchmark 文件負責，不能從架構圖直接推導容量。
 
+CDA BUY／SELL HTTP 會同步提交 Order 初始事實與 outbox；Rabbit 發布、Wallet 處理、
+撮合、結算與 projection 繼續非同步執行，沒有額外的 HTTP command inbox。可選的
+`Idempotency-Key` 會在同一個 command transaction 內保存原始 response receipt。
+呼叫程式重試 HTTP 時沿用相同 key 與 payload；獨立的 `orderId` 則識別後續操作的訂單。
+相同使用者／key／內容回傳原 HTTP 200 receipt，內容衝突或命令尚在處理中回 409；
+receipt 永久保留。未帶 key、MCP、TDA 與取消請求不因此取得 HTTP-key 保證；取消另有
+`cancellationId` 生命週期。詳見[已驗收 HTTP 契約](features/http-command-idempotency.zh-TW.md)
+與[入口模式決策](adr/ADR-007-cda-http-order-intake-mode.zh-TW.md)。
+
 ## 定時集合競價流程
 
 TDA 在競價時段內接收階梯式出價，並由 MatchEngine 的排程工作一次清算：

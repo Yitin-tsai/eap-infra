@@ -204,9 +204,9 @@ start／end／max／slope、retry／terminal max 與 oldest-age max，
 
 - 目前 Prometheus 對固定 component 數量的完整性檢查，假設每個服務只有一個 application instance。未來水平擴展時，必須先依 `service`／`work` 聚合，或讓 contract 明確帶入 replica 維度，不能直接沿用單實例計數。
 - migration 目前使用一般 `CREATE INDEX`，適合本機學習環境與尚未累積大量資料的資料庫；正式環境的大表應安排維護窗口，或改用 PostgreSQL `CREATE INDEX CONCURRENTLY` 的部署流程，避免長時間阻塞寫入。
-- 目前已用 integration test 證明每個固定 work 的非零 debt 能被正確查出，但尚未以接近 production 歷史資料量執行 `EXPLAIN (ANALYZE, BUFFERS)`。因此 schema v4 smoke 能證明 contract 與 correctness gate，不等於已證明大資料量下的查詢成本。
+- 目前已用 integration test 證明每個固定 work 的非零 debt 能被正確查出，並通過 schema-v4 smoke 與十一月六輪全鏈診斷；尚未以接近 production 歷史資料量執行 `EXPLAIN (ANALYZE, BUFFERS)`，不能據此宣稱大資料量下的查詢成本已驗證。
 
-## 目前仍未解決的事
+## 已補齊的恢復能力與剩餘邊界
 
 - CDA inbox commit 前的 DB connectivity outage 已由 EAP-REL-104 處理：合法 delivery 不 ACK、不轉送 retry queue，而是留在 durable source queue；service-local circuit 暫停 consumer，DB 恢復後自動 resume。這不涵蓋 TDA consumer，也不代替 Saga timeout 或 terminal recovery。
 - 訂單可能沒有任何明顯 queue debt、卻長時間卡在 Saga state；EAP-REL-105 已提供 [warning-only timeout detector](order-saga-timeout-detector.zh-TW.md)。
@@ -270,3 +270,14 @@ cancel 與 4 次 bounded match/cancel race；Order／Wallet 的取消完成事�
 收斂，三服務 trade ID 與資產核對正確，active reservation、Queue、DLQ、三個 outbox
 及全部 15 個 durable work 最終都是 0。這仍是 correctness contract，不是取消吞吐量
 或廣泛隨機 race 的容量證據。
+
+### 2026-11-05 schema-v4 重複全鏈診斷
+
+[HTTP 冪等性增量成本量測](benchmarks/2026-11-05-http-idempotency-comparison.md)以相同
+修改後程式完成無 key／全新 key 各三輪，每輪 `60s + 180s`、`200 unique orders/s`，
+共 `288000` 單與 `144000` 筆三服務一致的成交。每輪均要求固定 durable work 集合完整、
+snapshot healthy、穩態 count／slope／age／terminal gate 通過，最終 inbox／outbox／
+cleanup／projection、queue／DLQ、reservation 與資產全部收斂。
+
+這比九月 wiring smoke 多了重複負載證據，但仍是同機 dirty-source 的短診斷；
+不取代乾淨 revision 長窗容量基準，也未證明 production 歷史資料量下的 snapshot query 成本。
