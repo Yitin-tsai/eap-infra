@@ -264,7 +264,7 @@ graph TD
     publisher --> mq["RabbitMQ TradeExecuted"]
 ```
 
-RabbitMQ queue 清空不代表服務已追上。Listener 可以先把訊息提交到 service-owned inbox 後 ACK，工作再由本地 worker 套用；因此 queue depth、inbox level／oldest age／slope、outbox debt、projection lag 都是不同的排隊點。最新版 200 orders/s 長窗的 Order／Wallet／Match inbox oldest age max 為 `1/1/0s`，沒有持續累積；較早 300／400 實驗仍顯示 Order reservation-result worker 是提高邊界前的首要量測對象，但尚未用目前版本重跑到足以重新定位瓶頸。
+RabbitMQ queue 清空不代表服務已追上。Listener 可以先把訊息提交到 service-owned inbox 後 ACK，工作再由本地 worker 套用；因此 queue depth、inbox level／oldest age／slope、outbox debt、projection lag 都是不同的排隊點。2026-09-04 的歷史 schema-v3、200 orders/s 長窗記錄 Order／Wallet／Match inbox oldest age max 為 `1/1/0s`，沒有持續累積；11/05 的 schema-v4 有／無 key 比較則是每輪 180 秒穩態診斷，不能替代現行乾淨 revision 的長窗容量。較早 300／400 實驗仍使 Order reservation-result worker 成為提高邊界前的首要量測對象，但尚未用目前版本重跑到足以重新定位瓶頸。
 
 REL-103 把這些排隊點統一成 `totalCount`、`retryCount`、`terminalCount` 與
 `oldestUnresolvedAgeSeconds`。每個服務每 5 秒在獨立 observability scheduler 上執行一次

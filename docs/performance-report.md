@@ -2,6 +2,11 @@
 
 This report is the canonical current EAP capacity summary. The append-only experiment history is frozen in [archive/performance/2026-06-global-loadtest-2000-tps.md](archive/performance/2026-06-global-loadtest-2000-tps.md).
 
+Dated historical sections and optimization summaries describe their recorded revisions
+and decisions at that time. Use the latest diagnostic below for current evidence and
+the [engineering backlog](backlog.zh-TW.md) for next work; historical throughput does
+not establish capacity for the accepted November code.
+
 ## Latest Diagnostic - 2026-11-05: HTTP Idempotency Cost
 
 The accepted CDA BUY/SELL HTTP contract supports optional `Idempotency-Key` receipt
@@ -185,7 +190,7 @@ The controlled follow-up isolated trade-outbox polling from reservation maintena
 
 After the correctness fix, a light `600..800 orders/s` staircase passed 600 and 700, then failed the 800 completion/backlog gate. All `52500` orders still converged into `26250` identical three-service trades with exact assets and zero final queue, DLQ, order-book, or reservation debt. Scheduler isolation is adopted; 800 and 900 are not promoted. At that point the short-window public mixed-flow lower-bound class remained 700 orders/s; the newer sustained recheck below adds a stricter boundary.
 
-Because the repositories contained uncommitted changes and deep monitoring affects a saturated single host, these runs are current-worktree diagnostics rather than a release-pinned capacity record. See [the 2026-08-07 diagnostic report](benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md).
+Because the repositories contained uncommitted changes and deep monitoring affects a saturated single host, these runs are diagnostics of the August 7 worktree rather than a release-pinned capacity record. See [the 2026-08-07 diagnostic report](benchmarks/2026-08-07-canonical-mixed-http-diagnostic.md).
 
 ## Release-Pinned 700 Sustained Recheck - 2026-08-11
 
@@ -622,9 +627,9 @@ pending connections, and Order PostgreSQL exposed active and IO waits. Vegeta
 therefore removes the driver scheduling ambiguity without creating CPU or host
 isolation.
 
-This evidence substantially strengthens 700 as a **current-worktree**
-repeatable lower-bound candidate. It does not replace the release-pinned 648
-boundary until the worktree is reviewed and committed, and 16 restarted
+At that checkpoint, this evidence strengthened 700 as a repeatable lower-bound
+candidate for the August 20 worktree. It did not replace the release-pinned 648
+boundary; review, commit and a new pinned run were still required. Sixteen restarted
 20-minute runs are not represented as one continuous multi-hour soak. See the
 [unattended validation report](benchmarks/2026-08-20-vegeta-unattended-validation.md).
 
@@ -1181,7 +1186,7 @@ Snapshot:
 
 One repeat, `EAP_PUBLIC_10K_20260713_R3`, completed the business gate but is excluded from the public median because the local load driver only achieved `733.79` buy confirmations/s, below the `95%` offered-load threshold.
 
-Interpretation: the system can accept near-2000/s input pressure in valid short 10k runs, but the fully gated completed-trade throughput is currently in the `503-662/s` range on the local benchmark environment.
+Historical interpretation: that revision accepted near-2000/s input pressure in valid short 10k runs, while its fully gated completed-trade throughput was in the `503-662/s` range on that local benchmark environment. This is not a capacity measurement of the accepted November revision.
 
 ## Benchmark Environment
 
@@ -1219,6 +1224,10 @@ Interpretation: both revisions place the isolated Redis order book far above the
 
 ## Recent Optimization Summary
 
+This table preserves historical experiments and their contemporary adoption/rejection
+decisions. Its rates and driver preferences are not current-version capacity claims;
+the November diagnostic above and the current backlog govern new work.
+
 | Change | Main Evidence | Decision |
 | --- | --- | --- |
 | Historical Match completion marker batch SQL using stable `unnest` | marker insert calls dropped from `20000` to `2314`; marker SQL total `1187.94ms -> 970.28ms` | retired with the downstream completion feedback loop |
@@ -1244,14 +1253,18 @@ Interpretation: both revisions place the isolated Redis order book far above the
 | Canonical mixed short-window boundary recheck | `600 orders/s` passed three valid staircase seeds; `624` passed two and failed one; `648` passed one short sample with HTTP p99 upper bound `2000ms` and transient backlog `2161`. Every valid run ended with exact three-service trades/assets and zero final debt | short-window evidence kept `600` as the lower-bound class pending a longer repeat; classify `624` as a variable short-window knee and `648` as unpromoted exploration evidence |
 | 624 sustained evidence | Two 15-minute seeds each accepted `599040` orders and converged `299520` exact trades. Same-window completion was `307.19` and `312.03 trades/s`; full-lifecycle completion was `300.28` and `310.05 trades/s`; maximum backlog was `4257` and `1164`; all final debt was zero | promote the exact same-host shuffled mixed HTTP sustained lower-bound class from 600 to 624, while retaining short-window variability and shared-host pressure as limits |
 | 648 sustained pressure boundary | Two 15-minute seeds each accepted `622080` orders and converged `311040` exact trades. Same-window completion was `315.96` and `314.84 trades/s`; full-lifecycle completion was `309.73` and `301.14 trades/s`; maximum backlog was `4001` and `4907`; all final debt was zero | promote 648 as the highest repeatable same-host lower-bound class, but classify it as the pressure knee because full-lifecycle throughput stayed in the 624 range while tail, pool pending, and CPU pressure increased |
-| Vegeta unattended current-worktree validation | `25` full-chain runs over about `11h07m`; all correctness gates passed, `24/25` capacity contracts passed, and all `16` independent 20-minute 700 orders/s repeats passed. One 800 confirmation had `14` HTTP timeouts despite exact durable convergence | adopt Vegeta as the preferred high-rate diagnostic driver and retain 700 as a current-worktree lower-bound candidate; do not promote 800 or rewrite the release-pinned 648 boundary before review and commit |
+| Historical Vegeta unattended worktree validation | `25` full-chain runs over about `11h07m`; all correctness gates passed, `24/25` capacity contracts passed, and all `16` independent 20-minute 700 orders/s repeats passed. One 800 confirmation had `14` HTTP timeouts despite exact durable convergence | adopted Vegeta for that campaign and retained 700 as an August-worktree candidate; the later pinned repeat rejected 700, and these results do not establish November capacity |
 | k6 external-driver integration smoke | `1200/1200` HTTP requests at `100 orders/s`, zero dropped iterations, 100% HTTP success, exact `600` three-service trades, reconciled assets, and zero final debt | adopt k6 as the default local diagnostic driver; retain Vegeta for historical controls and remote-host runs; require a controlled A/B before comparing capacity |
 | k6 648 full-window diagnostic | 648 VUs executed `610517/622080` requests and dropped `11563`; all executed requests were 2xx and all `305240` resulting trades converged across three services with reconciled assets and zero final debt. Same-host 2048／4096 VU calibrations also dropped traffic; 4096 caused request timeouts and monitor stalls | reject as capacity evidence, stop increasing same-host VUs, retain the existing release-pinned 648 boundary, and require remote-driver isolation for the next long k6 comparison |
 | Release-pinned source provenance and 700 repeat | Clean committed source and exact container/tool provenance; `882000/882000` HTTP success and exact `441000` three-service trades, but only `240.01` same-window and `209.51` full-lifecycle trades/s with an `844.93s` post-input drain | adopt the provenance gate, reject 700 for that revision, retain 648 only as its historical boundary, and add per-stage durable-debt slopes before another high-cost repeat |
 
 ## Seeded Matched-Completion Bottleneck
 
-The strongest current signal is durable write and relay cost across the `matched-trade-completion-chain`:
+This section preserves the seeded and August full-chain bottleneck investigation.
+Its measurements apply to those revisions; current reservation-result/projection
+work is tracked under `EAP-PERF-203` in the backlog.
+
+The strongest signal in those diagnostics was durable write and relay cost across the `matched-trade-completion-chain`:
 
 - MatchEngine writes `TradeExecuted` facts and trade outbox rows.
 - Order applies each trade to command-side order state and its durable trade-application table.

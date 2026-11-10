@@ -1,6 +1,9 @@
 # EAP - LLM Context
 
-> Current cross-service contract. Prefer the service README and source code for implementation details; use `docs/architecture.md` for the public architecture.
+> Synchronized: 2026-11-10. Start with `docs/current-version-guide.zh-TW.md` and
+> `docs/backlog.zh-TW.md`. Use `docs/architecture.md` for design and
+> `docs/performance-report.md` for current evidence; dated benchmarks apply only to
+> their recorded source revisions.
 
 ## Platform
 
@@ -8,11 +11,11 @@ EAP is an event-driven electricity auction backend supporting Continuous Double 
 
 | Module | Port | Responsibility |
 | --- | ---: | --- |
-| `eap-order` | 8080 | HTTP order acceptance, order event stream/outbox, durable trade inbox/application, query projection |
-| `eap-wallet` | 8081 | asset reservation, explicit-transaction settlement, Wallet outbox |
-| `eap-matchEngine` | 8082 | Redis order book, matching, durable `TradeExecuted`, trade outbox, reservation cleanup |
+| `eap-order` | 8080 | HTTP acceptance and optional idempotency receipts, order event stream/outbox, durable result intake, trade application, query projection |
+| `eap-wallet` | 8081 | durable reservation/trade/cancellation intake, asset balances, settlement, Wallet outbox |
+| `eap-matchEngine` | 8082 | durable admission inbox, Redis order book and generation fencing, matching, durable `TradeExecuted`, trade outbox, reservation cleanup |
 | `eap-common` | - | compiled integration contracts; no business state |
-| `eap-mcp` | 8083 | optional control-plane tools |
+| `eap-mcp` | 8083 | protected recovery aggregation/quarantine/action audit and optional MCP tools |
 | `eap-ai-client` | 8084 | optional local LLM client |
 | `eap-trigger` | - | legacy Go experiment; still consumes retired `order.matched` and is not in the current core flow |
 
@@ -20,14 +23,14 @@ EAP is an event-driven electricity auction backend supporting Continuous Double 
 
 ```text
 HTTP BUY/SELL
-  -> Order: lifecycle event + OrderSubmitted outbox
-  -> Wallet: reserve assets + OrderConfirmed/OrderFailed outbox
-  -> Order: persist reservation result
-  -> MatchEngine: Redis Lua match or rest order
+  -> Order: initial event + OrderSubmitted outbox (+ original receipt when keyed), then HTTP response
+  -> Wallet: durable intake, reserve assets + OrderAssetReservationSucceededEvent/OrderFailedEvent outbox
+  -> fan-out: Order reservation-result inbox / MatchEngine admission inbox
+  -> MatchEngine worker: Redis Lua match or rest order (does not wait for Order confirmation)
   -> MatchEngine DB transaction: TradeExecuted + trade_outbox + optional cleanup task
   -> trade.exchange / trade.executed
-       -> Order durable inbox + command-side trade application
-       -> Wallet explicit-transaction settlement
+       -> Order command-side trade application (durable recovery inbox for missing prerequisites or failed application)
+       -> Wallet durable trade inbox + atomic settlement
 ```
 
 Current routing keys:
@@ -35,17 +38,47 @@ Current routing keys:
 | Exchange / key | Consumers |
 | --- | --- |
 | `order.exchange / order.submitted` | Wallet |
-| `order.exchange / order.confirmed` | Order, MatchEngine |
+| `order.exchange / order.asset-reservation.succeeded` | Order, MatchEngine |
 | `order.exchange / order.failed` | Order |
 | `trade.exchange / trade.executed` | Order, Wallet |
+| `order.exchange / order.cancellation.requested` | MatchEngine |
+| `order.exchange / order.cancellation.result` | Order, Wallet |
+| `order.exchange / order.asset-reservation.released` | Order |
+
+Some queue names still contain `orderConfirmed`; the current event is
+`OrderAssetReservationSucceededEvent`, and its routing key is listed above.
 
 There is no Order/Wallet completion callback to MatchEngine. `OrderTradeAppliedEvent`, `WalletTradeSettledEvent`, the legacy `order.matched` bus, and MatchEngine completion views are retired.
 
 TDA flow: Order publishes an auction bid, Wallet reserves assets and publishes `AuctionBidConfirmedEvent` through its outbox, and MatchEngine collects and clears bids on a schedule before Order and Wallet consume `AuctionClearedEvent`. Order bid submission and MatchEngine auction lifecycle events currently publish directly to RabbitMQ, so TDA does not inherit the CDA outbox or capacity evidence.
 
+Cancellation: MatchEngine arbitrates the unmatched remainder; Order stays
+`CANCELLING` until Wallet durably releases assets and publishes
+`OrderAssetReservationReleasedEvent`, after which Order becomes `CANCELLED`.
+
+## HTTP Idempotency
+
+CDA BUY/SELL HTTP accepts an optional `Idempotency-Key`. The user-scoped receipt,
+initial event and outbox commit in one Order command transaction. Same-key/same-request
+retries return the original acceptance response; a changed payload or concurrent
+in-progress request returns 409. Keys are permanently retained. Unkeyed requests,
+MCP, cancellation and TDA do not gain this contract. Keep direct durable acceptance
+plus outbox; a separate HTTP command inbox is not an accepted implementation task.
+See `docs/features/http-command-idempotency.zh-TW.md` and ADR-007.
+Request UUIDs and the legacy `ID_TOKEN` header are not authenticated. User-order
+queries parse that header as a user UUID filter, not as an authentication token.
+
 ## Completion Contract
 
-A trade is business-complete only when MatchEngine, Order, and Wallet have the same durable `trade_id` set, assets reconcile, relevant order books/reservations are empty, and measured RabbitMQ/DLQ plus durable retry debt drain. Order query projections are rebuildable and do not block the command-side gate.
+The verifier compares the exact durable `trade_id` sets owned by MatchEngine,
+Order and Wallet, reconciles assets, and checks relevant Redis books/reservations
+and RabbitMQ ready/unacked/DLQ drain. The schema-v4 full-chain gate also requires
+fresh, successful versioned `DurableDebtSnapshot` observations and zero final
+inbox, outbox, cleanup, cancellation, reconciliation and projection debt.
+
+Order projections do not block command-side trade application. Full-chain capacity
+verification still requires `orders_current` and its checkpoint to converge;
+rebuildability does not remove this final gate.
 
 ## Reliability Rules
 
@@ -53,8 +86,32 @@ A trade is business-complete only when MatchEngine, Order, and Wallet have the s
 - Consumers ACK after durable handling.
 - Duplicate delivery is expected and absorbed by `trade_id`/`order_id` claims and unique constraints.
 - Each service owns its retry, inbox/outbox, and failed state.
+- CDA DB connectivity failures pause local consumers and retain work in the source queue until recovery.
+- Redis generation/run-id mismatch fails closed; controlled activation exists, automatic full-book rebuild does not.
+- Saga timeout detection is warning-only; recovery actions remain subject to owner-side policy and audit.
 - AI/MCP modules never own core transaction correctness.
 
-## Current Performance Boundary
+## Observability and Audit
 
-The current CDA mixed HTTP lower-bound class is about 700 accepted orders/s, 350 same-window trades/s, and 320 full-lifecycle trades/s on one host. A 2026-08-07 deep diagnostic passed 700 and failed 800 within the stage window while all work eventually converged. MatchEngine's single Spring scheduler worker currently serializes reservation cleanup and trade-outbox polling; scheduler isolation is only a pending experiment. There is no equivalent published TDA capacity result.
+Prometheus scrapes all three core services and RabbitMQ. Durable-debt and Saga-timeout
+alerts exist. Grafana currently has Order and Wallet dashboards; Match/cross-service
+debt dashboards and Redis/PostgreSQL exporter jobs remain absent. CDA end-to-end
+trace propagation is not implemented. Order `/audit` exposes the TDA hash-chain
+audit; CDA evidence lives in Order events, Match trade facts and Wallet settlement
+facts. Recovery action audit is a separate control-plane record.
+
+## Current Evidence and Next Work
+
+The 2026-11-05 same-version keyed/unkeyed comparison passed six schema-v4 full-chain
+runs at 200 unique orders/s, each with 60s warm-up and 180s measurement. An independent
+Order JVM restart replayed 12000 committed requests without new business effects.
+The measured source was dirty and the driver co-located: this is diagnostic evidence,
+not clean revision-pinned long-window capacity or an SLA. August 648/700 results
+and September schema-v3 results apply only to their recorded revisions.
+
+MatchEngine already isolates trade-outbox, reservation-maintenance and durable-debt
+schedulers. Next establish a clean revision-pinned schema-v4 long-window baseline,
+distinguishing keyed, unkeyed and replay traffic; measure slow dependencies and
+Order reservation-result/projection stages before choosing PERF-203 changes.
+MATCH-202 durable book rebuild is a later project. TDA parity, read replica,
+advanced matching scaling and production security remain deferred by the backlog.

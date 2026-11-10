@@ -1,6 +1,6 @@
 # EAP 最新版本導覽
 
-> 更新日期：2026-11-05
+> 更新日期：2026-11-10（同步文件入口；功能核對基線與受測版本維持下列紀錄）
 
 > 定位：這是現行 CDA 可靠性與 HTTP 冪等契約的閱讀入口；細節仍以連結的架構、生命週期與實作文件為準。
 
@@ -56,6 +56,23 @@ connection hold，但此比較點未觀察到完成吞吐失敗，另有重啟 O
 | CQRS | Order event store 是事實來源；`orders_current` 可重建並為查詢塑形；API 回傳 execution／reservation 雙狀態 | 強 read-your-write、獨立 read replica 已完成 |
 | 撮合 | Redis Lua 維持單一 market 內的撮合／取消互斥，PostgreSQL 保存成交與 recovery task | Redis 全量遺失可自動重建並無縫開放 |
 | 效能 | 2026-11-05 同版有／無 key 各三輪，在 `200 unique orders/s` 通過 schema-v4 gate 並量出入口成本；2026-09-04 另有 schema-v3 單 seed、15 分鐘歷史診斷 | 把短診斷或舊版本長窗當成現行 release-pinned capacity、精確 ceiling 或 production SLA；現行 200 以上尚未重測 |
+
+## 可觀測性與稽核範圍
+
+Prometheus 已設定 Order、Wallet、MatchEngine 與 RabbitMQ scrape；三服務的 durable-debt
+告警及 Order Saga timeout 告警也已實作。先前「MatchEngine 沒有 scrape」的缺口已補齊，
+不可再列為尚未完成的 REL-103 工作。
+
+Grafana 目前只有 Order／Wallet dashboard；Match／跨服務 debt dashboard、Redis／PostgreSQL
+exporter job，以及 CDA HTTP→RabbitMQ→settlement 的完整 trace／correlation 傳播仍未完成。
+這些是後續可觀測性候選工作，尚未排入現行主 backlog，也不改變既有可靠性驗收。
+
+Order 的 `/eap-order/audit/*` 查詢 `audit_events` hash chain，目前由 TDA bid／session／result
+流程寫入，並非 CDA 跨服務交易履歷。CDA 的持久化證據分別是 Order event／trade application、
+Match trade fact 與 Wallet settlement；recovery control plane 的 operator action audit 又是另一類紀錄。
+目前 `ID_TOKEN` 沒有身分驗證：買／賣單保留此選用欄位，三個 user-orders 查詢則將其值當作
+user UUID 篩選。client 提供的 UUID 不是已認證身分；受保護的 recovery token／operator
+contract 也不等同完整 production authentication／RBAC。
 
 ## 目前版本的驗證摘要
 
